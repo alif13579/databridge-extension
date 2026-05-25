@@ -1,0 +1,49 @@
+{
+  "manifest_version": 3,
+  "name": "DataBridge",
+  "version": "1.1",
+  "author": "Alif Hossain",
+  "description": "Seamless data transfer between platforms.",
+  "permissions": [
+    "contextMenus",
+    "activeTab",
+    "scripting",
+    "storage",
+    "notifications"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"]
+    }
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "DataBridge",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "commands": {
+    "send-to-databridge": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+U",
+        "mac": "Command+Shift+U"
+      },
+      "description": "Send selected text to DataBridge"
+    }
+  },
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'self'"
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
+}

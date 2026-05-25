@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>DataBridge</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="loading-overlay" id="loading-overlay">
+    <div class="spinner"></div>
+    <div id="loading-text">Processing...</div>
+  </div>
+
+  <div class="header">
+    <h2>📲 DataBridge</h2>
+    <div class="header-status">
+      <div class="dot" id="status-dot"></div>
+      <span class="status-name" id="status-name">Guest</span>
+    </div>
+  </div>
+
+  <div class="bottom-nav">
+    <div class="nav-item active" id="nav-history"><span class="nav-icon">📋</span>History</div>
+    <div class="nav-item" id="nav-connect"><span class="nav-icon">🔗</span>Connect</div>
+    <div class="nav-item" id="nav-settings"><span class="nav-icon">⚙️</span>Settings</div>
+  </div>
+
+  <div class="tab-content active" id="tab-history">
+    <div class="search-bar">
+      <span class="search-icon">🔍</span>
+      <input type="text" id="search-input" placeholder="Search history...">
+    </div>
+    <div class="history-list" id="history-list">
+      <div class="empty-state">No history yet.<br>Send something from the page!</div>
+    </div>
+    <div class="load-more-wrap" id="load-more-wrap">
+      <button class="load-more-btn" id="load-more-btn">Load more</button>
+    </div>
+  </div>
+
+  <div class="tab-content" id="tab-connect">
+    <div class="screen active" id="screen-connect">
+      <div class="connect-title">
+        মোবাইল App দিয়ে QR Code স্ক্যান করুন<br>অথবা Extension ID টি App এ দিন
+      </div>
+      <div class="qr-wrapper" id="qrcode"></div>
+      <div class="extension-id-box">
+        <div>
+          <div class="extension-id-label">আপনার Extension ID</div>
+          <div class="extension-id-value" id="extension-id-display">Loading...</div>
+        </div>
+        <button class="copy-btn" id="copy-btn">📋</button>
+      </div>
+      <div class="extension-id-hint">Extension ID টি App এ paste করেও connect করা যাবে</div>
+    </div>
+    <div class="screen" id="screen-connected">
+      <div class="agent-info">
+        <div class="agent-avatar" id="agent-avatar">?</div>
+        <div>
+          <div class="agent-name" id="agent-name">Connected</div>
+          <div class="agent-status">🟢 Active</div>
+        </div>
+      </div>
+      <button id="disconnect-btn">🔌 Disconnect করুন</button>
+    </div>
+  </div>
+
+  <div class="tab-content" id="tab-settings">
+    <div class="settings-section">
+      <div class="settings-label">Notifications</div>
+      <div class="settings-item">
+        <span>Show notifications</span>
+        <label class="toggle"><input type="checkbox" checked><span class="toggle-slider"></span></label>
+      </div>
+    </div>
+    <div class="settings-section">
+      <div class="settings-label">Data</div>
+      <div class="settings-item">
+        <span>Clear local history</span>
+        <button class="danger-btn" id="clear-history-btn">Clear</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="config.js"></script>
+  <script src="qrcode.min.js"></script>
+  <script src="popup.js"></script>
+</body>
+</html>
