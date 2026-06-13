@@ -9,12 +9,55 @@ const PAGINATION_LIMIT = CONFIG.PAGINATION_LIMIT || 20;
 // ══════════════════════════════
 let currentExtensionID = null;
 let currentContainerID = null;
+let currentUserId = null;
 let historyItems = [];
 let sseSource = null;
 let containerSseSource = null;
 let searchQuery = '';
 let refreshInterval = null;
 let isInitialized = false;
+let sortOrder = 'newest';
+
+function normalizePhoneKey(text) {
+  let s = (text || '').replace(/[\s\-().]/g, '');
+  if (s.startsWith('+')) s = s.slice(1);
+  if (s.startsWith('00')) s = s.slice(2);
+  if (/^0\d{10}$/.test(s)) s = '880' + s.slice(1);
+  return s.replace(/\D/g, '');
+}
+
+function shouldIndexInNumbers(item, actionType) {
+  if (!item || item.type !== 'phone' || actionType !== 'remark') return false;
+  return normalizePhoneKey(item.cleaned || item.text || '').length >= 7;
+}
+
+async function removeNumbersIndex(item, actionId) {
+  if (!item || item.type !== 'phone') return;
+  const cleanPhone = normalizePhoneKey(item.cleaned || item.text || '');
+  if (cleanPhone.length < 7) return;
+  await fetch(`${FIREBASE_URL}/numbers/${cleanPhone}/${actionId}.json`, { method: 'DELETE' }).catch(() => {});
+}
+
+async function syncNumbersIndex(item, actionId, remarks, timestamp, actionType) {
+  if (!shouldIndexInNumbers(item, actionType)) {
+    await removeNumbersIndex(item, actionId);
+    return;
+  }
+  const cleanPhone = normalizePhoneKey(item.cleaned || item.text || '');
+  const numberData = {
+    record_id: item.id,
+    storage_ref: currentContainerID || currentExtensionID || '',
+    lifecycle: currentContainerID ? 'AUTHENTICATED_PERSISTENT' : 'EPHEMERAL_SESSION',
+    timestamp,
+    remarks: remarks || '',
+    source: 'extension'
+  };
+  await fetch(`${FIREBASE_URL}/numbers/${cleanPhone}/${actionId}.json`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(numberData)
+  }).catch(() => {});
+}
 
 // ══════════════════════════════
 // 🎛️ UI হেলপার
@@ -52,29 +95,42 @@ function setupNavigation() {
 // ══════════════════════════════
 async function getActivePaths() {
   const storage = await new Promise(resolve =>
-    chrome.storage.local.get(['extension_id', 'container_id'], resolve)
+    chrome.storage.local.get(['extension_id', 'container_id', 'user_id'], resolve)
   );
   if (storage.extension_id) currentExtensionID = storage.extension_id;
-  if (storage.container_id) currentContainerID = storage.container_id;
+  // Validate cached container_id — reject error objects stored from failed fetches
+  if (typeof storage.container_id === 'string' && storage.container_id.startsWith('container_')) {
+    currentContainerID = storage.container_id;
+  } else if (storage.container_id) {
+    await chrome.storage.local.remove('container_id'); // clear bad value
+  }
+  if (storage.user_id) currentUserId = storage.user_id;
 
-  if (!currentContainerID && currentExtensionID) {
+  if (currentExtensionID) {
     try {
       const metaRes = await fetch(`${FIREBASE_URL}/sessions/${currentExtensionID}/meta.json?cb=${Date.now()}`);
       const meta = await metaRes.json();
-      if (meta?.type === 'permanent' && meta?.user_id) {
-        const profileRes = await fetch(`${FIREBASE_URL}/users/${meta.user_id}/profile/containerId.json?cb=${Date.now()}`);
-        const profileData = await profileRes.json();
-        if (profileData) {
-          currentContainerID = profileData;
+      const isConnected = meta?.status === 'connected';
+      if (isConnected && meta?.type === 'permanent' && meta?.user_id) {
+        // Session is live & permanent — derive container
+        currentUserId = meta.user_id;
+        await chrome.storage.local.set({ user_id: currentUserId });
+        if (!currentContainerID) {
+          currentContainerID = `container_${meta.user_id}`;
           await chrome.storage.local.set({ container_id: currentContainerID });
+          console.log('✅ ContainerID derived:', currentContainerID);
         }
+      } else if (!isConnected) {
+        // Session is disconnected — wipe container info so history shows nothing from container
+        await clearContainerState();
       }
-    } catch (e) { console.warn("⚠️ Container resolution skipped:", e); }
+    } catch (e) { console.warn("⚠️ Path resolution skipped:", e); }
   }
 
   return {
     extensionId: currentExtensionID,
     containerId: currentContainerID,
+    userId: currentUserId,
     isPermanent: !!currentContainerID,
     historyPath: currentContainerID ? `container/${currentContainerID}/records` : null,
     sessionPath: currentExtensionID ? `sessions/${currentExtensionID}/records` : null,
@@ -117,14 +173,20 @@ function timeAgo(timestamp) {
   if (!timestamp) return 'Just now';
   const diff = Date.now() - timestamp;
   const mins = Math.floor(diff / 60000);
-  const hrs = Math.floor(diff / 3600000);
-  if (mins < 1) return 'Just now';
+  const hrs  = Math.floor(diff / 3600000);
+  const days = Math.floor(diff / 86400000);
+  if (mins < 1)  return 'Just now';
   if (mins < 60) return `${mins} min ago`;
-  if (hrs < 24) return `${hrs} hr ago`;
-  return new Date(timestamp).toLocaleDateString();
+  if (hrs  < 24) return `${hrs} hr ago`;
+  if (days === 1) return 'Yesterday';
+  if (days < 30)  return `${days} days ago`;
+  return `${Math.floor(days / 30)} mo ago`;
 }
 function exactTime(timestamp) {
-  return new Date(timestamp || Date.now()).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  const d = new Date(timestamp || Date.now());
+  const time = d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true });
+  const date = d.toLocaleDateString('en-US', { day: 'numeric', month: 'short', year: 'numeric' });
+  return `${time} · ${date}`;
 }
 
 function escapeHtml(str) {
@@ -139,8 +201,10 @@ function escapeHtml(str) {
 async function resolveRecordBasePath(itemId) {
   const { historyPath, sessionPath } = await getActivePaths();
   const item = historyItems.find(i => i.id === itemId);
-  if (item?.source === 'permanent' && historyPath) return historyPath;
-  return historyPath || sessionPath;
+  if (!item) return historyPath || sessionPath;
+  if (item.source === 'permanent') return historyPath;
+  if (item._sessionId) return `sessions/${item._sessionId}/records`;
+  return sessionPath || historyPath;
 }
 
 // ══════════════════════════════
@@ -150,9 +214,10 @@ function renderHistory() {
   const list = document.getElementById('history-list');
   if (!list) return;
   const q = searchQuery.trim().toLowerCase();
-  const filtered = q
+  let filtered = q
     ? historyItems.filter(i => i.text?.toLowerCase().includes(q))
-    : historyItems;
+    : [...historyItems];
+  if (sortOrder === 'oldest') filtered = filtered.reverse();
   list.innerHTML = '';
   if (filtered.length === 0) {
     list.innerHTML = '<div class="empty-state">No history yet.<br>Send something from the page!</div>';
@@ -347,11 +412,15 @@ async function handleDelete(itemId) {
     
     // Clean up numbers/ index for phone type
     const item = historyItems.find(i => i.id === itemId);
-    if (item?.type === 'phone' && item?.cleaned?.length >= 10 && item.actions) {
-      const cleanPhone = item.cleaned.replace(/[^0-9+]/g, '');
-      Object.keys(item.actions).filter(k => k.startsWith('action_')).forEach(actionKey => {
-        fetch(`${FIREBASE_URL}/numbers/${cleanPhone}/${actionKey}.json`, { method: 'DELETE' }).catch(() => {});
-      });
+    if (item?.type === 'phone' && item.actions) {
+      const cleanPhone = normalizePhoneKey(item.cleaned || item.text || '');
+      if (cleanPhone.length >= 7) {
+        Object.entries(item.actions)
+          .filter(([k, v]) => k.startsWith('action_') && v?.type === 'remark')
+          .forEach(([actionKey]) => {
+            fetch(`${FIREBASE_URL}/numbers/${cleanPhone}/${actionKey}.json`, { method: 'DELETE' }).catch(() => {});
+          });
+      }
     }
     
     await updateMetaTimestamp();
@@ -364,11 +433,17 @@ async function updateAction(itemId, actionId, patch) {
   const basePath = await resolveRecordBasePath(itemId);
   if (!basePath) return;
   try {
+    const ts = Date.now();
     await fetch(`${FIREBASE_URL}/${basePath}/${itemId}/actions/${actionId}.json`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ...patch, timestamp: Date.now() })
+      body: JSON.stringify({ ...patch, timestamp: ts })
     });
+    const item = historyItems.find(i => i.id === itemId);
+    const existing = item?.actions?.[actionId];
+    const mergedType = patch.type ?? existing?.type ?? '';
+    const mergedRemarks = patch.remarks ?? existing?.remarks ?? '';
+    await syncNumbersIndex(item, actionId, mergedRemarks, ts, mergedType);
     await updateMetaTimestamp();
     await loadHistory(false);
   } catch (e) { console.error('Update action failed:', e); }
@@ -378,11 +453,11 @@ async function deleteAction(itemId, actionId) {
   const basePath = await resolveRecordBasePath(itemId);
   if (!basePath) return;
   try {
-    await fetch(`${FIREBASE_URL}/${basePath}/${itemId}/actions/${actionId}.json`, { method: 'DELETE' });
     const item = historyItems.find(i => i.id === itemId);
-    if (item?.type === 'phone' && item?.cleaned?.length >= 10) {
-      const cleanPhone = item.cleaned.replace(/[^0-9+]/g, '');
-      await fetch(`${FIREBASE_URL}/numbers/${cleanPhone}/${actionId}.json`, { method: 'DELETE' }).catch(() => {});
+    const actionType = item?.actions?.[actionId]?.type ?? '';
+    await fetch(`${FIREBASE_URL}/${basePath}/${itemId}/actions/${actionId}.json`, { method: 'DELETE' });
+    if (shouldIndexInNumbers(item, actionType)) {
+      await removeNumbersIndex(item, actionId);
     }
     await updateMetaTimestamp();
     await loadHistory(false);
@@ -418,23 +493,8 @@ async function logAction(itemId, type, remark = null) {
       body: JSON.stringify(entry)
     });
 
-    // Save to numbers/ index (only for phone type)
     const item = historyItems.find(i => i.id === itemId);
-    if (item?.type === 'phone' && item?.cleaned?.length >= 10) {
-      const cleanPhone = item.cleaned.replace(/[^0-9+]/g, '');
-      const numberData = {
-        record_id: itemId,
-        container_id: containerId,
-        timestamp: ts,
-        remarks: remark || '',
-        source: "extension"
-      };
-      await fetch(`${FIREBASE_URL}/numbers/${cleanPhone}/${actionId}.json`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(numberData)
-      });
-    }
+    await syncNumbersIndex(item, actionId, remark || '', ts, type);
 
     await updateMetaTimestamp();
 
@@ -500,7 +560,6 @@ async function openRemarks(itemId) {
   customInput.id = 'remark-custom-input';
   customInput.className = 'remarks-custom-input';
   customInput.placeholder = 'Type your remark...';
-  customInput.style.display = 'none';
   sheet.appendChild(customInput);
 
   const saveBtn = document.createElement('button');
@@ -530,51 +589,73 @@ function closeRemarks() {
 // 🔥 ফায়ারবেজ — লোড & লিসেন
 // ══════════════════════════════
 async function loadHistory(append = false) {
-  const { historyPath, sessionPath } = await getActivePaths();
-  if (!sessionPath && !historyPath) return;
+  const { historyPath, extensionId, userId } = await getActivePaths();
+  if (!extensionId && !historyPath) return;
   if (!append) historyItems = [];
 
-  let allItems = [];
+  const allItems = [];
+  const seenIds = new Set();
 
+  function absorb(data, source, sessionId) {
+    if (!data || typeof data !== 'object') return;
+    Object.entries(data).forEach(([k, v]) => {
+      if (v && v.text && !seenIds.has(k)) {
+        seenIds.add(k);
+        const actions = (v.actions && typeof v.actions === 'object') ? v.actions : {};
+        const item = { id: k, ...v, actions, source };
+        if (sessionId) item._sessionId = sessionId;
+        allItems.push(item);
+      }
+    });
+  }
+
+  console.log('📦 loadHistory | historyPath:', historyPath, '| extensionId:', extensionId, '| userId:', userId);
   try {
-    // Fetch from container (permanent)
+    // 1. Container records (permanent / logged-in)
     if (historyPath) {
       const res = await fetch(`${FIREBASE_URL}/${historyPath}.json?cb=${Date.now()}`);
-      const data = await res.json();
-      if (data && typeof data === 'object') {
-        Object.entries(data).forEach(([k, v]) => {
-          if (v && v.text) {
-            const actions = (v.actions && typeof v.actions === 'object') ? v.actions : {};
-            allItems.push({ id: k, ...v, actions, source: 'permanent' });
-          }
-        });
-      }
+      const containerData = await res.json();
+      console.log('📦 Container fetch status:', res.status, '| data type:', typeof containerData,
+        '| keys:', containerData && typeof containerData === 'object' ? Object.keys(containerData).length : containerData);
+      absorb(containerData, 'permanent', null);
+    } else {
+      console.warn('⚠️ No historyPath — container not loaded. containerID:', currentContainerID);
     }
 
-    // Fetch from sessions (ephemeral)
-    if (sessionPath) {
-      const res = await fetch(`${FIREBASE_URL}/${sessionPath}.json?cb=${Date.now()}`);
-      const data = await res.json();
-      if (data && typeof data === 'object') {
-        Object.entries(data).forEach(([k, v]) => {
-          if (v && v.text && !allItems.find(x => x.id === k)) {
-            const actions = (v.actions && typeof v.actions === 'object') ? v.actions : {};
-            allItems.push({ id: k, ...v, actions, source: 'session' });
-          }
-        });
-      }
+    // 2. Collect all session IDs to fetch
+    const sessionIds = new Set();
+    if (extensionId) sessionIds.add(extensionId);
+
+    // If logged in, also pull every connected extension's session for this user
+    if (userId) {
+      try {
+        const extRes = await fetch(`${FIREBASE_URL}/users/${userId}/connections/extensions.json?cb=${Date.now()}`);
+        const extMap = await extRes.json();
+        if (extMap && typeof extMap === 'object') {
+          Object.keys(extMap).forEach(id => sessionIds.add(id));
+        }
+      } catch (e) { console.warn('Could not fetch user extensions list:', e); }
+    }
+
+    // 3. Fetch records from each session
+    for (const extId of sessionIds) {
+      try {
+        const res = await fetch(`${FIREBASE_URL}/sessions/${extId}/records.json?cb=${Date.now()}`);
+        absorb(await res.json(), extId === extensionId ? 'session' : 'session_other', extId);
+      } catch (e) { console.warn(`Session ${extId} fetch failed:`, e); }
     }
 
     // Sort: Newest → Oldest
     allItems.sort((a, b) => (b.received_at || 0) - (a.received_at || 0));
 
-    // Client-side pagination
     const start = append ? historyItems.length : 0;
     historyItems = append
       ? [...historyItems, ...allItems.slice(start, start + PAGINATION_LIMIT)]
       : allItems.slice(0, PAGINATION_LIMIT);
 
     renderHistory();
+    const loadMoreWrap = document.getElementById('load-more-wrap');
+    if (loadMoreWrap) loadMoreWrap.style.display = allItems.length > historyItems.length ? '' : 'none';
   } catch (e) { console.error('Load history failed:', e); }
 }
 
@@ -583,21 +664,30 @@ function startSessionListener(id) {
   if (!id) return;
   sseSource = new EventSource(`${FIREBASE_URL}/sessions/${id}.json`);
 
-  sseSource.addEventListener('put', (event) => {
+  sseSource.addEventListener('put', async (event) => {
     try {
       const parsed = JSON.parse(event.data);
       const data = parsed.data;
       const path = parsed.path || '';
       if (data === null || (path === '/' && data === null)) {
         showDisconnectedState();
-        loadHistory(false);
         return;
       }
       if (path.startsWith('/meta')) {
-        if (data?.status === 'disconnected') showDisconnectedState();
-        else if (data?.status === 'connected') showConnectedState({ meta: data });
+        // data may be full meta object (path=/meta) or just a string (path=/meta/status)
+        const status = (typeof data === 'object' ? data?.status : null)
+                    || (path === '/meta/status' ? data : null);
+        if (status === 'disconnected') {
+          showDisconnectedState();
+        } else if (status === 'connected') {
+          showConnectedState({ meta: typeof data === 'object' ? data : {} });
+          // Resolve container then load history
+          await getActivePaths();
+          await loadHistory(false);
+          if (currentContainerID) startContainerListener(currentContainerID);
+        }
       }
-      if (path.startsWith('/records')) loadHistory(false);
+      if (path.startsWith('/records')) await loadHistory(false);
     } catch (e) { console.error('SSE put parse error:', e); }
   });
   sseSource.addEventListener('patch', async () => { await loadHistory(false); });
@@ -637,7 +727,14 @@ function showConnectedState(d) {
   document.getElementById('agent-avatar').textContent = n.charAt(0).toUpperCase();
   switchTab('history');
 }
+async function clearContainerState() {
+  currentContainerID = null;
+  currentUserId = null;
+  await chrome.storage.local.remove(['container_id', 'user_id']);
+}
+
 function showDisconnectedState() {
+  clearContainerState(); // wipe container so subsequent loadHistory won't fetch it
   const connectScreen = document.getElementById('screen-connect');
   const connectedScreen = document.getElementById('screen-connected');
   const statusDot = document.getElementById('status-dot');
@@ -675,19 +772,25 @@ async function setupDisconnect(id) {
   
   btn.addEventListener('click', async () => {
     showLoading("Disconnecting...");
-    if (sseSource) { sseSource.close(); sseSource = null; }
 
+    // ① Firebase-এ disconnect signal সবার আগে — keepalive নিশ্চিত করে
+    //   window.close() এর পরেও request complete হবে
     try {
-      // ✅ PATCH /meta.json এ অবজেক্ট পাঠানো বেশি রিলায়াবল
-      await fetch(`${FIREBASE_URL}/sessions/${id}/meta.json`, {
-        method: "PATCH",
+      await fetch(`${FIREBASE_URL}/sessions/${id}/meta/status.json`, {
+        method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ status: "disconnected" })
+        body: JSON.stringify("disconnected"),
+        keepalive: true
       });
-      console.log("✅ meta.status updated to disconnected");
-    } catch (e) { 
-      console.error('❌ Disconnect signal failed:', e); 
+      console.log("✅ meta.status → disconnected");
+    } catch (e) {
+      console.error('❌ Disconnect signal failed:', e);
     }
+
+    // ② তারপর local cleanup
+    if (sseSource) { sseSource.close(); sseSource = null; }
+    if (containerSseSource) { containerSseSource.close(); containerSseSource = null; }
+    await clearContainerState();
 
     showDisconnectedState();
     hideLoading();
@@ -727,6 +830,22 @@ function setupSettings() {
       clearBtn.textContent = '❌ Failed';
       setTimeout(() => { clearBtn.textContent = 'Clear'; clearBtn.disabled = false; }, 2000);
     }
+  });
+}
+
+function setupLoadMore() {
+  const btn = document.getElementById('load-more-btn');
+  if (!btn) return;
+  btn.addEventListener('click', () => loadHistory(true));
+}
+
+function setupSortButton() {
+  const btn = document.getElementById('sort-btn');
+  if (!btn) return;
+  btn.addEventListener('click', () => {
+    sortOrder = sortOrder === 'newest' ? 'oldest' : 'newest';
+    btn.textContent = sortOrder === 'newest' ? 'Newest first ↓' : 'Oldest first ↑';
+    renderHistory();
   });
 }
 
@@ -790,6 +909,8 @@ async function init() {
     setupDisconnect(extension_id);
     setupSearch();
     setupSettings();
+    setupLoadMore();
+    setupSortButton();
     setupAutoRefresh();
 
     // ✅ ৩. কানেকশন চেক & হিস্ট্রি লোড

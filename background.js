@@ -43,6 +43,23 @@ function askContentScript(tabId) {
   });
 }
 
+function isPhoneNumber(text) {
+  const s = text.replace(/[\s\-().]/g, '');
+  if (/^\+\d{7,15}$/.test(s)) return true;
+  if (/^00\d{7,13}$/.test(s)) return true;
+  if (/^\d{10,15}$/.test(s)) return true;
+  if (/^0\d{9,10}$/.test(s)) return true;
+  return false;
+}
+
+function normalizePhoneKey(text) {
+  let s = text.replace(/[\s\-().]/g, '');
+  if (s.startsWith('+')) s = s.slice(1);
+  if (s.startsWith('00')) s = s.slice(2);
+  if (/^0\d{10}$/.test(s)) s = '880' + s.slice(1);
+  return s.replace(/\D/g, '');
+}
+
 async function sendToFirebase(text) {
   if (!text) return;
 
@@ -52,7 +69,7 @@ async function sendToFirebase(text) {
   if (!extension_id) return;
 
   const cleaned = text.replace(/[\s\-()]/g, "");
-  const isPhone = /^(\+?880|0)?1[3-9]\d{8}$/.test(cleaned);
+  const isPhone = isPhoneNumber(text);
   const timestamp = Date.now();
   const itemId = `record_${timestamp}`;
 
