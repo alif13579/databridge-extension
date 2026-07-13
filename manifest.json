@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "DataBridge",
-  "version": "2.0",
+  "version": "2.1",
   "author": "Alif Hossain",
   "description": "Seamless data transfer between platforms.",
   "permissions": [
@@ -9,8 +9,21 @@
     "activeTab",
     "scripting",
     "storage",
-    "notifications"
+    "notifications",
+    "identity"
   ],
+  "host_permissions": [
+    "https://databridgebd-default-rtdb.asia-southeast1.firebasedatabase.app/*",
+    "https://identitytoolkit.googleapis.com/*"
+  ],
+  "oauth2": {
+    "client_id": "757742303355-7lggpq342m98c89ebdg3r8b58kkli4me.apps.googleusercontent.com",
+    "scopes": [
+      "https://www.googleapis.com/auth/userinfo.email",
+      "https://www.googleapis.com/auth/userinfo.profile"
+    ]
+  },
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAxyikLG06Tst49Csnf/4VU89sbXo3Zwdp7IiybGZvyhIeOLC3pVKeEw8YlasUcW5LMj/Xg/Spgbepi7+fMIS8PK768Vu2tYt5j4CRK+jEAlN7teMGsKyXj5P/d6MRuL9SonPH7fllCydopnSwyytPxwfJgMgmJazutaRBNVm+g2IEnmEfxXWIVmURm/vueftlpNDCzCHqAKof4StLCgrDmzxH+voIyIFT7COx1M3br3gT2eqPTXPcPcFUzPzJRe/o21X8vFxzyhvxl66OSN7IXjfHCP7TiR/Sw3DQCZxnsdwOl912rG0yZzusSjHTHvG52sx281FL/xevil+jv6tpYwIDAQAB",
   "background": {
     "service_worker": "background.js"
   },

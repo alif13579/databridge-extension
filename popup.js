@@ -2,6 +2,7 @@
 // 🔧 কনফিগ
 // ══════════════════════════════
 const FIREBASE_URL = CONFIG.FIREBASE_URL;
+const FIREBASE_WEB_API_KEY = CONFIG.FIREBASE_WEB_API_KEY;
 const PAGINATION_LIMIT = CONFIG.PAGINATION_LIMIT || 20;
 
 // ══════════════════════════════
@@ -111,17 +112,12 @@ async function getActivePaths() {
       const metaRes = await fetch(`${FIREBASE_URL}/sessions/${currentExtensionID}/meta.json?cb=${Date.now()}`);
       const meta = await metaRes.json();
       const isConnected = meta?.status === 'connected';
-      if (isConnected && meta?.type === 'permanent' && meta?.user_id) {
-        // Session is live & permanent — derive container
-        currentUserId = meta.user_id;
-        await chrome.storage.local.set({ user_id: currentUserId });
-        if (!currentContainerID) {
-          currentContainerID = `container_${meta.user_id}`;
-          await chrome.storage.local.set({ container_id: currentContainerID });
-          console.log('✅ ContainerID derived:', currentContainerID);
-        }
-      } else if (!isConnected) {
-        // Session is disconnected — wipe container info so history shows nothing from container
+      if (isConnected) {
+        await resolveContainerFromMeta(meta);
+      } else if (!isConnected && !currentGoogleUid) {
+        // Session is disconnected — wipe container info so history shows nothing from
+        // container. Skipped when a Google account is linked, since that container
+        // was derived from Google Sign-In, not this QR session.
         await clearContainerState();
       }
     } catch (e) { console.warn("⚠️ Path resolution skipped:", e); }
@@ -136,6 +132,21 @@ async function getActivePaths() {
     sessionPath: currentExtensionID ? `sessions/${currentExtensionID}/records` : null,
     metaPath: currentExtensionID ? `sessions/${currentExtensionID}/meta` : null
   };
+}
+
+async function resolveContainerFromMeta(meta = {}) {
+  const userId = meta.user_id || meta.uid || meta.userId || null;
+  const containerId = meta.container_id || meta.containerId || (userId ? `container_${userId}` : null);
+
+  if (userId) currentUserId = userId;
+  if (typeof containerId === 'string' && containerId.startsWith('container_')) {
+    currentContainerID = containerId;
+  }
+
+  const updates = {};
+  if (currentUserId) updates.user_id = currentUserId;
+  if (currentContainerID) updates.container_id = currentContainerID;
+  if (Object.keys(updates).length) await chrome.storage.local.set(updates);
 }
 
 // ══════════════════════════════
@@ -618,8 +629,6 @@ async function loadHistory(append = false) {
       console.log('📦 Container fetch status:', res.status, '| data type:', typeof containerData,
         '| keys:', containerData && typeof containerData === 'object' ? Object.keys(containerData).length : containerData);
       absorb(containerData, 'permanent', null);
-    } else {
-      console.warn('⚠️ No historyPath — container not loaded. containerID:', currentContainerID);
     }
 
     // 2. Collect all session IDs to fetch
@@ -670,7 +679,10 @@ function startSessionListener(id) {
       const data = parsed.data;
       const path = parsed.path || '';
       if (data === null || (path === '/' && data === null)) {
-        showDisconnectedState();
+        // An empty/absent sessions/{id} node only means "no QR session exists" — if a
+        // Google account is linked, the container came from that login, not this QR
+        // session, so it should NOT be torn down here.
+        if (!currentGoogleUid) showDisconnectedState();
         return;
       }
       if (path.startsWith('/meta')) {
@@ -678,11 +690,12 @@ function startSessionListener(id) {
         const status = (typeof data === 'object' ? data?.status : null)
                     || (path === '/meta/status' ? data : null);
         if (status === 'disconnected') {
-          showDisconnectedState();
+          if (!currentGoogleUid) showDisconnectedState();
         } else if (status === 'connected') {
           showConnectedState({ meta: typeof data === 'object' ? data : {} });
           // Resolve container then load history
-          await getActivePaths();
+          if (typeof data === 'object') await resolveContainerFromMeta(data);
+          else await getActivePaths();
           await loadHistory(false);
           if (currentContainerID) startContainerListener(currentContainerID);
         }
@@ -718,6 +731,7 @@ function startContainerListener(containerId) {
 // 🔗 কানেকশন স্টেট UI
 // ══════════════════════════════
 function showConnectedState(d) {
+  document.getElementById('screen-google-login')?.classList.remove('active');
   document.getElementById('screen-connect')?.classList.remove('active');
   document.getElementById('screen-connected')?.classList.add('active');
   document.getElementById('status-dot')?.classList.add('connected');
@@ -737,10 +751,19 @@ function showDisconnectedState() {
   clearContainerState(); // wipe container so subsequent loadHistory won't fetch it
   const connectScreen = document.getElementById('screen-connect');
   const connectedScreen = document.getElementById('screen-connected');
+  const googleLoginScreen = document.getElementById('screen-google-login');
   const statusDot = document.getElementById('status-dot');
   const statusName = document.getElementById('status-name');
   if (connectedScreen) connectedScreen.classList.remove('active');
-  if (connectScreen) connectScreen.classList.add('active');
+  // TODO(follow-up): once Google-login-first UX is finalized, decide whether a still-logged-in
+  // user lands back on screen-connect (QR fallback) or a "reconnecting..." variant of the
+  // Google screen instead of always falling back to QR here.
+  if (currentGoogleUid && googleLoginScreen) {
+    googleLoginScreen.classList.remove('active');
+    if (connectScreen) connectScreen.classList.add('active');
+  } else if (connectScreen) {
+    connectScreen.classList.add('active');
+  }
   if (statusDot) statusDot.classList.remove('connected');
   if (statusName) statusName.textContent = 'Guest';
 }
@@ -752,6 +775,7 @@ async function checkConnectionWithFallback(extension_id, retries = 5) {
       const res = await fetch(url);
       const data = await res.json();
       if (data && data.meta && data.meta.status === 'connected') {
+        await resolveContainerFromMeta(data.meta);
         showConnectedState(data);
         return true;
       }
@@ -764,8 +788,150 @@ async function checkConnectionWithFallback(extension_id, retries = 5) {
 
 
 // ══════════════════════════════
-// 🔌 ডিসকানেক্ট (শুধু সিগন্যাল + লোকাল ক্লিনআপ)
+// 🔐 Google Sign-In (cross-connect with Android app via same account)
 // ══════════════════════════════
+//
+// Flow:
+//   1. chrome.identity.getAuthToken() -> Google OAuth access_token (browser-level Google login,
+//      via the "oauth2" block + fixed extension key in manifest.json)
+//   2. Exchange that access_token for a Firebase ID token + UID via the Firebase Auth REST API
+//      (accounts:signInWithIdp) — this is the SAME UID the Android app gets when the user signs
+//      in with Google there, since both resolve through the same Firebase project + Google account.
+//   3. Store google_uid locally and link this extension's session to that UID in Firebase, so the
+//      Android app (already logged in with that UID) can auto-recognize this extension without a
+//      QR scan.
+//   4. Once linked, hide the QR/manual-connect screen — Google login becomes the primary path.
+//      (Logged-out state still falls back to showing screen-connect; wiring that toggle is a
+//      follow-up step.)
+
+let currentGoogleUid = null;
+let currentGoogleEmail = null;
+
+function getGoogleAuthToken(interactive = true) {
+  return new Promise((resolve, reject) => {
+    chrome.identity.getAuthToken({ interactive }, (token) => {
+      if (chrome.runtime.lastError || !token) {
+        reject(chrome.runtime.lastError || new Error('No token returned'));
+        return;
+      }
+      resolve(token);
+    });
+  });
+}
+
+async function exchangeGoogleTokenForFirebaseUid(accessToken) {
+  const res = await fetch(
+    `https://identitytoolkit.googleapis.com/v1/accounts:signInWithIdp?key=${FIREBASE_WEB_API_KEY}`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        postBody: `access_token=${accessToken}&providerId=google.com`,
+        requestUri: 'http://localhost',
+        returnSecureToken: true
+      })
+    }
+  );
+  const data = await res.json();
+  if (!res.ok || !data.localId) {
+    throw new Error(data?.error?.message || 'Firebase sign-in exchange failed');
+  }
+  return { uid: data.localId, email: data.email || '' };
+}
+
+/** Links this extension's session to the signed-in Google/Firebase UID so the Android app
+ *  (logged in with the same account) can recognize it without a QR scan. */
+async function linkExtensionToUid(extensionId, uid, email) {
+  const now = Date.now();
+  await fetch(`${FIREBASE_URL}/sessions/${extensionId}/meta.json`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      google_uid: uid,
+      google_email: email,
+      linked_at: now
+    })
+  });
+  // Mirror under the user's own node too, so the app can discover extensions
+  // the same way it discovers QR-connected ones.
+  await fetch(`${FIREBASE_URL}/users/${uid}/connections/extensions/${extensionId}.json`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(now)
+  });
+}
+
+async function handleGoogleLogin() {
+  const btn = document.getElementById('google-login-btn');
+  if (btn) { btn.disabled = true; btn.textContent = 'Signing in...'; }
+  try {
+    const accessToken = await getGoogleAuthToken(true);
+    const { uid, email } = await exchangeGoogleTokenForFirebaseUid(accessToken);
+    currentGoogleUid = uid;
+    currentGoogleEmail = email;
+    await chrome.storage.local.set({ google_uid: uid, google_email: email });
+
+    if (currentExtensionID) {
+      await linkExtensionToUid(currentExtensionID, uid, email);
+    }
+
+    // A linked account counts as "connected" from the extension's side — the Android app
+    // will pick up the container/session the next time it resolves paths for this UID.
+    currentContainerID = `container_${uid}`;
+    currentUserId = uid;
+    await chrome.storage.local.set({ container_id: currentContainerID, user_id: uid });
+
+    document.getElementById('screen-google-login')?.classList.remove('active');
+    showConnectedState({ meta: { device_info: email || 'Google account' } });
+    // NOTE: getActivePaths() is intentionally NOT called here — it re-derives
+    // containerID from sessions/{extension_id}/meta, which only exists for the
+    // QR-connect flow. Calling it here was clobbering the containerID we just
+    // set above (back to null) whenever no QR session existed yet, which broke
+    // loadHistory() right after Google login.
+    await loadHistory(false);
+    if (currentContainerID) startContainerListener(currentContainerID);
+  } catch (e) {
+    console.error('Google Sign-In failed:', e);
+    if (btn) { btn.textContent = 'Sign in with Google'; btn.disabled = false; }
+    alert('Google Sign-In failed. Please try again.');
+  }
+}
+
+async function restoreGoogleLoginState() {
+  const stored = await new Promise((resolve) =>
+    chrome.storage.local.get(['google_uid', 'google_email'], resolve)
+  );
+  if (stored.google_uid) {
+    currentGoogleUid = stored.google_uid;
+    currentGoogleEmail = stored.google_email || '';
+    document.getElementById('screen-google-login')?.classList.remove('active');
+    return true;
+  }
+  return false;
+}
+
+async function clearGoogleLoginState() {
+  const stored = await new Promise((resolve) =>
+    chrome.storage.local.get(['google_uid'], resolve)
+  );
+  try {
+    const token = await getGoogleAuthToken(false).catch(() => null);
+    if (token) {
+      chrome.identity.removeCachedAuthToken({ token }, () => {});
+    }
+  } catch (_) { /* no cached token — fine */ }
+  currentGoogleUid = null;
+  currentGoogleEmail = null;
+  await chrome.storage.local.remove(['google_uid', 'google_email']);
+}
+
+function setupGoogleLogin() {
+  const btn = document.getElementById('google-login-btn');
+  if (!btn) return;
+  btn.addEventListener('click', handleGoogleLogin);
+}
+
+
 async function setupDisconnect(id) {
   const btn = document.getElementById('disconnect-btn');
   if (!btn) return;
@@ -791,8 +957,16 @@ async function setupDisconnect(id) {
     if (sseSource) { sseSource.close(); sseSource = null; }
     if (containerSseSource) { containerSseSource.close(); containerSseSource = null; }
     await clearContainerState();
+    await clearGoogleLoginState();
+    // Every connection gets a fresh extension ID — old one is dropped so it
+    // can't be reused to reconnect after disconnect (e.g. if it leaked via a
+    // screenshot or shared screen).
+    await new Promise((resolve) => chrome.storage.local.remove(['extension_id'], resolve));
+    currentExtensionID = null;
 
     showDisconnectedState();
+    document.getElementById('screen-google-login')?.classList.add('active');
+    document.getElementById('screen-connect')?.classList.remove('active');
     hideLoading();
     window.close();
 
@@ -898,6 +1072,7 @@ async function init() {
     const extension_id = await getOrCreateExtensionID();
     currentExtensionID = extension_id;
     chrome.action.setBadgeText({ text: '' });
+    chrome.storage.local.set({ unread_count: 0 });
 
     // ✅ ২. UI সেটআপ
     const extIdDisplay = document.getElementById('extension-id-display');
@@ -907,6 +1082,8 @@ async function init() {
     generateQR(extension_id); // ✅ নতুন QR জেনারেট হবে
     setupCopyExtensionID(extension_id);
     setupDisconnect(extension_id);
+    setupGoogleLogin();
+    await restoreGoogleLoginState();
     setupSearch();
     setupSettings();
     setupLoadMore();

@@ -315,6 +315,35 @@ body {
   margin-bottom: 14px;
   line-height: 1.6;
 }
+.google-login-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  width: 100%;
+  padding: 12px;
+  background: #fff;
+  color: #1f1f1f;
+  border: 1px solid #dadce0;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.google-login-btn:hover { background: #f7f7f7; }
+.google-login-btn:disabled { opacity: 0.6; cursor: default; }
+.google-login-btn .google-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #4285F4;
+  color: #fff;
+  font-size: 11px;
+  font-weight: bold;
+}
 .qr-wrapper {
   background: #fff;
   border-radius: 10px;

@@ -1,6 +1,22 @@
 importScripts('config.js');
 const FIREBASE_URL = CONFIG.FIREBASE_URL;
 
+// Restore badge from stored unread count whenever the service worker wakes up
+// (browser restart, extension reload, etc.) so the red badge doesn't disappear.
+function restoreBadge() {
+  chrome.storage.local.get(['unread_count'], (result) => {
+    const count = result.unread_count || 0;
+    if (count > 0) {
+      chrome.action.setBadgeText({ text: count > 99 ? '99+' : String(count) });
+      chrome.action.setBadgeBackgroundColor({ color: '#EF4444' });
+    } else {
+      chrome.action.setBadgeText({ text: '' });
+    }
+  });
+}
+restoreBadge();
+chrome.runtime.onStartup.addListener(restoreBadge);
+
 // Context menu setup
 chrome.runtime.onInstalled.addListener(() => {
   chrome.contextMenus.create({
@@ -115,7 +131,21 @@ async function sendToFirebase(text) {
       message: isPhone ? `📞 ${text}` : `📝 ${text.substring(0, 50)}`
     });
 
+    // ✅ 5. Bump unread badge count
+    incrementUnreadBadge();
+
   } catch (error) {
     console.error("❌ DataBridge Error:", error);
   }
+}
+
+function incrementUnreadBadge() {
+  chrome.storage.local.get(['unread_count'], (result) => {
+    const next = (result.unread_count || 0) + 1;
+    chrome.storage.local.set({ unread_count: next }, () => {
+      chrome.action.setBadgeText({ text: next > 99 ? '99+' : String(next) });
+      chrome.action.setBadgeBackgroundColor({ color: '#EF4444' });
+      chrome.action.setBadgeTextColor?.({ color: '#FFFFFF' });
+    });
+  });
 }
