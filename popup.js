@@ -792,8 +792,11 @@ async function checkConnectionWithFallback(extension_id, retries = 5) {
 // ══════════════════════════════
 //
 // Flow:
-//   1. chrome.identity.getAuthToken() -> Google OAuth access_token (browser-level Google login,
-//      via the "oauth2" block + fixed extension key in manifest.json)
+//   1. chrome.identity.launchWebAuthFlow() -> opens Google's real account-chooser page and
+//      returns a Google OAuth access_token (prompt=select_account forces the chooser even
+//      when only one Google account is signed into Chrome — see getGoogleAuthToken() below
+//      for why this replaced chrome.identity.getAuthToken(), which silently reused Chrome's
+//      already-signed-in profile with no account picker).
 //   2. Exchange that access_token for a Firebase ID token + UID via the Firebase Auth REST API
 //      (accounts:signInWithIdp) — this is the SAME UID the Android app gets when the user signs
 //      in with Google there, since both resolve through the same Firebase project + Google account.
@@ -807,11 +810,39 @@ async function checkConnectionWithFallback(extension_id, retries = 5) {
 let currentGoogleUid = null;
 let currentGoogleEmail = null;
 
+// OAuth client_id — same one registered in manifest.json's oauth2 block (Chrome Extension
+// type). launchWebAuthFlow builds its own OAuth URL manually rather than using that manifest
+// block, since chrome.identity.getAuthToken() (which DOES read the manifest block directly)
+// silently reuses Chrome's already-signed-in browser profile account with no way to force an
+// account chooser — launchWebAuthFlow opens a real accounts.google.com page instead, where
+// prompt=select_account guarantees the chooser shows even for a single-account browser.
+const GOOGLE_OAUTH_CLIENT_ID = '757742303355-7lggpq342m98c89ebdg3r8b58kkli4me.apps.googleusercontent.com';
+const GOOGLE_OAUTH_SCOPES = [
+  'https://www.googleapis.com/auth/userinfo.email',
+  'https://www.googleapis.com/auth/userinfo.profile'
+];
+
 function getGoogleAuthToken(interactive = true) {
   return new Promise((resolve, reject) => {
-    chrome.identity.getAuthToken({ interactive }, (token) => {
-      if (chrome.runtime.lastError || !token) {
-        reject(chrome.runtime.lastError || new Error('No token returned'));
+    const redirectUri = chrome.identity.getRedirectURL();
+    const authUrl = `https://accounts.google.com/o/oauth2/v2/auth` +
+      `?client_id=${encodeURIComponent(GOOGLE_OAUTH_CLIENT_ID)}` +
+      `&response_type=token` +
+      `&redirect_uri=${encodeURIComponent(redirectUri)}` +
+      `&scope=${encodeURIComponent(GOOGLE_OAUTH_SCOPES.join(' '))}` +
+      `&prompt=select_account`;
+
+    chrome.identity.launchWebAuthFlow({ url: authUrl, interactive }, (redirectUrl) => {
+      if (chrome.runtime.lastError || !redirectUrl) {
+        reject(chrome.runtime.lastError || new Error('No redirect URL returned'));
+        return;
+      }
+      // launchWebAuthFlow returns the access_token in the redirect URL's fragment, e.g.
+      // "https://<ext-id>.chromiumapp.org/#access_token=...&token_type=Bearer&expires_in=..."
+      const fragment = redirectUrl.split('#')[1] || '';
+      const token = new URLSearchParams(fragment).get('access_token');
+      if (!token) {
+        reject(new Error('No access_token in redirect URL'));
         return;
       }
       resolve(token);
