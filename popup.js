@@ -867,7 +867,70 @@ async function exchangeGoogleTokenForFirebaseUid(accessToken) {
   if (!res.ok || !data.localId) {
     throw new Error(data?.error?.message || 'Firebase sign-in exchange failed');
   }
-  return { uid: data.localId, email: data.email || '' };
+  // idToken/refreshToken were previously discarded here — without them, every subsequent
+  // fetch() to an authenticated path (users/{uid}/... etc.) had no way to prove who's asking,
+  // even though we already know the uid. Firebase Rules generally require auth != null for
+  // anything under users/, so those writes/reads would silently fail without these.
+  return {
+    uid: data.localId,
+    email: data.email || '',
+    idToken: data.idToken,
+    refreshToken: data.refreshToken,
+    expiresIn: parseInt(data.expiresIn, 10) || 3600
+  };
+}
+
+// In-memory Firebase auth token state — mirrored to chrome.storage.local so it survives
+// popup close/reopen (the popup's JS context is fully torn down every time it closes).
+let currentIdToken = null;
+let currentRefreshToken = null;
+let idTokenExpiresAt = 0; // absolute ms timestamp
+
+/** Exchanges a Firebase refresh_token for a fresh id_token. Firebase ID tokens expire after
+ *  ~1hr, so anything doing authenticated REST calls needs this to keep working without
+ *  forcing the user through Google sign-in again every hour. Google may rotate the
+ *  refresh_token itself on each call — always persist whatever comes back, not just idToken. */
+async function refreshFirebaseIdToken(refreshToken) {
+  const res = await fetch(
+    `https://securetoken.googleapis.com/v1/token?key=${FIREBASE_WEB_API_KEY}`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ grant_type: 'refresh_token', refresh_token: refreshToken }).toString()
+    }
+  );
+  const data = await res.json();
+  if (!res.ok || !data.id_token) {
+    throw new Error(data?.error?.message || 'Token refresh failed');
+  }
+  return {
+    idToken: data.id_token,
+    refreshToken: data.refresh_token,
+    expiresIn: parseInt(data.expires_in, 10) || 3600
+  };
+}
+
+/** Returns a currently-valid Firebase ID token for authenticated REST calls (append as
+ *  ?auth=<token> per Firebase's REST API), transparently refreshing via the stored
+ *  refresh_token if the cached one has expired or is within 5 minutes of expiring. Returns
+ *  null if there's no Google session at all — callers should skip auth (or skip the call
+ *  entirely) in that case, same as before this existed. */
+async function getValidFirebaseIdToken() {
+  if (!currentRefreshToken) return null;
+  const SAFETY_MARGIN_MS = 5 * 60 * 1000;
+  if (currentIdToken && Date.now() < idTokenExpiresAt - SAFETY_MARGIN_MS) {
+    return currentIdToken;
+  }
+  const { idToken, refreshToken, expiresIn } = await refreshFirebaseIdToken(currentRefreshToken);
+  currentIdToken = idToken;
+  currentRefreshToken = refreshToken;
+  idTokenExpiresAt = Date.now() + expiresIn * 1000;
+  await chrome.storage.local.set({
+    google_id_token: currentIdToken,
+    google_refresh_token: currentRefreshToken,
+    google_token_expires_at: idTokenExpiresAt
+  });
+  return currentIdToken;
 }
 
 /** Links this extension's session to the signed-in Google/Firebase UID so the Android app
@@ -883,9 +946,13 @@ async function linkExtensionToUid(extensionId, uid, email) {
       linked_at: now
     })
   });
-  // Mirror under the user's own node too, so the app can discover extensions
-  // the same way it discovers QR-connected ones.
-  await fetch(`${FIREBASE_URL}/users/${uid}/connections/extensions/${extensionId}.json`, {
+  // Mirror under the user's own node too, so the app can discover extensions the same way
+  // it discovers QR-connected ones. Authenticated with ?auth=<idToken> — users/{uid}/... is
+  // expected to require Firebase Auth per this project's security rules (same as every other
+  // users/{uid} read/write the Android app does via the SDK, which attaches auth automatically).
+  const idToken = await getValidFirebaseIdToken().catch(() => null);
+  const authParam = idToken ? `?auth=${idToken}` : '';
+  await fetch(`${FIREBASE_URL}/users/${uid}/connections/extensions/${extensionId}.json${authParam}`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(now)
@@ -897,10 +964,19 @@ async function handleGoogleLogin() {
   if (btn) { btn.disabled = true; btn.textContent = 'Signing in...'; }
   try {
     const accessToken = await getGoogleAuthToken(true);
-    const { uid, email } = await exchangeGoogleTokenForFirebaseUid(accessToken);
+    const { uid, email, idToken, refreshToken, expiresIn } = await exchangeGoogleTokenForFirebaseUid(accessToken);
     currentGoogleUid = uid;
     currentGoogleEmail = email;
-    await chrome.storage.local.set({ google_uid: uid, google_email: email });
+    currentIdToken = idToken;
+    currentRefreshToken = refreshToken;
+    idTokenExpiresAt = Date.now() + expiresIn * 1000;
+    await chrome.storage.local.set({
+      google_uid: uid,
+      google_email: email,
+      google_id_token: currentIdToken,
+      google_refresh_token: currentRefreshToken,
+      google_token_expires_at: idTokenExpiresAt
+    });
 
     if (currentExtensionID) {
       await linkExtensionToUid(currentExtensionID, uid, email);
@@ -930,11 +1006,17 @@ async function handleGoogleLogin() {
 
 async function restoreGoogleLoginState() {
   const stored = await new Promise((resolve) =>
-    chrome.storage.local.get(['google_uid', 'google_email'], resolve)
+    chrome.storage.local.get(
+      ['google_uid', 'google_email', 'google_id_token', 'google_refresh_token', 'google_token_expires_at'],
+      resolve
+    )
   );
   if (stored.google_uid) {
     currentGoogleUid = stored.google_uid;
     currentGoogleEmail = stored.google_email || '';
+    currentIdToken = stored.google_id_token || null;
+    currentRefreshToken = stored.google_refresh_token || null;
+    idTokenExpiresAt = stored.google_token_expires_at || 0;
     document.getElementById('screen-google-login')?.classList.remove('active');
     return true;
   }
@@ -942,18 +1024,20 @@ async function restoreGoogleLoginState() {
 }
 
 async function clearGoogleLoginState() {
-  const stored = await new Promise((resolve) =>
-    chrome.storage.local.get(['google_uid'], resolve)
-  );
-  try {
-    const token = await getGoogleAuthToken(false).catch(() => null);
-    if (token) {
-      chrome.identity.removeCachedAuthToken({ token }, () => {});
-    }
-  } catch (_) { /* no cached token — fine */ }
+  // Previously called getGoogleAuthToken(false) + chrome.identity.removeCachedAuthToken()
+  // here to clear Chrome's cached OAuth token — that only applied to the old
+  // chrome.identity.getAuthToken() approach. Since getGoogleAuthToken() now uses
+  // launchWebAuthFlow() (see account-chooser fix), there's no Chrome-managed token cache to
+  // clear; signing out just means dropping our own stored session state below.
   currentGoogleUid = null;
   currentGoogleEmail = null;
-  await chrome.storage.local.remove(['google_uid', 'google_email']);
+  currentIdToken = null;
+  currentRefreshToken = null;
+  idTokenExpiresAt = 0;
+  await chrome.storage.local.remove([
+    'google_uid', 'google_email',
+    'google_id_token', 'google_refresh_token', 'google_token_expires_at'
+  ]);
 }
 
 function setupGoogleLogin() {

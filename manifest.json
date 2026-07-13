@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "DataBridge",
-  "version": "2.2",
+  "version": "2.3",
   "author": "Alif Hossain",
   "description": "Seamless data transfer between platforms.",
   "permissions": [
@@ -14,7 +14,8 @@
   ],
   "host_permissions": [
     "https://databridgebd-default-rtdb.asia-southeast1.firebasedatabase.app/*",
-    "https://identitytoolkit.googleapis.com/*"
+    "https://identitytoolkit.googleapis.com/*",
+    "https://securetoken.googleapis.com/*"
   ],
   "oauth2": {
     "client_id": "757742303355-7lggpq342m98c89ebdg3r8b58kkli4me.apps.googleusercontent.com",
