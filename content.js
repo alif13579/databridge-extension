@@ -76,6 +76,15 @@ function readSheetsFormulaBarValue() {
   return null;
 }
 
+/** Same idea as readSheetsFormulaBarValue() but for Excel Online — extracted
+ *  so getBestText() can live-read it too, not just the click listener. */
+function readExcelFormulaBarValue() {
+  const el = document.querySelector('[data-automation-id="formulaBarInput"], .formulaBarInput');
+  if (!el) return null;
+  const val = el.value || el.textContent;
+  return val && val.trim() ? val.trim() : null;
+}
+
 function detectCellClick() {
   document.addEventListener('click', (e) => {
     const target = e.target;
@@ -89,14 +98,10 @@ function detectCellClick() {
         return;
       }
 
-      // Excel Online — formula bar
-      const excelFormulaBar = document.querySelector('[data-automation-id="formulaBarInput"], .formulaBarInput');
-      if (excelFormulaBar) {
-        const val = excelFormulaBar.value || excelFormulaBar.textContent;
-        if (val && val.trim()) {
-          lastCellValue = val.trim();
-          return;
-        }
+      const excelVal = readExcelFormulaBarValue();
+      if (excelVal) {
+        lastCellValue = excelVal;
+        return;
       }
 
       // Generic table cell click
@@ -110,14 +115,30 @@ function detectCellClick() {
 
 // ══════════════════════════════
 // Get best text to send
-// priority: selected text > cell value > word under cursor
+// priority: selected text > cell value (live) > cell value (cached from
+// click) > word under cursor
 // ══════════════════════════════
 function getBestText() {
   // ১. Selected text আছে?
   const selected = window.getSelection().toString().trim();
   if (selected) return selected;
 
-  // ২. Cell value আছে?
+  // ২. Cell value — LIVE read at the moment the shortcut fires, before
+  // falling back to whatever detectCellClick's click listener cached.
+  // Matters because a cell can be selected via keyboard navigation (arrow
+  // keys / Tab) without ever firing a click event — detectCellClick() only
+  // listens for clicks, so lastCellValue would stay stale (or empty) for a
+  // keyboard-selected cell. Reading the formula bar directly, right now,
+  // reflects whatever's CURRENTLY selected regardless of how it got
+  // selected, so this is correct for both click and keyboard navigation.
+  const liveSheetsVal = readSheetsFormulaBarValue();
+  if (liveSheetsVal) return liveSheetsVal;
+
+  const liveExcelVal = readExcelFormulaBarValue();
+  if (liveExcelVal) return liveExcelVal;
+
+  // Fallback: cached value from a previous click (e.g. a generic table's
+  // TD/TH, which has no formula bar to live-read from at all).
   if (lastCellValue) {
     const val = lastCellValue;
     lastCellValue = null; // use once
