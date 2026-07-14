@@ -56,13 +56,18 @@ let lastCellValue = null;
  *  screen readers), so this fallback is meant to survive that churn without
  *  needing a code update every time Google restructures the DOM. */
 function readSheetsFormulaBarValue() {
-  const knownSelectors = ['.cell-input', '#t-formula-bar-input', '.waffle-formula-bar-input'];
-  for (const sel of knownSelectors) {
-    const el = document.querySelector(sel);
-    if (el) {
-      const val = el.value ?? el.textContent;
-      if (val && val.trim()) return val.trim();
-    }
+  // IMPORTANT: one combined querySelector call (comma-separated), exactly
+  // like the original working code — this returns whichever of the three
+  // matches FIRST IN DOCUMENT ORDER, not "always prefer .cell-input if it
+  // exists anywhere at all." A sequential per-selector loop (an earlier
+  // version of this function did that) can pick a stale/hidden element
+  // matching an EARLIER selector in the list over the real, currently-active
+  // formula bar matching a LATER one, if Sheets keeps some other element
+  // with that class around in the DOM for unrelated internal reasons.
+  const sheetsFormulaBar = document.querySelector('.cell-input, #t-formula-bar-input, .waffle-formula-bar-input');
+  if (sheetsFormulaBar) {
+    const val = sheetsFormulaBar.value || sheetsFormulaBar.textContent;
+    if (val && val.trim()) return val.trim();
   }
 
   const ariaCandidates = document.querySelectorAll(
