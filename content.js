@@ -48,6 +48,34 @@ function getWordUnderCursor(x, y) {
 // ══════════════════════════════
 let lastCellValue = null;
 
+/** Reads the current formula-bar value. Tries known internal class names
+ *  first (fast path, kept for whichever Sheets version still uses them),
+ *  then falls back to accessibility attributes (aria-label/role) — Google
+ *  changes internal obfuscated class names across releases far more often
+ *  than it changes accessibility labels (those need to stay stable for
+ *  screen readers), so this fallback is meant to survive that churn without
+ *  needing a code update every time Google restructures the DOM. */
+function readSheetsFormulaBarValue() {
+  const knownSelectors = ['.cell-input', '#t-formula-bar-input', '.waffle-formula-bar-input'];
+  for (const sel of knownSelectors) {
+    const el = document.querySelector(sel);
+    if (el) {
+      const val = el.value ?? el.textContent;
+      if (val && val.trim()) return val.trim();
+    }
+  }
+
+  const ariaCandidates = document.querySelectorAll(
+    '[aria-label*="Formula bar" i], [aria-label*="formula" i], [role="textbox"]'
+  );
+  for (const el of ariaCandidates) {
+    const val = el.value ?? el.textContent;
+    if (val && val.trim()) return val.trim();
+  }
+
+  return null;
+}
+
 function detectCellClick() {
   document.addEventListener('click', (e) => {
     const target = e.target;
@@ -55,14 +83,10 @@ function detectCellClick() {
     // Google Sheets — active cell এর formula bar থেকে value নাও
     // Sheets এ cell click হলে formula bar update হয়
     setTimeout(() => {
-      // Google Sheets formula bar
-      const sheetsFormulaBar = document.querySelector('.cell-input, #t-formula-bar-input, .waffle-formula-bar-input');
-      if (sheetsFormulaBar) {
-        const val = sheetsFormulaBar.value || sheetsFormulaBar.textContent;
-        if (val && val.trim()) {
-          lastCellValue = val.trim();
-          return;
-        }
+      const sheetsVal = readSheetsFormulaBarValue();
+      if (sheetsVal) {
+        lastCellValue = sheetsVal;
+        return;
       }
 
       // Excel Online — formula bar
