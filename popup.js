@@ -748,27 +748,39 @@ async function clearContainerState() {
 }
 
 function showDisconnectedState() {
+  // If a Google account is linked, NEVER show the disconnected/Guest/QR view — Google login
+  // is completely independent of the QR pairing session's status. All current call sites
+  // already guard with `if (!currentGoogleUid)` or bypass this function entirely (see
+  // checkConnectionWithFallback()), but checking here too means a future caller forgetting
+  // that guard can't accidentally wipe a valid Google session and bounce the user back to Guest.
+  if (currentGoogleUid) {
+    showConnectedState({ meta: { device_info: currentGoogleEmail || 'Google account' } });
+    return;
+  }
   clearContainerState(); // wipe container so subsequent loadHistory won't fetch it
   const connectScreen = document.getElementById('screen-connect');
   const connectedScreen = document.getElementById('screen-connected');
-  const googleLoginScreen = document.getElementById('screen-google-login');
   const statusDot = document.getElementById('status-dot');
   const statusName = document.getElementById('status-name');
   if (connectedScreen) connectedScreen.classList.remove('active');
-  // TODO(follow-up): once Google-login-first UX is finalized, decide whether a still-logged-in
-  // user lands back on screen-connect (QR fallback) or a "reconnecting..." variant of the
-  // Google screen instead of always falling back to QR here.
-  if (currentGoogleUid && googleLoginScreen) {
-    googleLoginScreen.classList.remove('active');
-    if (connectScreen) connectScreen.classList.add('active');
-  } else if (connectScreen) {
-    connectScreen.classList.add('active');
-  }
+  if (connectScreen) connectScreen.classList.add('active');
   if (statusDot) statusDot.classList.remove('connected');
   if (statusName) statusName.textContent = 'Guest';
 }
 
 async function checkConnectionWithFallback(extension_id, retries = 5) {
+  // A Google-linked session doesn't depend on the QR/sessions/{id} node ever reaching
+  // status "connected" — that's a completely separate pairing mechanism. Previously this
+  // function ONLY checked the QR session and, after failing to see it "connected" here (which
+  // it never will if the user only ever signed in with Google, no QR scan), unconditionally
+  // fell through to showDisconnectedState() — wiping the just-established Google container
+  // and showing "Guest", even though the Google login was perfectly valid. That's exactly why
+  // reopening the popup after a successful Google login showed Guest + the QR screen again.
+  const googleLinked = !!currentGoogleUid;
+  if (googleLinked) {
+    showConnectedState({ meta: { device_info: currentGoogleEmail || 'Google account' } });
+  }
+
   for (let i = 0; i < retries; i++) {
     try {
       const url = `${FIREBASE_URL}/sessions/${extension_id}.json?cb=${Date.now()}`;
@@ -780,8 +792,11 @@ async function checkConnectionWithFallback(extension_id, retries = 5) {
         return true;
       }
     } catch (e) { console.warn(`Poll attempt ${i+1} failed:`, e); }
+    if (googleLinked) break; // already have a valid session — no need to keep retrying/waiting
     await new Promise(r => setTimeout(r, 1000));
   }
+
+  if (googleLinked) return true; // still connected via Google even without a QR session
   showDisconnectedState();
   return false;
 }
