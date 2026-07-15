@@ -792,9 +792,9 @@ async function checkConnectionWithFallback(extension_id, retries = 5) {
 // ══════════════════════════════
 //
 // Flow:
-//   1. chrome.identity.getAuthToken() -> Google OAuth access_token, using Chrome's own signed-in
-//      browser profile account (silent, no account-chooser UI — see the REVERTED-FEATURE note
-//      below for why this doesn't show a picker, and why that's back to being intentional here).
+//   1. chrome.identity.launchWebAuthFlow() -> opens Google's real account-chooser page and
+//      returns a Google OAuth access_token (prompt=select_account forces the chooser even
+//      when only one Google account is signed into Chrome).
 //   2. Exchange that access_token for a Firebase ID token + UID via the Firebase Auth REST API
 //      (accounts:signInWithIdp) — this is the SAME UID the Android app gets when the user signs
 //      in with Google there, since both resolve through the same Firebase project + Google account.
@@ -805,37 +805,52 @@ async function checkConnectionWithFallback(extension_id, retries = 5) {
 //      (Logged-out state still falls back to showing screen-connect; wiring that toggle is a
 //      follow-up step.)
 //
-// REVERTED FEATURE — account chooser (do not redo this without fixing the OAuth client first):
-//   getGoogleAuthToken() briefly used chrome.identity.launchWebAuthFlow() with
-//   prompt=select_account to force a real Google account-chooser page, instead of silently
-//   reusing Chrome's signed-in profile. That broke login entirely with
-//   "Error 400: redirect_uri_mismatch" — launchWebAuthFlow() builds a traditional web OAuth
-//   flow expecting a "Web application"-type OAuth client with the chromiumapp.org redirect URI
-//   explicitly whitelisted in Google Cloud Console. The OAuth client_id (manifest.json's
-//   oauth2 block) is registered
-//   as a "Chrome Extension"-type client (see manifest.json's oauth2 block, added specifically
-//   for chrome.identity.getAuthToken()'s browser-managed flow, which doesn't use redirect_uri
-//   matching at all) — so launchWebAuthFlow() rejected it outright. Reverted to getAuthToken()
-//   to restore working login. Re-adding an account chooser needs a SEPARATE "Web application"
-//   type OAuth client created in Google Cloud Console first, with
-//   https://<this-extension-id>.chromiumapp.org/ added as an authorized redirect URI — only
-//   THAT client_id would work with launchWebAuthFlow().
+// HISTORY — first attempt at this broke login entirely (do not repeat this mistake):
+//   launchWebAuthFlow() needs a "Web application"-type OAuth client with the extension's
+//   chromiumapp.org redirect URI explicitly authorized in Google Cloud Console. The FIRST
+//   attempt reused the existing "Chrome Extension"-type client_id (the one in manifest.json's
+//   oauth2 block, meant for chrome.identity.getAuthToken()'s browser-managed flow, which
+//   doesn't validate redirect_uri at all) — Google's OAuth server rejected that outright with
+//   "Error 400: redirect_uri_mismatch", breaking login completely. Fixed by creating a SEPARATE
+//   "Web application"-type OAuth client (GOOGLE_OAUTH_WEB_CLIENT_ID below) with
+//   https://gnchjfgedcimmpmoheolhajinihcnipb.chromiumapp.org/ authorized as a redirect URI —
+//   that extension ID is deterministic from manifest.json's fixed "key" field, so it won't
+//   change across reloads as long as that key stays the same. Do NOT swap this back to the
+//   Chrome-Extension-type client_id — same failure will recur.
 
 let currentGoogleUid = null;
 let currentGoogleEmail = null;
 
-// Note: the OAuth client_id itself lives only in manifest.json's oauth2 block now —
-// chrome.identity.getAuthToken() reads it from there automatically, so no separate JS constant
-// is needed (unlike the reverted launchWebAuthFlow() attempt, which had to pass it explicitly
-// in a manually-built URL). Registered in Google Cloud Console as a "Chrome Extension" type
-// client — see the REVERTED FEATURE note above for why that type doesn't work with
-// launchWebAuthFlow().
+// "Web application"-type OAuth client, created specifically for launchWebAuthFlow() — separate
+// from the "Chrome Extension"-type client_id in manifest.json's oauth2 block (which is used by
+// chrome.identity.getAuthToken() elsewhere and must NOT be reused here — see HISTORY above).
+const GOOGLE_OAUTH_WEB_CLIENT_ID = '757742303355-qulp4gr95shmh36kj6ugtit15nfss46c.apps.googleusercontent.com';
+const GOOGLE_OAUTH_SCOPES = [
+  'https://www.googleapis.com/auth/userinfo.email',
+  'https://www.googleapis.com/auth/userinfo.profile'
+];
 
 function getGoogleAuthToken(interactive = true) {
   return new Promise((resolve, reject) => {
-    chrome.identity.getAuthToken({ interactive }, (token) => {
-      if (chrome.runtime.lastError || !token) {
-        reject(chrome.runtime.lastError || new Error('No token returned'));
+    const redirectUri = chrome.identity.getRedirectURL();
+    const authUrl = `https://accounts.google.com/o/oauth2/v2/auth` +
+      `?client_id=${encodeURIComponent(GOOGLE_OAUTH_WEB_CLIENT_ID)}` +
+      `&response_type=token` +
+      `&redirect_uri=${encodeURIComponent(redirectUri)}` +
+      `&scope=${encodeURIComponent(GOOGLE_OAUTH_SCOPES.join(' '))}` +
+      `&prompt=select_account`;
+
+    chrome.identity.launchWebAuthFlow({ url: authUrl, interactive }, (redirectUrl) => {
+      if (chrome.runtime.lastError || !redirectUrl) {
+        reject(chrome.runtime.lastError || new Error('No redirect URL returned'));
+        return;
+      }
+      // launchWebAuthFlow returns the access_token in the redirect URL's fragment, e.g.
+      // "https://<ext-id>.chromiumapp.org/#access_token=...&token_type=Bearer&expires_in=..."
+      const fragment = redirectUrl.split('#')[1] || '';
+      const token = new URLSearchParams(fragment).get('access_token');
+      if (!token) {
+        reject(new Error('No access_token in redirect URL'));
         return;
       }
       resolve(token);
@@ -1017,16 +1032,10 @@ async function restoreGoogleLoginState() {
 }
 
 async function clearGoogleLoginState() {
-  // Clear Chrome's cached OAuth token too — getGoogleAuthToken() uses
-  // chrome.identity.getAuthToken() again (see the REVERTED FEATURE note above it), which DOES
-  // cache tokens internally; without this, "signing out" wouldn't actually force a fresh
-  // account/consent check on the next login attempt.
-  try {
-    const token = await getGoogleAuthToken(false).catch(() => null);
-    if (token) {
-      chrome.identity.removeCachedAuthToken({ token }, () => {});
-    }
-  } catch (_) { /* no cached token — fine */ }
+  // No chrome.identity.removeCachedAuthToken() call needed here — that's specific to
+  // chrome.identity.getAuthToken()'s internal token cache, which launchWebAuthFlow() (see
+  // getGoogleAuthToken() above) doesn't use at all. Signing out just means dropping our own
+  // stored session state below.
   currentGoogleUid = null;
   currentGoogleEmail = null;
   currentIdToken = null;
