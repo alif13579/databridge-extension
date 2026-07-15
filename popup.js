@@ -988,6 +988,26 @@ async function handleGoogleLogin() {
   try {
     const accessToken = await getGoogleAuthToken(true);
     const { uid, email, idToken, refreshToken, expiresIn } = await exchangeGoogleTokenForFirebaseUid(accessToken);
+
+    // Conflict check: currentUserId gets set by resolveContainerFromMeta() whenever a QR
+    // session's meta carries a user_id (i.e., this extension is already paired to an Android
+    // app that's logged in with SOME Google account). If that account is DIFFERENT from the
+    // one just signed into here, silently proceeding would switch the active container away
+    // from the paired device's — future data would go to THIS account's container instead,
+    // which the paired device never looks at, with no indication anything changed.
+    if (currentUserId && currentUserId !== uid) {
+      const proceed = confirm(
+        `⚠️ এই extension বর্তমানে অন্য একটি connected device-এর সাথে link করা আছে।\n\n` +
+        `${email} দিয়ে sign in করলে data এখন থেকে সেই device-এর container-এ না গিয়ে এই ` +
+        `Google account-এর নিজস্ব container-এ যাবে — connected device সেটা দেখতে পাবে না।\n\n` +
+        `তবুও continue করবেন?`
+      );
+      if (!proceed) {
+        if (btn) { btn.textContent = 'Sign in with Google'; btn.disabled = false; }
+        return;
+      }
+    }
+
     currentGoogleUid = uid;
     currentGoogleEmail = email;
     currentIdToken = idToken;
