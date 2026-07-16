@@ -1,4 +1,5 @@
 importScripts('config.js');
+importScripts('scanner-module.js'); // 📷 Scanner Module — remove this line to disable
 const FIREBASE_URL = CONFIG.FIREBASE_URL;
 
 // Restore badge from stored unread count whenever the service worker wakes up
