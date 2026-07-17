@@ -402,6 +402,38 @@
     });
   }
 
+  // ── RECONCILE RECEIVED LIST WITH CURRENT PAGE STATUS ─────────────────────
+  // If a previously-received parcel gets reassigned and its status changes,
+  // it should no longer count as received — remove it from the list and
+  // persist, so borders + pending panel stay accurate.
+  function reconcileWithPageState(st) {
+    // Build a quick id→status map from the current DOM
+    const pageStatus = {};
+    parcelRows().forEach(row => {
+      const id = rowId(row);
+      const s  = (rowStatus(row) || '').toLowerCase();
+      if (id) pageStatus[id] = s;
+    });
+
+    const holdBefore   = st.holdReceived.length;
+    const returnBefore = st.returnReceived.length;
+
+    // Keep only IDs that still exist on the page with the correct status
+    st.holdReceived   = st.holdReceived.filter(id =>
+      pageStatus[id] !== undefined && HOLD_VALID.has(pageStatus[id])
+    );
+    st.returnReceived = st.returnReceived.filter(id =>
+      pageStatus[id] !== undefined && RETURN_VALID.has(pageStatus[id])
+    );
+
+    const changed =
+      st.holdReceived.length   !== holdBefore ||
+      st.returnReceived.length !== returnBefore;
+
+    if (changed) persistState(st);
+    return changed;
+  }
+
   // ── SCAN INPUT HANDLER ───────────────────────────────────────────────────
   const listenedInputs = new Set();
   function attachScanListeners(st) {
@@ -471,6 +503,7 @@
     const { holdExpected, returnExpected } = buildExpected();
     appState = initState(holdExpected, returnExpected);
 
+    reconcileWithPageState(appState); // clean stale received IDs on load
     createPanel();
     refreshPanel(appState);
     refreshBorders(appState);
@@ -497,6 +530,7 @@
       if (skip) return;
       clearTimeout(debounce);
       debounce = setTimeout(() => {
+        reconcileWithPageState(appState);
         refreshPanel(appState);
         refreshBorders(appState);
       }, 300);
