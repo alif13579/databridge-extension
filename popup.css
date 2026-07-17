@@ -519,6 +519,38 @@ input:checked + .toggle-slider:before { transform: translateX(14px); }
 }
 .remarks-save-btn:hover { opacity: 0.9; }
 /* ══════════════════════════════
+   🔗 Connected Info Boxes
+   ══════════════════════════════ */
+
+.connected-info-box {
+  background: #16213e;
+  border-radius: 8px;
+  padding: 8px 11px;
+  margin: 6px 10px 0;
+}
+.connected-info-label {
+  font-size: 9px;
+  color: #555;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 4px;
+}
+.connected-info-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.connected-info-value {
+  font-size: 11px;
+  color: #fff;
+  font-family: monospace;
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ══════════════════════════════
    📷 Scan Tab
    ══════════════════════════════ */
 
