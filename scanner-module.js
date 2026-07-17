@@ -1,17 +1,20 @@
 // ═══════════════════════════════════════════════════════════
 // 📷 SCANNER MODULE — Background Handler
 // Receives zebra_scan messages from scanner-content.js,
-// parses the barcode, then saves to:
-//   ① chrome.storage.local  (key: scan_log)
-//   ② Firebase Realtime DB  (scanned/{barcode}/scan_{ts})
+// parses the barcode, then saves to three places:
+//
+//   ① chrome.storage.local  → scan_log (popup display)
+//   ② Firebase: scanned/{barcode}/scan_{ts}  (global index)
+//   ③ Firebase: container/{container_id}/scanned/{barcode}/scan_{ts}
+//      └─ only if container_id exists (user is logged in / connected)
 //
 // BARCODE PARSING RULES:
 //   • If barcode contains '|', take everything BEFORE the last '|'
-//       "DN82692872|120"   →  "DN82692872"
-//       "BKDHSKSJ|230"    →  "BKDHSKSJ"
-//       "A|B|C"           →  "A|B"
+//       "DN82692872|120"  →  "DN82692872"
+//       "BKDHSKSJ|230"   →  "BKDHSKSJ"
+//       "A|B|C"          →  "A|B"
 //   • Always trim leading/trailing whitespace
-//   • Empty result after parsing → skip (don't save)
+//   • Empty result after parsing → skip
 //
 // TO DISABLE: remove importScripts('scanner-module.js') from background.js
 // ═══════════════════════════════════════════════════════════
@@ -48,9 +51,8 @@
     });
   }
 
-  // ── ② Push to Firebase ──────────────────────────────────
-  // Path: scanned / {safeBarcode} / scan_{timestamp}
-  async function pushToFirebase(barcode, timestamp, url, extensionId) {
+  // ── ② + ③ Push to Firebase ──────────────────────────────
+  async function pushToFirebase(barcode, timestamp, url, extensionId, containerId) {
     const safeKey = safeBarcodeKey(barcode);
     const scanKey = `scan_${timestamp}`;
     const payload = {
@@ -58,19 +60,30 @@
       createdAt  : timestamp,
       url        : url
     };
-    try {
-      const res = await fetch(
-        `${CONFIG.FIREBASE_URL}/scanned/${safeKey}/${scanKey}.json`,
-        {
-          method : 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body   : JSON.stringify(payload)
-        }
+
+    const puts = [
+      // ② Global index — always
+      `${CONFIG.FIREBASE_URL}/scanned/${safeKey}/${scanKey}.json`,
+    ];
+
+    // ③ Container mirror — only if user is connected/logged in
+    if (containerId) {
+      puts.push(
+        `${CONFIG.FIREBASE_URL}/container/${containerId}/scanned/${safeKey}/${scanKey}.json`
       );
-      if (!res.ok) console.error('[Scanner] Firebase error:', res.status);
-    } catch (err) {
-      console.error('[Scanner] Firebase push failed:', err);
     }
+
+    await Promise.all(puts.map(url =>
+      fetch(url, {
+        method : 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body   : JSON.stringify(payload)
+      }).then(res => {
+        if (!res.ok) console.error('[Scanner] Firebase error:', res.status, url);
+      }).catch(err => {
+        console.error('[Scanner] Firebase push failed:', err, url);
+      })
+    ));
   }
 
   // ── Message Listener ────────────────────────────────────
@@ -80,12 +93,13 @@
     const barcode = parseBarcode(message.barcode);
     if (!barcode) return; // empty after parsing → skip
 
-    chrome.storage.local.get(['extension_id'], (stored) => {
+    chrome.storage.local.get(['extension_id', 'container_id'], (stored) => {
       const extensionId = stored.extension_id;
+      const containerId = stored.container_id || null;
       const { timestamp, url } = message;
 
       saveLocally(barcode, timestamp, url, extensionId);
-      pushToFirebase(barcode, timestamp, url, extensionId);
+      pushToFirebase(barcode, timestamp, url, extensionId, containerId);
     });
   });
 
