@@ -3,10 +3,19 @@
 //
 // SAVE FLOW:
 //   ① chrome.storage.local → scan_log           (always, for popup)
-//   ② sessions/{ext_id}/scanned/{barcode}/scan_{ts}  (always, temp)
-//   ③ If container_id exists (user connected/logged in):
-//        → container/{id}/scanned/{barcode}/scan_{ts}  (permanent write)
-//        → sessions/{ext_id}/scanned/{barcode}/scan_{ts}  DELETE (cleanup)
+//   ② Firebase: scanned/{barcode}/scan_{ts}     (always, single source of truth)
+//
+// PAYLOAD STRUCTURE:
+//   {
+//     scanned_by   : extension_id,
+//     container_id : container_id | null,   ← null if not logged in
+//     createdAt    : timestamp,
+//     url          : page url
+//   }
+//
+//   → barcode lookup:  scanned/{barcode}
+//   → user filter:     where container_id == "{id}"
+//   → no duplication, no session/container split
 //
 // BARCODE PARSING:
 //   "DN82692872|120"  →  "DN82692872"  (strip from last pipe)
@@ -30,29 +39,14 @@
     return String(barcode).replace(/[.#$[\]/+\s]/g, '_');
   }
 
-  function firebasePut(url, payload) {
-    return fetch(url, {
-      method : 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body   : JSON.stringify(payload)
-    }).then(res => {
-      if (!res.ok) console.error('[Scanner] PUT error:', res.status, url);
-    }).catch(err => console.error('[Scanner] PUT failed:', err, url));
-  }
-
-  function firebaseDelete(url) {
-    return fetch(url, { method: 'DELETE' })
-      .catch(err => console.error('[Scanner] DELETE failed:', err, url));
-  }
-
   // ── ① Save to chrome.storage.local ──────────────────────
   function saveLocally(barcode, timestamp, url, extensionId) {
     const safeKey = safeBarcodeKey(barcode);
     const entry = {
-      barcode    : barcode,
-      scanned_by : extensionId || 'unknown',
-      createdAt  : timestamp,
-      url        : url
+      barcode      : barcode,
+      scanned_by   : extensionId || 'unknown',
+      createdAt    : timestamp,
+      url          : url
     };
     chrome.storage.local.get(['scan_log'], (result) => {
       const log = result.scan_log || {};
@@ -62,30 +56,29 @@
     });
   }
 
-  // ── ② + ③ Push to Firebase ──────────────────────────────
+  // ── ② Push to Firebase (single path) ────────────────────
   async function pushToFirebase(barcode, timestamp, pageUrl, extensionId, containerId) {
-    const safeKey    = safeBarcodeKey(barcode);
-    const scanKey    = `scan_${timestamp}`;
-    const sessionPath =
-      `${CONFIG.FIREBASE_URL}/sessions/${extensionId}/scanned/${safeKey}/${scanKey}.json`;
+    const safeKey = safeBarcodeKey(barcode);
+    const scanKey = `scan_${timestamp}`;
     const payload = {
-      scanned_by : extensionId || 'unknown',
-      createdAt  : timestamp,
-      url        : pageUrl
+      scanned_by   : extensionId || 'unknown',
+      container_id : containerId || null,
+      createdAt    : timestamp,
+      url          : pageUrl
     };
 
-    // ② Always write to session first (temp)
-    await firebasePut(sessionPath, payload);
-
-    if (containerId) {
-      const containerPath =
-        `${CONFIG.FIREBASE_URL}/container/${containerId}/scanned/${safeKey}/${scanKey}.json`;
-
-      // ③a Permanent write to container
-      await firebasePut(containerPath, payload);
-
-      // ③b Cleanup session copy (now redundant)
-      await firebaseDelete(sessionPath);
+    try {
+      const res = await fetch(
+        `${CONFIG.FIREBASE_URL}/scanned/${safeKey}/${scanKey}.json`,
+        {
+          method : 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body   : JSON.stringify(payload)
+        }
+      );
+      if (!res.ok) console.error('[Scanner] Firebase error:', res.status);
+    } catch (err) {
+      console.error('[Scanner] Firebase push failed:', err);
     }
   }
 
