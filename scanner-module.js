@@ -1,64 +1,58 @@
 // ═══════════════════════════════════════════════════════════
 // 📷 SCANNER MODULE — Background Handler
-// Receives zebra_scan messages and saves to Firebase under:
+// Receives zebra_scan messages from scanner-content.js and
+// saves to chrome.storage.local under the key 'scan_log':
 //
-//   scanned/
-//     {barcode}/
-//       scan_{timestamp}/
-//         scanned_by  : extension_id of the scanner
-//         createdAt   : unix ms timestamp
-//         url         : page url where scan happened
+//   scan_log: {
+//     "{safeBarcode}": {
+//       "scan_{timestamp}": {
+//         barcode    : original barcode string
+//         scanned_by : extension_id of the scanner
+//         createdAt  : unix ms timestamp
+//         url        : page url where scan happened
+//       }
+//     }
+//   }
 //
-// Same barcode scanned multiple times → multiple scan_{ts} nodes.
+// Same barcode scanned again → new scan_{ts} node (never overwrites).
+// Firebase sync will be added in a future step.
 //
-// TO DISABLE:  remove importScripts('scanner-module.js') from background.js
+// TO DISABLE: remove importScripts('scanner-module.js') from background.js
 // ═══════════════════════════════════════════════════════════
 
 (function ScannerModule() {
 
-  // Firebase key cannot contain  . # $ [ ] / +
-  // Replace any of these with underscore so the barcode is a safe key.
+  // Firebase key chars that are invalid: . # $ [ ] / + and spaces
+  // Replace with underscore so the barcode is a safe key.
   function safeBarcodeKey(barcode) {
-    return barcode.replace(/[.#$[\]/+]/g, '_');
+    return String(barcode).replace(/[.#$[\]/+\s]/g, '_');
   }
 
-  async function saveScan(message) {
-    // Read the extension's own ID — used as "scanned_by" identifier
-    const { extension_id } = await new Promise(resolve =>
-      chrome.storage.local.get(['extension_id'], resolve)
-    );
+  function saveLocally(message, extensionId) {
+    const safeKey = safeBarcodeKey(message.barcode);
+    const scanKey = `scan_${message.timestamp}`;
 
-    const safeBarcode = safeBarcodeKey(message.barcode);
-    const ts          = message.timestamp;
-
-    const payload = {
-      scanned_by: extension_id || 'unknown',
-      createdAt : ts,
-      url       : message.url
+    const entry = {
+      barcode    : message.barcode,        // original value preserved here
+      scanned_by : extensionId || 'unknown',
+      createdAt  : message.timestamp,
+      url        : message.url
     };
 
-    // PUT creates the node; using timestamp as key means same barcode
-    // scanned again simply adds a sibling node — never overwrites.
-    const firebaseUrl =
-      `${CONFIG.FIREBASE_URL}/scanned/${safeBarcode}/scan_${ts}.json`;
-
-    try {
-      const res = await fetch(firebaseUrl, {
-        method : 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body   : JSON.stringify(payload)
-      });
-      if (!res.ok) console.error('[Scanner] Firebase error:', res.status);
-    } catch (err) {
-      console.error('[Scanner] Network error:', err);
-    }
+    chrome.storage.local.get(['scan_log'], (result) => {
+      const log = result.scan_log || {};
+      if (!log[safeKey]) log[safeKey] = {};
+      log[safeKey][scanKey] = entry;
+      chrome.storage.local.set({ scan_log: log });
+    });
   }
 
   // Listen for messages from scanner-content.js
   chrome.runtime.onMessage.addListener((message) => {
-    if (message.action === 'zebra_scan') {
-      saveScan(message);
-    }
+    if (message.action !== 'zebra_scan') return;
+    chrome.storage.local.get(['extension_id'], (stored) => {
+      saveLocally(message, stored.extension_id);
+    });
   });
 
 })();
