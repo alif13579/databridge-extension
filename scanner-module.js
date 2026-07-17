@@ -1,44 +1,45 @@
 // ═══════════════════════════════════════════════════════════
 // 📷 SCANNER MODULE — Background Handler
-// Receives zebra_scan messages from scanner-content.js and
-// saves to chrome.storage.local under the key 'scan_log':
+// Receives zebra_scan messages from scanner-content.js,
+// parses the barcode, then saves to:
+//   ① chrome.storage.local  (key: scan_log)
+//   ② Firebase Realtime DB  (scanned/{barcode}/scan_{ts})
 //
-//   scan_log: {
-//     "{safeBarcode}": {
-//       "scan_{timestamp}": {
-//         barcode    : original barcode string
-//         scanned_by : extension_id of the scanner
-//         createdAt  : unix ms timestamp
-//         url        : page url where scan happened
-//       }
-//     }
-//   }
-//
-// Same barcode scanned again → new scan_{ts} node (never overwrites).
-// Firebase sync will be added in a future step.
+// BARCODE PARSING RULES:
+//   • If barcode contains '|', take everything BEFORE the last '|'
+//       "DN82692872|120"   →  "DN82692872"
+//       "BKDHSKSJ|230"    →  "BKDHSKSJ"
+//       "A|B|C"           →  "A|B"
+//   • Always trim leading/trailing whitespace
+//   • Empty result after parsing → skip (don't save)
 //
 // TO DISABLE: remove importScripts('scanner-module.js') from background.js
 // ═══════════════════════════════════════════════════════════
 
 (function ScannerModule() {
 
-  // Firebase key chars that are invalid: . # $ [ ] / + and spaces
-  // Replace with underscore so the barcode is a safe key.
+  // ── Barcode Parser ──────────────────────────────────────
+  function parseBarcode(raw) {
+    const lastPipe = raw.lastIndexOf('|');
+    const code = lastPipe !== -1 ? raw.substring(0, lastPipe) : raw;
+    return code.trim();
+  }
+
+  // Firebase key cannot contain . # $ [ ] / + or spaces → replace with _
   function safeBarcodeKey(barcode) {
     return String(barcode).replace(/[.#$[\]/+\s]/g, '_');
   }
 
-  function saveLocally(message, extensionId) {
-    const safeKey = safeBarcodeKey(message.barcode);
-    const scanKey = `scan_${message.timestamp}`;
-
+  // ── ① Save to chrome.storage.local ──────────────────────
+  function saveLocally(barcode, timestamp, url, extensionId) {
+    const safeKey = safeBarcodeKey(barcode);
+    const scanKey = `scan_${timestamp}`;
     const entry = {
-      barcode    : message.barcode,        // original value preserved here
+      barcode    : barcode,
       scanned_by : extensionId || 'unknown',
-      createdAt  : message.timestamp,
-      url        : message.url
+      createdAt  : timestamp,
+      url        : url
     };
-
     chrome.storage.local.get(['scan_log'], (result) => {
       const log = result.scan_log || {};
       if (!log[safeKey]) log[safeKey] = {};
@@ -47,11 +48,44 @@
     });
   }
 
-  // Listen for messages from scanner-content.js
+  // ── ② Push to Firebase ──────────────────────────────────
+  // Path: scanned / {safeBarcode} / scan_{timestamp}
+  async function pushToFirebase(barcode, timestamp, url, extensionId) {
+    const safeKey = safeBarcodeKey(barcode);
+    const scanKey = `scan_${timestamp}`;
+    const payload = {
+      scanned_by : extensionId || 'unknown',
+      createdAt  : timestamp,
+      url        : url
+    };
+    try {
+      const res = await fetch(
+        `${CONFIG.FIREBASE_URL}/scanned/${safeKey}/${scanKey}.json`,
+        {
+          method : 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body   : JSON.stringify(payload)
+        }
+      );
+      if (!res.ok) console.error('[Scanner] Firebase error:', res.status);
+    } catch (err) {
+      console.error('[Scanner] Firebase push failed:', err);
+    }
+  }
+
+  // ── Message Listener ────────────────────────────────────
   chrome.runtime.onMessage.addListener((message) => {
     if (message.action !== 'zebra_scan') return;
+
+    const barcode = parseBarcode(message.barcode);
+    if (!barcode) return; // empty after parsing → skip
+
     chrome.storage.local.get(['extension_id'], (stored) => {
-      saveLocally(message, stored.extension_id);
+      const extensionId = stored.extension_id;
+      const { timestamp, url } = message;
+
+      saveLocally(barcode, timestamp, url, extensionId);
+      pushToFirebase(barcode, timestamp, url, extensionId);
     });
   });
 
