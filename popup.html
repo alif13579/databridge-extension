@@ -22,10 +22,12 @@
 
   <div class="bottom-nav">
     <div class="nav-item active" id="nav-history"><span class="nav-icon">📋</span>History</div>
+    <div class="nav-item" id="nav-scan"><span class="nav-icon">📷</span>Scan</div>
     <div class="nav-item" id="nav-connect"><span class="nav-icon">🔗</span>Connect</div>
     <div class="nav-item" id="nav-settings"><span class="nav-icon">⚙️</span>Settings</div>
   </div>
 
+  <!-- ── History Tab ── -->
   <div class="tab-content active" id="tab-history">
     <div class="search-bar">
       <span class="search-icon">🔍</span>
@@ -43,6 +45,25 @@
     </div>
   </div>
 
+  <!-- ── Scan Tab ── -->
+  <div class="tab-content" id="tab-scan">
+    <div class="search-bar">
+      <span class="search-icon">🔍</span>
+      <input type="text" id="scan-search-input" placeholder="Search barcodes...">
+    </div>
+    <div class="sort-bar">
+      <span class="sort-label">Scan Log</span>
+      <span class="scan-count-badge" id="scan-count-badge">0 records</span>
+    </div>
+    <div class="scan-list" id="scan-list">
+      <div class="empty-state">No scans yet.<br>Scan a barcode in any tab!</div>
+    </div>
+    <div class="scan-clear-wrap">
+      <button class="danger-btn" id="clear-scan-btn">🗑 Clear all scans</button>
+    </div>
+  </div>
+
+  <!-- ── Connect Tab ── -->
   <div class="tab-content" id="tab-connect">
     <div class="screen active" id="screen-google-login">
       <div class="connect-title">
@@ -78,6 +99,7 @@
     </div>
   </div>
 
+  <!-- ── Settings Tab ── -->
   <div class="tab-content" id="tab-settings">
     <div class="settings-section">
       <div class="settings-label">Notifications</div>
