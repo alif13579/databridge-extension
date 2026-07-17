@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "DataBridge",
-  "version": "2.12",
+  "version": "2.13",
   "author": "Alif Hossain",
   "description": "Seamless data transfer between platforms.",
   "permissions": [
@@ -39,7 +39,7 @@
       "run_at": "document_idle"
     },
     {
-      "matches": ["https://www.abc.com/scans*"],
+      "matches": ["https://hermes.pathaointernal.com/run-routes/*"],
       "js": ["scan-receive-helper.js"]
     }
   ],

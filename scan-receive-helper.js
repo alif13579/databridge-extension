@@ -1,73 +1,94 @@
 // ══════════════════════════════════════════════════════════════════════════
-// Scan/Receive Helper — runs ONLY on the run-close/return-receive page
-// (matches entry in manifest.json — currently a PLACEHOLDER domain,
-// "https://www.abc.com/scans*" — swap for the real URL once known).
+// Scan/Receive Helper — runs on the Hermes run-close / return-receive page
+// (https://hermes.pathaointernal.com/run-routes/*)
 //
 // Problem this solves: when a run closes, an agent's returned (undelivered)
 // parcels get scanned one by one into a sidebar input to "receive" them.
 // Scanned parcels never got visually distinguished in the main parcel list,
-// so anything the agent DIDN'T scan (meaning: claimed delivered but maybe
+// so anything the agent DIDN'T scan (claimed delivered/handled but maybe
 // wasn't) had to be found by manually diffing the scanned list against the
 // full parcel list.
 //
-// Feature A — Duplicate-ID highlighter (no page selectors needed):
-//   Scans all text on the page for exactly-N-digit tokens (consignment IDs),
-//   counts how many times each value appears anywhere on the page. A value
-//   appearing 2+ times (once in the scan sidebar, once in the main list) gets
-//   BOTH occurrences highlighted. A value appearing only once (only in the
-//   main list, never scanned) stays unhighlighted — that's the "unreceived"
-//   flag staff are hunting for today by hand.
+// Feature A — Reconciliation highlighter:
+//   For every parcel row in the main list whose status is On Hold / Return /
+//   DRTO / Partial / Exchange, check whether its consignment ID has been
+//   scanned into either sidebar panel (#onHoldConsId or #returnConsId).
+//     - Scanned  -> ID highlighted GREEN in the main list (reconciled).
+//     - Not yet scanned -> ID highlighted RED in the main list (still
+//       needs to be handed over / scanned before Close Run).
 //
-// Feature B — Status popup on scan (best-effort without selectors today):
-//   When the agent types/scans an N-digit value into an input and presses
-//   Enter, look up that same value elsewhere on the page, walk up from it to
-//   find the smallest container that also holds one of the KNOWN_STATUSES
-//   strings, and show a small popup with that status. Matching is by KNOWN
-//   STATUS TEXT CONTENT rather than a CSS selector, specifically so this
-//   keeps working even before real id/class selectors are provided — once
-//   they are (tomorrow, per plan), swap the TODOs below for exact selectors
-//   to make both features faster and more precise.
+// Feature B — Status popup on scan:
+//   When the agent scans/types a consignment ID into either sidebar input
+//   and presses Enter, look up that same row in the main parcel list and
+//   show a small popup confirming its status badge (e.g. "On Hold",
+//   "Return Requested"). Quick sanity check that the scanned parcel matches
+//   what the system expects.
+//
+// Selectors below were taken directly from the live page's DOM (2026-07).
+// If Hermes changes its markup/CSS framework, these will need updating —
+// they are the single source of truth for "where things live" and are
+// kept at the top so future fixes only touch this block.
 // ══════════════════════════════════════════════════════════════════════════
 
 (function () {
   'use strict';
 
-  // ── CONFIG — tune these without touching the logic below ──────────────
-  const ID_DIGIT_LENGTH = 12;              // consignment ID length to match
-  const KNOWN_STATUSES = [                 // exact strings as they appear on the page
-    'Hold', 'Delivered', 'Pending', 'Verify Req', 'Return Req',
-    'Rejected', 'Confirmed', 'Delivery Req'
-  ];
-  const RESCAN_DEBOUNCE_MS = 250;          // wait this long after DOM stops changing
+  // ── CONFIG ──────────────────────────────────────────────────────────────
+  const HOLD_INPUT_ID = 'onHoldConsId';
+  const RETURN_INPUT_ID = 'returnConsId';
+
+  // Panel container that wraps each scan input + its growing list of
+  // scanned rows. Works for both panels even though onHoldConsId sits one
+  // level shallower in the DOM than returnConsId (closest() handles both).
+  const PANEL_SELECTOR = '.w-full.border.rounded.p-2.pb-4';
+
+  // A scanned-row that has landed in a panel, e.g.:
+  //   <div class="w-full flex flex-row items-center justify-between my-2">
+  //     <div>DO140726NMLFBM</div><div>780</div>
+  //   </div>
+  const SCANNED_ROW_SELECTOR = ':scope > div.my-2';
+
+  // Each parcel in the main list is a `.pt-list-item`. NOTE: the Summary
+  // table at the bottom of the same sidebar also uses `.pt-list-item` for
+  // its rows, so we disambiguate by requiring a `.w-1/6` child column,
+  // which only the real parcel rows have (summary rows use `.w-1/3`).
+  const PARCEL_ROW_SELECTOR = '.pt-list-item';
+  const PARCEL_ROW_DATA_COLUMN = '.w-1\\/6'; // first w-1/6 column = ID/status/amount
+
+  // Consignment IDs seen on this page are 14-char uppercase alphanumeric
+  // tokens (e.g. DM140726KBM449, DS1407269VVA3A) — letter/digit mix varies
+  // internally, so we match on length + "has both a letter and a digit"
+  // rather than a fixed letter/digit position count.
+  const ID_REGEX = /\b(?=[A-Z0-9]*[0-9])(?=[A-Z0-9]*[A-Z])[A-Z0-9]{14}\b/;
+
+  // Only these statuses are part of the hold/return reconciliation flow —
+  // other rows (Delivered, Pending, etc.) are left alone.
+  const RECONCILE_STATUS_PATTERN = /HOLD|RETURN|DRTO|PARTIAL|EXCHANGE/i;
+
+  const RESCAN_DEBOUNCE_MS = 250;
   const STATUS_POPUP_DURATION_MS = 4000;
-  const MAX_WALK_UP_LEVELS = 8;            // cap ancestor search for Feature B's container
-
-  // TODO (fill in once selectors are provided):
-  // const SCAN_INPUT_SELECTOR = '#sidebar-scan-input';   // narrows Feature B's Enter-key listener
-  // const PARCEL_LIST_SELECTOR = '.parcel-list-item';    // narrows Feature A's scan scope
-  // Until then, Feature A scans document.body globally, and Feature B listens
-  // for Enter on ANY text input on the page (filtered to N-digit values).
-
-  const ID_PATTERN = new RegExp(`(?<!\\d)(\\d{${ID_DIGIT_LENGTH}})(?!\\d)`, 'g');
 
   // ══════════════════════════════
-  // Feature A — Duplicate-ID highlighter
+  // Styles
   // ══════════════════════════════
 
-  const HIGHLIGHT_CLASS = 'db-scan-match';
-  const HIGHLIGHT_TAG = 'MARK';
-
-  function injectHighlightStyle() {
+  function injectStyle() {
     if (document.getElementById('db-scan-helper-style')) return;
     const style = document.createElement('style');
     style.id = 'db-scan-helper-style';
     style.textContent = `
-      mark.${HIGHLIGHT_CLASS} {
-        background-color: #ffe066 !important;
-        color: #1a1a1a !important;
+      .db-scan-matched, .db-scan-missing {
         border-radius: 3px;
-        padding: 0 2px;
-        font-weight: 600;
+        padding: 0 4px;
+        font-weight: 700;
+      }
+      .db-scan-matched {
+        background-color: #d3f9d8 !important;
+        color: #1a7a2e !important;
+      }
+      .db-scan-missing {
+        background-color: #ffe3e3 !important;
+        color: #c92a2a !important;
       }
       .db-scan-status-popup {
         position: fixed;
@@ -97,78 +118,71 @@
     document.head.appendChild(style);
   }
 
-  /** Removes all previous highlight wrapping, restoring plain text nodes —
-   *  simplest way to stay correct as values dynamically appear/disappear
-   *  from the scanned sidebar (rather than trying to diff incrementally). */
-  function unwrapPreviousHighlights(root) {
-    root.querySelectorAll(`${HIGHLIGHT_TAG}.${HIGHLIGHT_CLASS}`).forEach((mark) => {
-      const parent = mark.parentNode;
-      if (!parent) return;
-      parent.replaceChild(document.createTextNode(mark.textContent), mark);
-      parent.normalize();
+  // ══════════════════════════════
+  // DOM readers
+  // ══════════════════════════════
+
+  /** All real parcel rows in the main list (summary-table rows excluded). */
+  function getParcelRows() {
+    return [...document.querySelectorAll(PARCEL_ROW_SELECTOR)].filter((row) =>
+      row.querySelector(PARCEL_ROW_DATA_COLUMN)
+    );
+  }
+
+  /** The element holding the plain-text consignment ID inside a parcel row. */
+  function getRowIdElement(row) {
+    const col = row.querySelector(PARCEL_ROW_DATA_COLUMN);
+    return col ? col.querySelector('.flex-1') : null;
+  }
+
+  /** The row's status badge text, e.g. "On Hold", "Return Requested". */
+  function getRowStatus(row) {
+    const badge = row.querySelector('.pt-label-btn');
+    return badge ? badge.textContent.trim() : null;
+  }
+
+  /** Set of consignment IDs currently scanned into a given panel. */
+  function getScannedIds(inputId) {
+    const input = document.getElementById(inputId);
+    const panel = input && input.closest(PANEL_SELECTOR);
+    const ids = new Set();
+    if (!panel) return ids;
+    panel.querySelectorAll(SCANNED_ROW_SELECTOR).forEach((row) => {
+      const idDiv = row.querySelector('div');
+      const text = idDiv && idDiv.textContent.trim();
+      if (text) ids.add(text);
+    });
+    return ids;
+  }
+
+  // ══════════════════════════════
+  // Feature A — Reconciliation highlighter
+  // ══════════════════════════════
+
+  function clearHighlights() {
+    document.querySelectorAll('.db-scan-matched, .db-scan-missing').forEach((el) => {
+      el.classList.remove('db-scan-matched', 'db-scan-missing');
     });
   }
 
-  /** Walks all text nodes under root, returns [{node, matches: [{index, value}]}] */
-  function findIdMatchesInTextNodes(root) {
-    const results = [];
-    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
-      acceptNode(node) {
-        // Skip script/style contents and our own popup/highlight artifacts
-        const tag = node.parentElement && node.parentElement.tagName;
-        if (tag === 'SCRIPT' || tag === 'STYLE') return NodeFilter.FILTER_REJECT;
-        if (node.parentElement && node.parentElement.closest('.db-scan-status-popup')) {
-          return NodeFilter.FILTER_REJECT;
-        }
-        return NodeFilter.FILTER_ACCEPT;
-      }
-    });
-    let node;
-    while ((node = walker.nextNode())) {
-      const text = node.textContent;
-      if (!text || text.length < ID_DIGIT_LENGTH) continue;
-      const matches = [...text.matchAll(ID_PATTERN)];
-      if (matches.length) results.push({ node, matches });
-    }
-    return results;
-  }
+  function runReconciliation() {
+    clearHighlights();
 
-  function wrapMatchInTextNode(textNode, index, length) {
-    const range = document.createRange();
-    range.setStart(textNode, index);
-    range.setEnd(textNode, index + length);
-    const mark = document.createElement(HIGHLIGHT_TAG);
-    mark.className = HIGHLIGHT_CLASS;
-    try {
-      range.surroundContents(mark);
-    } catch (e) {
-      // surroundContents can throw if the range crosses element boundaries —
-      // shouldn't happen for a plain text-node range, but guard anyway.
-    }
-  }
+    const scannedIds = new Set([
+      ...getScannedIds(HOLD_INPUT_ID),
+      ...getScannedIds(RETURN_INPUT_ID),
+    ]);
 
-  function runDuplicateHighlighter() {
-    unwrapPreviousHighlights(document.body);
+    getParcelRows().forEach((row) => {
+      const status = getRowStatus(row) || '';
+      if (!RECONCILE_STATUS_PATTERN.test(status)) return; // not part of this flow
 
-    const found = findIdMatchesInTextNodes(document.body);
+      const idEl = getRowIdElement(row);
+      if (!idEl) return;
+      const id = idEl.textContent.trim();
+      if (!ID_REGEX.test(id)) return;
 
-    // Count occurrences of each ID value across the whole page.
-    const counts = new Map();
-    found.forEach(({ matches }) => {
-      matches.forEach(({ 1: value }) => {
-        counts.set(value, (counts.get(value) || 0) + 1);
-      });
-    });
-
-    // Wrap matches for any value seen 2+ times. Process each text node's
-    // matches back-to-front so earlier offsets aren't invalidated by
-    // wrapping later ones first.
-    found.forEach(({ node, matches }) => {
-      const toWrap = matches.filter((m) => counts.get(m[1]) >= 2);
-      for (let i = toWrap.length - 1; i >= 0; i--) {
-        const m = toWrap[i];
-        wrapMatchInTextNode(node, m.index, m[0].length);
-      }
+      idEl.classList.add(scannedIds.has(id) ? 'db-scan-matched' : 'db-scan-missing');
     });
   }
 
@@ -189,69 +203,36 @@
     }, STATUS_POPUP_DURATION_MS);
   }
 
-  /** Given an element containing a matched ID, walks up the DOM to find the
-   *  smallest ancestor whose text also contains one of KNOWN_STATUSES —
-   *  matched by STATUS TEXT CONTENT, not a selector, so this keeps working
-   *  without knowing the page's real card/row structure. */
-  function findStatusNearElement(el) {
-    let current = el;
-    for (let depth = 0; depth < MAX_WALK_UP_LEVELS && current; depth++) {
-      const text = current.textContent || '';
-      const status = KNOWN_STATUSES.find((s) => text.includes(s));
-      if (status) return status;
-      current = current.parentElement;
-    }
-    return null;
-  }
-
-  /** Finds the element containing a plain-text occurrence of `value`
-   *  elsewhere on the page (excluding the input the agent just typed into),
-   *  used to look up that consignment's status in the main list. */
-  function findElementContainingValue(value) {
-    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, {
-      acceptNode(node) {
-        const tag = node.parentElement && node.parentElement.tagName;
-        if (tag === 'SCRIPT' || tag === 'STYLE' || tag === 'INPUT' || tag === 'TEXTAREA') {
-          return NodeFilter.FILTER_REJECT;
-        }
-        if (node.parentElement && node.parentElement.closest('.db-scan-status-popup')) {
-          return NodeFilter.FILTER_REJECT;
-        }
-        return node.textContent.includes(value) ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_SKIP;
-      }
+  function findRowById(id) {
+    return getParcelRows().find((row) => {
+      const idEl = getRowIdElement(row);
+      return idEl && idEl.textContent.trim() === id;
     });
-    const node = walker.nextNode();
-    return node ? node.parentElement : null;
   }
 
-  function handlePossibleScanSubmit(inputEl) {
-    const raw = (inputEl.value || '').trim();
-    const match = raw.match(new RegExp(`^(\\d{${ID_DIGIT_LENGTH}})$`));
-    if (!match) return; // not an N-digit scan — ignore (could be a search box etc.)
-    const consignmentId = match[1];
+  function handleScanSubmit(inputEl) {
+    const raw = (inputEl.value || '').trim().toUpperCase();
+    if (!ID_REGEX.test(raw)) return; // not a recognizable consignment ID
 
     // Small delay so the page's own JS has time to add the item to the
-    // scanned-list sidebar (and Feature A's next MutationObserver pass has
-    // time to run) before we look up its status in the main list.
+    // panel's scanned list (and our next debounced rescan can pick it up)
+    // before we look up its status in the main list.
     setTimeout(() => {
-      const el = findElementContainingValue(consignmentId);
-      if (!el) return;
-      const status = findStatusNearElement(el);
-      if (status) showStatusPopup(consignmentId, status);
+      const row = findRowById(raw);
+      const status = row && getRowStatus(row);
+      if (status) showStatusPopup(raw, status);
+      runReconciliation();
     }, 300);
   }
 
-  function setupScanInputListener() {
-    // TODO: once SCAN_INPUT_SELECTOR is known, listen on that element
-    // directly instead of delegating from document — narrower, faster,
-    // and avoids any chance of matching an unrelated input on the page.
-    document.addEventListener('keydown', (e) => {
-      if (e.key !== 'Enter') return;
-      const target = e.target;
-      if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA')) {
-        handlePossibleScanSubmit(target);
-      }
-    }, true);
+  function setupScanInputListeners() {
+    [HOLD_INPUT_ID, RETURN_INPUT_ID].forEach((id) => {
+      const input = document.getElementById(id);
+      if (!input) return;
+      input.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') handleScanSubmit(input);
+      });
+    });
   }
 
   // ══════════════════════════════
@@ -261,27 +242,30 @@
   let debounceTimer = null;
   function scheduleRescan() {
     clearTimeout(debounceTimer);
-    debounceTimer = setTimeout(runDuplicateHighlighter, RESCAN_DEBOUNCE_MS);
+    debounceTimer = setTimeout(runReconciliation, RESCAN_DEBOUNCE_MS);
   }
 
   function init() {
-    injectHighlightStyle();
-    setupScanInputListener();
-    runDuplicateHighlighter();
+    injectStyle();
+    setupScanInputListeners();
+    runReconciliation();
 
     const observer = new MutationObserver((mutations) => {
-      // Ignore mutations that are ONLY our own highlight marks / popup being
-      // added-removed, to avoid an infinite observe -> rescan -> mutate loop.
       const relevant = mutations.some((m) => {
         const nodes = [...m.addedNodes, ...m.removedNodes];
         return nodes.some((n) => {
-          if (n.nodeType !== Node.ELEMENT_NODE) return true; // text changes etc. are relevant
-          return !(n.classList && (n.classList.contains(HIGHLIGHT_CLASS) || n.classList.contains('db-scan-status-popup')));
+          if (n.nodeType !== Node.ELEMENT_NODE) return true;
+          return !(n.classList && n.classList.contains('db-scan-status-popup'));
         });
       });
       if (relevant) scheduleRescan();
     });
     observer.observe(document.body, { childList: true, subtree: true, characterData: true });
+
+    // Scan inputs may not exist yet on first paint if the drawer opens
+    // after an async load — retry listener setup a couple of times.
+    setTimeout(setupScanInputListeners, 1000);
+    setTimeout(setupScanInputListeners, 3000);
   }
 
   if (document.readyState === 'loading') {
