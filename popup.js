@@ -740,6 +740,15 @@ function showConnectedState(d) {
   document.getElementById('status-name').textContent = n;
   document.getElementById('agent-name').textContent = n;
   document.getElementById('agent-avatar').textContent = n.charAt(0).toUpperCase();
+
+  // Extension ID
+  const extEl = document.getElementById('connected-ext-id');
+  if (extEl && currentExtensionID) extEl.textContent = currentExtensionID;
+
+  // UID — container থাকলে সেটা, না হলে Google UID
+  const uidEl = document.getElementById('connected-uid');
+  if (uidEl) uidEl.textContent = currentContainerID || currentGoogleUid || '—';
+
   switchTab('history');
 }
 async function clearContainerState() {
@@ -1247,6 +1256,7 @@ async function init() {
     setupLoadMore();
     setupSortButton();
     setupScanTab(); // 📷 Scanner tab
+    setupConnectedInfoCopy();
     setupAutoRefresh();
 
     // ✅ ৩. কানেকশন চেক & হিস্ট্রি লোড
@@ -1265,6 +1275,26 @@ async function init() {
     hideLoading();
   }
 }
+
+// ══════════════════════════════
+// 🔗 Connected Screen — ID copy buttons
+// ══════════════════════════════
+function setupConnectedInfoCopy() {
+  function makeCopyBtn(btnId, valueId) {
+    const btn = document.getElementById(btnId);
+    if (!btn) return;
+    btn.addEventListener('click', () => {
+      const val = document.getElementById(valueId)?.textContent?.trim();
+      if (!val || val === '—') return;
+      navigator.clipboard.writeText(val);
+      btn.textContent = '✅';
+      setTimeout(() => { btn.textContent = '📋'; }, 1500);
+    });
+  }
+  makeCopyBtn('copy-connected-ext-btn', 'connected-ext-id');
+  makeCopyBtn('copy-connected-uid-btn', 'connected-uid');
+}
+
 
 // ══════════════════════════════
 // 📷 Scan Tab — Local Storage
