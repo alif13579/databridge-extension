@@ -196,6 +196,15 @@
       .db-row-received { border-left: 4px solid #22c55e !important; background: #f0fdf4 !important; }
       .db-row-pending  { border-left: 4px solid #ef4444 !important; background: #fff5f5 !important; }
 
+      /* Tick mark */
+      .db-tick {
+        display: inline-flex; align-items: center; justify-content: center;
+        background: #22c55e; color: #fff; border-radius: 4px;
+        font-size: 10px; font-weight: 700; line-height: 1;
+        padding: 2px 5px; margin-left: 6px; vertical-align: middle;
+        white-space: nowrap; letter-spacing: .2px;
+      }
+
       /* Toast */
       .db-toast {
         position: fixed; top: 20px; right: 20px; z-index: 2147483647;
@@ -395,10 +404,26 @@
     const received = new Set([...st.holdReceived, ...st.returnReceived]);
     const expected = new Set([...st.holdExpected, ...st.returnExpected]);
     parcelRows().forEach(row => {
-      const id = rowId(row);
+      const id   = rowId(row);
+      const idEl = rowIdEl(row);
       row.classList.remove('db-row-received', 'db-row-pending');
+
+      // Remove any previously injected tick
+      if (idEl) idEl.querySelectorAll('.db-tick').forEach(e => e.remove());
+
       if (!expected.has(id)) return;
-      row.classList.add(received.has(id) ? 'db-row-received' : 'db-row-pending');
+
+      if (received.has(id)) {
+        row.classList.add('db-row-received');
+        if (idEl) {
+          const tick = document.createElement('span');
+          tick.className = 'db-tick';
+          tick.textContent = '\u2713 Received';
+          idEl.appendChild(tick);
+        }
+      } else {
+        row.classList.add('db-row-pending');
+      }
     });
   }
 
