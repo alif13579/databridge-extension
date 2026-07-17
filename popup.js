@@ -82,11 +82,12 @@ function switchTab(tab) {
   if (navEl) navEl.classList.add('active');
 }
 function setupNavigation() {
-  ['history', 'connect', 'settings'].forEach(tab => {
+  ['history', 'scan', 'connect', 'settings'].forEach(tab => {
     const el = document.getElementById(`nav-${tab}`);
     if (el) el.addEventListener('click', () => {
       switchTab(tab);
       if (tab === 'history' && isInitialized) loadHistory(false);
+      if (tab === 'scan') loadScanHistory();
     });
   });
 }
@@ -1245,6 +1246,7 @@ async function init() {
     setupSettings();
     setupLoadMore();
     setupSortButton();
+    setupScanTab(); // 📷 Scanner tab
     setupAutoRefresh();
 
     // ✅ ৩. কানেকশন চেক & হিস্ট্রি লোড
@@ -1261,6 +1263,146 @@ async function init() {
     showDisconnectedState();
   } finally {
     hideLoading();
+  }
+}
+
+// ══════════════════════════════
+// 📷 Scan Tab — Local Storage
+// ══════════════════════════════
+let scanItems = [];
+let scanSearchQuery = '';
+
+function scanExactTime(timestamp) {
+  if (!timestamp) return '—';
+  const d = new Date(timestamp);
+  const time = d.toLocaleTimeString('en-US', {
+    hour  : 'numeric',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: true
+  });
+  const date = d.toLocaleDateString('en-US', {
+    day  : 'numeric',
+    month: 'short',
+    year : 'numeric'
+  });
+  return `${time} · ${date}`;
+}
+
+function loadScanHistory() {
+  chrome.storage.local.get(['scan_log'], (result) => {
+    const log = result.scan_log || {};
+    const flat = [];
+    Object.entries(log).forEach(([barcodeKey, scans]) => {
+      Object.entries(scans).forEach(([scanKey, data]) => {
+        let hostname = '—';
+        try { hostname = new URL(data.url).hostname; } catch (e) {}
+        flat.push({
+          barcodeKey,
+          scanKey,
+          barcode   : data.barcode || barcodeKey,
+          scanned_by: data.scanned_by,
+          createdAt : data.createdAt,
+          url       : data.url,
+          hostname
+        });
+      });
+    });
+    flat.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+    scanItems = flat;
+    renderScanList();
+    const badge = document.getElementById('scan-count-badge');
+    if (badge) badge.textContent = `${flat.length} record${flat.length !== 1 ? 's' : ''}`;
+  });
+}
+
+function renderScanList() {
+  const list = document.getElementById('scan-list');
+  if (!list) return;
+
+  const q = scanSearchQuery.trim().toLowerCase();
+  const filtered = q
+    ? scanItems.filter(s => (s.barcode || '').toLowerCase().includes(q))
+    : [...scanItems];
+
+  list.innerHTML = '';
+
+  if (filtered.length === 0) {
+    list.innerHTML = '<div class="empty-state">No scans yet.<br>Scan a barcode in any tab!</div>';
+    return;
+  }
+
+  filtered.forEach(scan => {
+    const card = document.createElement('div');
+    card.className = 'scan-card';
+
+    const header = document.createElement('div');
+    header.className = 'scan-card-header';
+    header.innerHTML = `
+      <div class="scan-barcode-value">${escapeHtml(scan.barcode)}</div>
+      <div class="scan-card-meta">
+        <span class="scan-card-time">${scanExactTime(scan.createdAt)}</span>
+      </div>
+      <div class="scan-card-meta">
+        <span class="scan-url-chip">🌐 ${escapeHtml(scan.hostname)}</span>
+      </div>`;
+
+    const actions = document.createElement('div');
+    actions.className = 'scan-card-actions';
+
+    const copyBtn = document.createElement('button');
+    copyBtn.className = 'action-btn btn-copy';
+    copyBtn.textContent = '⎘ Copy';
+    copyBtn.addEventListener('click', () => {
+      navigator.clipboard.writeText(scan.barcode);
+      copyBtn.textContent = '✅';
+      setTimeout(() => { copyBtn.textContent = '⎘ Copy'; }, 1500);
+    });
+
+    const delBtn = document.createElement('button');
+    delBtn.className = 'action-btn btn-delete';
+    delBtn.textContent = '🗑';
+    delBtn.addEventListener('click', () => deleteScanRecord(scan.barcodeKey, scan.scanKey));
+
+    actions.appendChild(copyBtn);
+    actions.appendChild(delBtn);
+    card.appendChild(header);
+    card.appendChild(actions);
+    list.appendChild(card);
+  });
+}
+
+function deleteScanRecord(barcodeKey, scanKey) {
+  chrome.storage.local.get(['scan_log'], (result) => {
+    const log = result.scan_log || {};
+    if (log[barcodeKey]?.[scanKey]) {
+      delete log[barcodeKey][scanKey];
+      if (Object.keys(log[barcodeKey]).length === 0) delete log[barcodeKey];
+      chrome.storage.local.set({ scan_log: log }, () => loadScanHistory());
+    }
+  });
+}
+
+function setupScanTab() {
+  const searchInput = document.getElementById('scan-search-input');
+  if (searchInput) {
+    searchInput.addEventListener('input', () => {
+      scanSearchQuery = searchInput.value.trim();
+      renderScanList();
+    });
+  }
+
+  const clearBtn = document.getElementById('clear-scan-btn');
+  if (clearBtn) {
+    clearBtn.addEventListener('click', () => {
+      if (!confirm('সব scan records delete হবে। নিশ্চিত?')) return;
+      chrome.storage.local.remove(['scan_log'], () => {
+        scanItems = [];
+        renderScanList();
+        const badge = document.getElementById('scan-count-badge');
+        if (badge) badge.textContent = '0 records';
+      });
+    });
   }
 }
 
