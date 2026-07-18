@@ -19,6 +19,10 @@ let refreshInterval = null;
 let isInitialized = false;
 let sortOrder = 'newest';
 
+let currentGoogleUid = null;
+let currentGoogleEmail = null;
+let currentIdToken = null;
+let currentRefreshToken = null;
 function normalizePhoneKey(text) {
   let s = (text || '').replace(/[\s\-().]/g, '');
   if (s.startsWith('+')) s = s.slice(1);
@@ -843,8 +847,6 @@ async function checkConnectionWithFallback(extension_id, retries = 5) {
 //   change across reloads as long as that key stays the same. Do NOT swap this back to the
 //   Chrome-Extension-type client_id — same failure will recur.
 
-let currentGoogleUid = null;
-let currentGoogleEmail = null;
 
 // "Web application"-type OAuth client, created specifically for launchWebAuthFlow() — separate
 // from the "Chrome Extension"-type client_id in manifest.json's oauth2 block (which is used by
@@ -915,8 +917,6 @@ async function exchangeGoogleTokenForFirebaseUid(accessToken) {
 
 // In-memory Firebase auth token state — mirrored to chrome.storage.local so it survives
 // popup close/reopen (the popup's JS context is fully torn down every time it closes).
-let currentIdToken = null;
-let currentRefreshToken = null;
 let idTokenExpiresAt = 0; // absolute ms timestamp
 
 /** Exchanges a Firebase refresh_token for a fresh id_token. Firebase ID tokens expire after
