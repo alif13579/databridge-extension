@@ -119,7 +119,12 @@ async function getActivePaths() {
       const metaRes = await fetch(`${FIREBASE_URL}/sessions/${currentExtensionID}/meta.json?cb=${Date.now()}`);
       const meta = await metaRes.json();
       const isConnected = meta?.status === 'connected';
-      if (isConnected) {
+      console.log('🔎 getActivePaths | QR meta status:', meta?.status, '| currentGoogleUid:', currentGoogleUid, '| currentContainerID before:', currentContainerID);
+      if (isConnected && !currentGoogleUid) {
+        // Only let a QR session resolve/override the container when there's no Google
+        // account linked. A Google-linked container must never be silently swapped out
+        // for a stale/unrelated QR pairing's container just because that session's meta
+        // still says "connected" (e.g. it was paired to a different account earlier).
         await resolveContainerFromMeta(meta);
       } else if (!isConnected && !currentGoogleUid) {
         // Session is disconnected — wipe container info so history shows nothing from
@@ -127,6 +132,7 @@ async function getActivePaths() {
         // was derived from Google Sign-In, not this QR session.
         await clearContainerState();
       }
+      console.log('🔎 getActivePaths | currentContainerID after:', currentContainerID);
     } catch (e) { console.warn("⚠️ Path resolution skipped:", e); }
   }
 
@@ -698,7 +704,7 @@ function startSessionListener(id) {
                     || (path === '/meta/status' ? data : null);
         if (status === 'disconnected') {
           if (!currentGoogleUid) showDisconnectedState();
-        } else if (status === 'connected') {
+        } else if (status === 'connected' && !currentGoogleUid) {
           showConnectedState({ meta: typeof data === 'object' ? data : {} });
           // Resolve container then load history
           if (typeof data === 'object') await resolveContainerFromMeta(data);
@@ -820,7 +826,7 @@ async function checkConnectionWithFallback(extension_id, retries = 5) {
       const url = `${FIREBASE_URL}/sessions/${extension_id}.json?cb=${Date.now()}`;
       const res = await fetch(url);
       const data = await res.json();
-      if (data && data.meta && data.meta.status === 'connected') {
+      if (data && data.meta && data.meta.status === 'connected' && !googleLinked) {
         await resolveContainerFromMeta(data.meta);
         showConnectedState(data);
         return true;
