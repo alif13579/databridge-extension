@@ -152,8 +152,8 @@ body {
 /* ── History Card ── */
 .history-card {
   background: #16213e;
-  border-radius: 8px;
-  margin-bottom: 6px;
+  border-radius: 6px;
+  margin-bottom: 4px;
   overflow: hidden;
   cursor: pointer;
   transition: background 0.15s;
@@ -164,7 +164,7 @@ body {
   border-radius: 0 8px 8px 0;
 }
 .card-header {
-  padding: 8px 10px;
+  padding: 6px 8px;
   display: flex;
   align-items: flex-start;
   gap: 6px;
@@ -179,7 +179,7 @@ body {
 .old-indicator { width: 5px; flex-shrink: 0; }
 .card-main { flex: 1; min-width: 0; }
 .card-text {
-  font-size: 12px;
+  font-size: 11px;
   font-weight: bold;
   color: #fff;
   white-space: nowrap;
@@ -189,8 +189,8 @@ body {
 .card-meta {
   display: flex;
   align-items: center;
-  gap: 5px;
-  margin-top: 3px;
+  gap: 4px;
+  margin-top: 2px;
   flex-wrap: wrap;
 }
 .card-time { font-size: 9px; color: #555; }
@@ -214,12 +214,12 @@ body {
 .card-actions {
   display: none;
   gap: 4px;
-  padding: 0 10px 8px;
+  padding: 0 8px 6px;
 }
 .card-actions.visible { display: flex; }
 .action-btn {
   flex: 1;
-  height: 28px;
+  height: 24px;
   border-radius: 6px;
   border: none;
   cursor: pointer;
@@ -228,6 +228,7 @@ body {
   align-items: center;
   justify-content: center;
   transition: opacity 0.15s;
+  font-size: 11px;
 }
 .action-btn:hover { opacity: 0.8; }
 .btn-copy   { background: #0f3460; color: #00d4ff; }
@@ -582,60 +583,25 @@ input:checked + .toggle-slider:before { transform: translateX(14px); }
 }
 
 /* ── Scan Card ── */
-.scan-card {
-  background: #16213e;
-  border-radius: 8px;
-  margin-bottom: 6px;
-  overflow: hidden;
-  border-left: 2px solid #00ff88;
-  transition: background 0.15s;
-}
-.scan-card:hover { background: #1a2a4a; }
-
-.scan-card-header {
-  padding: 9px 10px 5px;
-}
-
-.scan-barcode-value {
-  font-size: 14px;
-  font-weight: bold;
-  color: #fff;
-  font-family: monospace;
-  letter-spacing: 0.5px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  margin-bottom: 4px;
-}
-
-.scan-card-meta {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  margin-top: 2px;
-}
-
-.scan-card-time {
-  font-size: 9px;
-  color: #555;
-}
-
+/* scan-url-chip reused in scan cards inside card-meta */
 .scan-url-chip {
   font-size: 9px;
   color: #888;
   background: #0f3460;
   padding: 1px 6px;
   border-radius: 3px;
-  max-width: 220px;
+  max-width: 160px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-
-.scan-card-actions {
-  display: flex;
-  gap: 4px;
-  padding: 0 10px 8px;
+/* scan dot — green indicator replacing new/old-indicator */
+.scan-dot {
+  width: 5px; height: 5px;
+  border-radius: 50%;
+  background: #00ff88;
+  margin-top: 5px;
+  flex-shrink: 0;
 }
 
 /* ── Firebase barcode lookup styles ── */

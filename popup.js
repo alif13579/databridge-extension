@@ -1393,27 +1393,34 @@ function renderScanList() {
   }
 
   filtered.forEach(scan => {
+    const uid = `scan-${scan.barcodeKey}-${scan.scanKey}`;
     const card = document.createElement('div');
-    card.className = 'scan-card';
+    card.className = 'history-card';
 
+    // Header (always visible, compact — same pattern as history cards)
     const header = document.createElement('div');
-    header.className = 'scan-card-header';
+    header.className = 'card-header';
     header.innerHTML = `
-      <div class="scan-barcode-value">${escapeHtml(scan.barcode)}</div>
-      <div class="scan-card-meta">
-        <span class="scan-card-time">${scanExactTime(scan.createdAt)}</span>
+      <div class="scan-dot"></div>
+      <div class="card-main">
+        <div class="card-text">${escapeHtml(scan.barcode)}</div>
+        <div class="card-meta">
+          <span class="card-time">${scanExactTime(scan.createdAt)}</span>
+          <span class="scan-url-chip">🌐 ${escapeHtml(scan.hostname)}</span>
+        </div>
       </div>
-      <div class="scan-card-meta">
-        <span class="scan-url-chip">🌐 ${escapeHtml(scan.hostname)}</span>
-      </div>`;
+      <div class="chevron" id="chev-${uid}">▼</div>`;
 
+    // Actions (hidden by default, toggle on header click)
     const actions = document.createElement('div');
-    actions.className = 'scan-card-actions';
+    actions.className = 'card-actions';
+    actions.id = `actions-${uid}`;
 
     const copyBtn = document.createElement('button');
     copyBtn.className = 'action-btn btn-copy';
     copyBtn.textContent = '⎘ Copy';
-    copyBtn.addEventListener('click', () => {
+    copyBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
       navigator.clipboard.writeText(scan.barcode);
       copyBtn.textContent = '✅';
       setTimeout(() => { copyBtn.textContent = '⎘ Copy'; }, 1500);
@@ -1422,10 +1429,24 @@ function renderScanList() {
     const delBtn = document.createElement('button');
     delBtn.className = 'action-btn btn-delete';
     delBtn.textContent = '🗑';
-    delBtn.addEventListener('click', () => deleteScanRecord(scan.barcodeKey, scan.scanKey));
+    delBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      deleteScanRecord(scan.barcodeKey, scan.scanKey);
+    });
 
     actions.appendChild(copyBtn);
     actions.appendChild(delBtn);
+
+    // Toggle on header click
+    header.addEventListener('click', () => {
+      const act = document.getElementById(`actions-${uid}`);
+      const chev = document.getElementById(`chev-${uid}`);
+      if (act) {
+        const isOpen = act.classList.toggle('visible');
+        if (chev) chev.classList.toggle('open', isOpen);
+      }
+    });
+
     card.appendChild(header);
     card.appendChild(actions);
     list.appendChild(card);
