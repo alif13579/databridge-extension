@@ -174,7 +174,7 @@
     const panel = input && input.closest(PANEL_SELECTOR);
     if (!panel) return [];
     const ids = [];
-    panel.querySelectorAll(SCANNED_ROW_SELECTOR).forEach(row => {
+    panel.querySelectorAll(SCANNED_ROW_SEL).forEach(row => {
       const d = row.querySelector('div');
       const t = d && d.textContent.trim();
       if (t && ID_REGEX.test(t)) ids.push(t);
