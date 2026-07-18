@@ -29,7 +29,7 @@
   const RETURN_INPUT_ID = 'returnConsId';
   const PANEL_SELECTOR  = '.w-full.border.rounded.p-2.pb-4';
   const SCANNED_ROW_SEL = ':scope > div.my-2';
-  const PARCEL_ROW_SEL  = '.pt-list-item';
+  const PARCEL_ROW_SEL  = '.flex.pt-list-item';  // Data rows only (header lacks 'flex')
   const DATA_COL_SEL    = '.w-1\\/6';
 
   // ── CONSTANTS ────────────────────────────────────────────────────────────
@@ -112,8 +112,13 @@
   }
 
   function rowIdEl(row) {
-    const col = row.querySelector(DATA_COL_SEL);
-    return col ? col.querySelector('.flex-1') : null;
+    // The ID is in the FIRST .w-1/6 column inside the row's .flex-1 container
+    const flexContainer = row.querySelector('.flex.flex-1');
+    if (!flexContainer) return null;
+    const cols = flexContainer.querySelectorAll(DATA_COL_SEL);
+    // First column (index 0) is the ID column
+    const idCol = cols[0];
+    return idCol ? idCol.querySelector('.flex-1') : null;
   }
 
   function rowId(row) {
@@ -122,7 +127,13 @@
   }
 
   function rowStatus(row) {
-    const b = row.querySelector('.pt-label-btn');
+    // Status is in the .pt-label-btn inside the FIRST .w-1/6 column
+    const flexContainer = row.querySelector('.flex.flex-1');
+    if (!flexContainer) return null;
+    const cols = flexContainer.querySelectorAll(DATA_COL_SEL);
+    const idCol = cols[0];
+    if (!idCol) return null;
+    const b = idCol.querySelector('.pt-label-btn');
     return b ? b.textContent.trim() : null;
   }
 
@@ -192,9 +203,17 @@
     const s = document.createElement('style');
     s.id = 'db-scan-style';
     s.textContent = `
-      /* Row borders */
-      .db-row-received { border-left: 4px solid #22c55e !important; background: #f0fdf4 !important; }
-      .db-row-pending  { border-left: 4px solid #ef4444 !important; background: #fff5f5 !important; }
+      /* Row borders - applied to inner container */
+      .db-row-received { 
+        border-left: 6px solid #22c55e !important; 
+        background: #f0fdf4 !important; 
+        box-shadow: inset 4px 0 0 #22c55e !important;
+      }
+      .db-row-pending  { 
+        border-left: 6px solid #ef4444 !important; 
+        background: #fff5f5 !important; 
+        box-shadow: inset 4px 0 0 #ef4444 !important;
+      }
 
       /* Tick mark */
       .db-tick {
@@ -208,32 +227,34 @@
       /* Row number badge - prominent identifier */
       .db-row-badge {
         position: absolute;
-        top: 2px;
-        left: 2px;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
         display: inline-flex;
         align-items: center;
-        gap: 3px;
+        gap: 4px;
         background: #22c55e;
         color: #fff;
-        border-radius: 6px;
-        padding: 2px 6px;
-        font-size: 11px;
+        border-radius: 8px;
+        padding: 4px 8px;
+        font-size: 12px;
         font-weight: 800;
         line-height: 1;
         white-space: nowrap;
-        box-shadow: 0 1px 4px rgba(34,197,94,0.4);
-        z-index: 10;
+        box-shadow: 0 2px 8px rgba(34,197,94,0.5);
+        z-index: 100;
+        border: 2px solid #fff;
       }
       .db-row-badge-pending {
         background: #ef4444;
-        box-shadow: 0 1px 4px rgba(239,68,68,0.4);
+        box-shadow: 0 2px 8px rgba(239,68,68,0.5);
       }
       .db-scan-num {
-        font-size: 10px;
-        opacity: 0.9;
+        font-size: 11px;
+        opacity: 0.95;
       }
       .db-scan-icon {
-        font-size: 12px;
+        font-size: 14px;
       }
 
       /* Toast */
@@ -530,7 +551,12 @@
     parcelRows().forEach((row, index) => {
       const id   = rowId(row);
       const idEl = rowIdEl(row);
-      row.classList.remove('db-row-received', 'db-row-pending');
+
+      // Target the inner content container for styling
+      const innerContainer = row.querySelector('.p-4.flex.flex-row.w-full');
+      const targetEl = innerContainer || row;
+
+      targetEl.classList.remove('db-row-received', 'db-row-pending');
 
       // Remove any previously injected identifiers
       if (idEl) idEl.querySelectorAll('.db-tick').forEach(e => e.remove());
@@ -539,7 +565,7 @@
       if (!expected.has(id)) return;
 
       if (received.has(id)) {
-        row.classList.add('db-row-received');
+        targetEl.classList.add('db-row-received');
 
         // 1. Tick in ID column
         if (idEl) {
@@ -549,26 +575,26 @@
           idEl.appendChild(tick);
         }
 
-        // 2. Prominent row index badge in first column
-        const firstCol = row.querySelector(':scope > *:first-child');
-        if (firstCol) {
+        // 2. Prominent row index badge in first column (w-24 checkbox area)
+        const checkboxCol = row.querySelector('.w-24');
+        if (checkboxCol) {
           const badge = document.createElement('div');
           badge.className = 'db-row-badge';
           badge.innerHTML = `<span class="db-scan-num">#${index + 1}</span><span class="db-scan-icon">\u2713</span>`;
-          firstCol.style.position = 'relative';
-          firstCol.appendChild(badge);
+          checkboxCol.style.position = 'relative';
+          checkboxCol.appendChild(badge);
         }
       } else {
-        row.classList.add('db-row-pending');
+        targetEl.classList.add('db-row-pending');
 
         // Show row number for pending items too
-        const firstCol = row.querySelector(':scope > *:first-child');
-        if (firstCol) {
+        const checkboxCol = row.querySelector('.w-24');
+        if (checkboxCol) {
           const badge = document.createElement('div');
           badge.className = 'db-row-badge db-row-badge-pending';
           badge.innerHTML = `<span class="db-scan-num">#${index + 1}</span><span class="db-scan-icon">\u25cb</span>`;
-          firstCol.style.position = 'relative';
-          firstCol.appendChild(badge);
+          checkboxCol.style.position = 'relative';
+          checkboxCol.appendChild(badge);
         }
       }
     });
