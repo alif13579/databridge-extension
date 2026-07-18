@@ -223,30 +223,30 @@
       #db-panel {
         position: fixed; top: 80px; right: 100px; z-index: 2147483646;
         background: #fff; border: 1px solid #e2e8f0; border-radius: 12px;
-        box-shadow: 0 4px 24px rgba(0,0,0,.13); width: 290px;
+        box-shadow: 0 4px 24px rgba(0,0,0,.13); width: 200px;
         font: 13px/1.5 -apple-system, Segoe UI, sans-serif; overflow: hidden;
       }
       .db-hdr {
-        background: #1e293b; color: #fff; padding: 10px 14px;
+        background: #1e293b; color: #fff; padding: 7px 10px;
         display: flex; justify-content: space-between; align-items: center;
-        cursor: move; user-select: none; font-weight: 600; font-size: 13px;
+        cursor: move; user-select: none; font-weight: 600; font-size: 11px;
       }
       .db-hdr button {
         background: none; border: none; color: #fff; font-size: 18px;
         cursor: pointer; line-height: 1; padding: 0 2px;
       }
-      .db-body { padding: 10px; max-height: 72vh; overflow-y: auto; }
+      .db-body { padding: 8px; max-height: 85vh; overflow-y: auto; }
       .db-sec  { margin-bottom: 14px; }
       .db-sec-title {
-        font-weight: 700; font-size: 11px; text-transform: uppercase;
+        font-weight: 700; font-size: 10px; text-transform: uppercase;
         letter-spacing: .5px; color: #64748b; margin-bottom: 8px;
       }
-      .db-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+      .db-table { width: 100%; border-collapse: collapse; font-size: 10px; }
       .db-table th {
-        text-align: left; color: #94a3b8; padding: 3px 4px; font-weight: 600;
+        text-align: left; color: #94a3b8; padding: 2px 3px; font-weight: 600;
         border-bottom: 1px solid #f1f5f9;
       }
-      .db-table td   { padding: 4px; vertical-align: middle; }
+      .db-table td   { padding: 3px 2px; vertical-align: middle; }
       .db-table .num { text-align: right; font-variant-numeric: tabular-nums; }
       .db-copy-btn {
         background: none; border: none; cursor: pointer; padding: 0 0 0 4px;
@@ -264,7 +264,7 @@
       }
       .db-pending-grp { margin-bottom: 10px; }
       .db-pending-hdr {
-        font-weight: 600; font-size: 12px; display: flex; align-items: center;
+        font-weight: 600; font-size: 11px; display: flex; align-items: center;
         gap: 6px; margin-bottom: 4px;
       }
       .db-cnt {
@@ -274,7 +274,7 @@
       .db-ids { display: flex; flex-wrap: wrap; gap: 4px; }
       .db-id {
         background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 4px;
-        padding: 2px 6px; font: 11px/1.4 monospace; color: #334155;
+        padding: 1px 4px; font: 10px/1.4 monospace; color: #334155;
       }
       .db-more { font-size: 11px; color: #94a3b8; padding: 2px 4px; align-self: center; }
       .db-id {
