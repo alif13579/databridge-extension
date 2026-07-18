@@ -248,6 +248,12 @@
       }
       .db-table td   { padding: 4px; vertical-align: middle; }
       .db-table .num { text-align: right; font-variant-numeric: tabular-nums; }
+      .db-copy-btn {
+        background: none; border: none; cursor: pointer; padding: 0 0 0 4px;
+        color: #94a3b8; font-size: 11px; line-height: 1; vertical-align: middle;
+        opacity: 0.6; transition: opacity .15s;
+      }
+      .db-copy-btn:hover { opacity: 1; }
       .db-dot {
         display: inline-block; width: 8px; height: 8px;
         border-radius: 50%; margin-right: 6px; vertical-align: middle;
@@ -361,10 +367,14 @@
     Object.entries(summary).forEach(([status, d]) => {
       const c = statusColor(status);
       totalCollected += d.collected;
+      const amtStr = d.total ? d.total.toLocaleString() + ' ৳' : '—';
       rows += `<tr>
         <td><span class="db-dot" style="background:${c}"></span>${status}</td>
         <td class="num">${d.qty}</td>
-        <td class="num">${d.total ? d.total.toLocaleString() + ' ৳' : '—'}</td>
+        <td class="num" style="white-space:nowrap">
+          ${amtStr}
+          ${d.total ? `<button class="db-copy-btn" data-copy="${d.total}" title="Copy amount">⎘</button>` : ''}
+        </td>
       </tr>`;
     });
     document.getElementById('db-summary').innerHTML = `
@@ -372,11 +382,29 @@
       <table class="db-table">
         <thead><tr><th>Status</th><th class="num">Qty</th><th class="num">Amount</th></tr></thead>
         <tbody>${rows}</tbody>
-        <tfoot><tr><td colspan="3" class="db-tfoot">
-          💰 Collected: <b>${totalCollected ? totalCollected.toLocaleString() + ' ৳' : '—'}</b>
-        </td></tr></tfoot>
+        <tfoot><tr>
+          <td colspan="2" class="db-tfoot">💰 Collected</td>
+          <td class="db-tfoot num" style="white-space:nowrap">
+            <b>${totalCollected ? totalCollected.toLocaleString() + ' ৳' : '—'}</b>
+            ${totalCollected ? `<button class="db-copy-btn" data-copy="${totalCollected}" title="Copy amount">⎘</button>` : ''}
+          </td>
+        </tr></tfoot>
       </table>
     `;
+
+    // Attach copy listeners on amount buttons
+    document.getElementById('db-summary').querySelectorAll('.db-copy-btn').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const val = btn.dataset.copy;
+        if (!val) return;
+        navigator.clipboard.writeText(val).then(() => {
+          const orig = btn.textContent;
+          btn.textContent = '✓';
+          setTimeout(() => { btn.textContent = orig; }, 1200);
+        }).catch(() => {});
+      });
+    });
 
     // ── Pending section ──
     const holdPending   = (st.holdExpected   || []).filter(id => !st.holdReceived.includes(id));
