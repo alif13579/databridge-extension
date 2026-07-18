@@ -112,13 +112,16 @@
   }
 
   function rowIdEl(row) {
-    // The ID is in the FIRST .w-1/6 column inside the row's .flex-1 container
+    // The ID is in the FIRST .w-1/6 column inside the row's .flex.flex-1 container
     const flexContainer = row.querySelector('.flex.flex-1');
     if (!flexContainer) return null;
     const cols = flexContainer.querySelectorAll(DATA_COL_SEL);
     // First column (index 0) is the ID column
     const idCol = cols[0];
-    return idCol ? idCol.querySelector('.flex-1') : null;
+    if (!idCol) return null;
+    // The ID is the FIRST direct .flex-1 child of the column
+    const idDiv = idCol.querySelector(':scope > .flex-1');
+    return idDiv;
   }
 
   function rowId(row) {
@@ -127,14 +130,26 @@
   }
 
   function rowStatus(row) {
-    // Status is in the .pt-label-btn inside the FIRST .w-1/6 column
+    // Status is in a .pt-label-btn inside the FIRST .w-1/6 column
     const flexContainer = row.querySelector('.flex.flex-1');
     if (!flexContainer) return null;
     const cols = flexContainer.querySelectorAll(DATA_COL_SEL);
     const idCol = cols[0];
     if (!idCol) return null;
-    const b = idCol.querySelector('.pt-label-btn');
-    return b ? b.textContent.trim() : null;
+
+    // Get all .pt-label-btn elements in the ID column
+    const allBtns = idCol.querySelectorAll('.pt-label-btn');
+
+    // Find the one that contains a status-like text (has letters, not just numbers)
+    for (const btn of allBtns) {
+      const text = btn.textContent.trim();
+      // Skip if it's just a number (attempt count) or just "COD"
+      if (/^\d+$/.test(text)) continue;  // Skip pure numbers
+      if (text.toLowerCase() === 'cod') continue;  // Skip COD
+      // This should be the status
+      return text;
+    }
+    return null;
   }
 
   function rowAmount(row) {
@@ -194,7 +209,16 @@
   }
 
   function findRowById(id) {
-    return parcelRows().find(r => rowId(r) === id);
+    const rows = parcelRows();
+    console.log('[DataBridge] findRowById: searching', rows.length, 'rows for', id);
+    const found = rows.find(r => {
+      const rid = rowId(r);
+      const match = rid === id;
+      if (match) console.log('[DataBridge] Found match! Row ID:', rid);
+      return match;
+    });
+    if (!found) console.log('[DataBridge] No row found for ID:', id);
+    return found;
   }
 
   // ── STYLES ──────────────────────────────────────────────────────────────
@@ -548,9 +572,13 @@
   function refreshBorders(st) {
     const received = new Set([...st.holdReceived, ...st.returnReceived]);
     const expected = new Set([...st.holdExpected, ...st.returnExpected]);
+    console.log('[DataBridge] refreshBorders: received=', received.size, 'expected=', expected.size);
+    console.log('[DataBridge] holdReceived:', st.holdReceived);
+    console.log('[DataBridge] returnReceived:', st.returnReceived);
     parcelRows().forEach((row, index) => {
       const id   = rowId(row);
       const idEl = rowIdEl(row);
+      console.log('[DataBridge] Row', index, 'ID:', id, 'inExpected:', expected.has(id), 'inReceived:', received.has(id));
 
       // Target the inner content container for styling
       const innerContainer = row.querySelector('.p-4.flex.flex-row.w-full');
@@ -665,8 +693,18 @@
 
         setTimeout(() => {
           try {
+            console.log('[DataBridge] Looking for row with ID:', id);
+            const allRows = parcelRows();
+            console.log('[DataBridge] Total rows found:', allRows.length);
+            allRows.forEach((r, i) => {
+              const rid = rowId(r);
+              console.log('[DataBridge] Row', i, 'ID:', rid, '| Match:', rid === id);
+            });
+
             const row    = findRowById(id);
+            console.log('[DataBridge] Row found:', !!row);
             const status = row ? rowStatus(row) : 'Not Found';
+            console.log('[DataBridge] Status:', status);
             const stLow  = (status || '').toLowerCase();
             console.log('[DataBridge] Status for', id, ':', status, '| check:', stLow, '!==', noToastStatus);
 
