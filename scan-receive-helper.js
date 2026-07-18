@@ -404,11 +404,42 @@
         e.stopPropagation();
         const val = btn.dataset.copy;
         if (!val) return;
-        navigator.clipboard.writeText(val).then(() => {
+
+        const showResult = (ok) => {
           const orig = btn.textContent;
-          btn.textContent = '✓';
+          btn.textContent = ok ? '✓' : '✗';
           setTimeout(() => { btn.textContent = orig; }, 1200);
-        }).catch(() => {});
+        };
+
+        // navigator.clipboard.writeText() can silently reject from an injected
+        // content-script panel (document focus / Permissions Policy quirks) — this
+        // execCommand fallback works via direct DOM selection instead, which doesn't
+        // depend on the async Clipboard API's stricter user-activation checks.
+        function legacyCopy(text) {
+          const ta = document.createElement('textarea');
+          ta.value = text;
+          ta.style.position = 'fixed';
+          ta.style.opacity = '0';
+          document.body.appendChild(ta);
+          ta.focus();
+          ta.select();
+          let ok = false;
+          try { ok = document.execCommand('copy'); }
+          catch (err) { console.error('[DataBridge] legacy copy failed:', err); }
+          document.body.removeChild(ta);
+          return ok;
+        }
+
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(val)
+            .then(() => showResult(true))
+            .catch((err) => {
+              console.error('[DataBridge] clipboard.writeText failed, falling back:', err);
+              showResult(legacyCopy(val));
+            });
+        } else {
+          showResult(legacyCopy(val));
+        }
       });
     });
 
