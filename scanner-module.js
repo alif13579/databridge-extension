@@ -3,7 +3,7 @@
 //
 // SAVE FLOW:
 //   ① chrome.storage.local → scan_log           (always, for popup)
-//   ② Firebase: scanned/zebra_scans/{barcode}/scan_{ts}     (always, single source of truth)
+//   ② Firebase: scanned/barcode_scans/{barcode}/scan_{ts}     (always, single source of truth)
 //
 // PAYLOAD STRUCTURE:
 //   {
@@ -13,7 +13,7 @@
 //     url          : page url
 //   }
 //
-//   → barcode lookup:  scanned/zebra_scans/{barcode}
+//   → barcode lookup:  scanned/barcode_scans/{barcode}
 //   → user filter:     where container_id == "{id}"
 //   → no duplication, no session/container split
 //
@@ -69,7 +69,7 @@
 
     try {
       const res = await fetch(
-        `${CONFIG.FIREBASE_URL}/scanned/zebra_scans/${safeKey}/${scanKey}.json`,
+        `${CONFIG.FIREBASE_URL}/scanned/barcode_scans/${safeKey}/${scanKey}.json`,
         {
           method : 'PUT',
           headers: { 'Content-Type': 'application/json' },

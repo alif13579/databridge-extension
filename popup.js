@@ -1330,6 +1330,7 @@ function setupConnectedInfoCopy() {
 // ══════════════════════════════
 let scanItems = [];
 let scanSearchQuery = '';
+let scanFirebaseResult = null; // null = show local log; object = show Firebase details
 
 function scanExactTime(timestamp) {
   if (!timestamp) return '—';
@@ -1442,12 +1443,89 @@ function deleteScanRecord(barcodeKey, scanKey) {
   });
 }
 
+async function fetchBarcodeFromFirebase(barcode) {
+  const list = document.getElementById('scan-list');
+  if (!list) return;
+  list.innerHTML = '<div class="empty-state">🔍 Fetching from Firebase...</div>';
+
+  // Sanitize barcode key (same logic as scanner-module.js)
+  const safeKey = barcode.replace(/[.#$/\[\]]/g, '_');
+  try {
+    const res = await fetch(
+      `${FIREBASE_URL}/scanned/barcode_scans/${safeKey}.json?cb=${Date.now()}`
+    );
+    const data = await res.json();
+
+    if (!data || typeof data !== 'object') {
+      list.innerHTML = `<div class="empty-state">No records found for <b>${escapeHtml(barcode)}</b></div>`;
+      return;
+    }
+
+    // data = { scan_ts1: {...}, scan_ts2: {...} }
+    const entries = Object.entries(data)
+      .map(([key, val]) => ({ key, ...val }))
+      .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+
+    scanFirebaseResult = { barcode, entries };
+    renderFirebaseDetails(barcode, entries);
+  } catch (err) {
+    list.innerHTML = `<div class="empty-state">⚠️ Firebase fetch failed: ${escapeHtml(String(err))}</div>`;
+  }
+}
+
+function renderFirebaseDetails(barcode, entries) {
+  const list = document.getElementById('scan-list');
+  if (!list) return;
+  list.innerHTML = '';
+
+  const header = document.createElement('div');
+  header.className = 'scan-firebase-header';
+  header.innerHTML = `
+    <div class="scan-firebase-barcode">📦 ${escapeHtml(barcode)}</div>
+    <div class="scan-firebase-count">${entries.length} scan record${entries.length !== 1 ? 's' : ''} in Firebase</div>`;
+  list.appendChild(header);
+
+  entries.forEach((entry, i) => {
+    let hostname = '—';
+    try { hostname = new URL(entry.url || '').hostname; } catch {}
+
+    const card = document.createElement('div');
+    card.className = 'scan-card scan-firebase-card';
+    card.innerHTML = `
+      <div class="scan-card-header">
+        <div class="scan-firebase-index">#${i + 1}</div>
+        <div class="scan-detail-row"><span class="scan-detail-label">Scan Key</span><span class="scan-detail-value mono">${escapeHtml(entry.key)}</span></div>
+        <div class="scan-detail-row"><span class="scan-detail-label">Time</span><span class="scan-detail-value">${scanExactTime(entry.createdAt)}</span></div>
+        <div class="scan-detail-row"><span class="scan-detail-label">Scanned By</span><span class="scan-detail-value mono">${escapeHtml(entry.scanned_by || '—')}</span></div>
+        <div class="scan-detail-row"><span class="scan-detail-label">Container</span><span class="scan-detail-value mono">${escapeHtml(entry.container_id || '—')}</span></div>
+        <div class="scan-detail-row"><span class="scan-detail-label">Page</span><span class="scan-url-chip">🌐 ${escapeHtml(hostname)}</span></div>
+      </div>`;
+    list.appendChild(card);
+  });
+}
+
 function setupScanTab() {
   const searchInput = document.getElementById('scan-search-input');
   if (searchInput) {
     searchInput.addEventListener('input', () => {
-      scanSearchQuery = searchInput.value.trim();
-      renderScanList();
+      const q = searchInput.value.trim();
+      scanSearchQuery = q;
+      // Clear Firebase results when user clears the search box
+      if (!q) {
+        scanFirebaseResult = null;
+        renderScanList();
+      } else {
+        // Just filter local list while typing
+        renderScanList();
+      }
+    });
+
+    // Enter → fetch full details from Firebase
+    searchInput.addEventListener('keydown', (e) => {
+      if (e.key !== 'Enter') return;
+      const q = searchInput.value.trim();
+      if (!q) return;
+      fetchBarcodeFromFirebase(q);
     });
   }
 
