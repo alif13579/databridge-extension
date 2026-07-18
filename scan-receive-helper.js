@@ -645,6 +645,9 @@
       if (!input || listenedInputs.has(inputId)) return;
       listenedInputs.add(inputId);
 
+      // Mark this input as monitored
+      input.setAttribute('data-db-monitored', 'true');
+
       // Capture-phase listener — fires before Hermes bubble-phase handlers
       input.addEventListener('keydown', e => {
         if (e.key !== 'Enter') return;
@@ -676,6 +679,14 @@
               console.log('[DataBridge] → Silent match, no toast');
             }
 
+            // IMPORTANT: Add ID to received list immediately for visual feedback
+            if (inputId === HOLD_INPUT_ID && !st.holdReceived.includes(id)) {
+              st.holdReceived.push(id);
+            } else if (inputId === RETURN_INPUT_ID && !st.returnReceived.includes(id)) {
+              st.returnReceived.push(id);
+            }
+
+            refreshBorders(st);
             refreshPanel(st);
           } catch (err) {
             console.error('[DataBridge] Scan handler error:', err);
@@ -742,17 +753,35 @@
     new MutationObserver(mutations => {
       const skip = mutations.every(m =>
         [...m.addedNodes, ...m.removedNodes].every(n =>
-          n.nodeType === Node.ELEMENT_NODE && (n.id === 'db-panel' || n.classList?.contains('db-toast'))
+          n.nodeType === Node.ELEMENT_NODE && (n.id === 'db-panel' || n.classList?.contains('db-toast') || n.classList?.contains('db-row-badge'))
         )
       );
       if (skip) return;
+
+      // Check if any monitored input changed value (Hermes processed scan)
+      mutations.forEach(m => {
+        if (m.type === 'childList') {
+          [...m.addedNodes].forEach(node => {
+            if (node.nodeType === Node.ELEMENT_NODE && node.closest?.('[data-db-monitored]')) {
+              // Input value changed - trigger border refresh
+              clearTimeout(debounce);
+              debounce = setTimeout(() => {
+                reconcileWithPageState(appState);
+                refreshBorders(appState);
+                refreshPanel(appState);
+              }, 100);
+            }
+          });
+        }
+      });
+
       clearTimeout(debounce);
       debounce = setTimeout(() => {
         reconcileWithPageState(appState);
         refreshPanel(appState);
         refreshBorders(appState);
       }, 300);
-    }).observe(document.body, { childList: true, subtree: true });
+    }).observe(document.body, { childList: true, subtree: true, characterData: true });
   }
 
   if (document.readyState === 'loading') {
