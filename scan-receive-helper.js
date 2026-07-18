@@ -223,7 +223,7 @@
       #db-panel {
         position: fixed; top: 0px; right: 375px; z-index: 2147483646;
         background: #fff; border: 1px solid #e2e8f0; border-radius: 12px;
-        box-shadow: 0 4px 24px rgba(0,0,0,.13); width: 415px; max-height: 225px;
+        box-shadow: 0 4px 24px rgba(0,0,0,.13); width: 415px; max-height: 300px;
         font: 13px/1.5 -apple-system, Segoe UI, sans-serif; overflow: hidden;
         display: flex; flex-direction: column;
       }
@@ -259,8 +259,8 @@
       .db-table td   { padding: 3px 2px; vertical-align: middle; }
       .db-table .num { text-align: right; font-variant-numeric: tabular-nums; }
       .db-copy-btn {
-        background: none; border: none; cursor: pointer; padding: 0 0 0 4px;
-        color: #94a3b8; font-size: 11px; line-height: 1; vertical-align: middle;
+        background: none; border: none; cursor: pointer; padding: 2px 4px;
+        color: #94a3b8; font-size: 16px; line-height: 1; vertical-align: middle;
         opacity: 0.6; transition: opacity .15s;
       }
       .db-copy-btn:hover { opacity: 1; }
