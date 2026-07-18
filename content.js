@@ -56,28 +56,23 @@ let lastCellValue = null;
  *  screen readers), so this fallback is meant to survive that churn without
  *  needing a code update every time Google restructures the DOM. */
 function readSheetsFormulaBarValue() {
-  // IMPORTANT: one combined querySelector call (comma-separated), exactly
-  // like the original working code — this returns whichever of the three
-  // matches FIRST IN DOCUMENT ORDER, not "always prefer .cell-input if it
-  // exists anywhere at all." A sequential per-selector loop (an earlier
-  // version of this function did that) can pick a stale/hidden element
-  // matching an EARLIER selector in the list over the real, currently-active
-  // formula bar matching a LATER one, if Sheets keeps some other element
-  // with that class around in the DOM for unrelated internal reasons.
-  const sheetsFormulaBar = document.querySelector('.cell-input, #t-formula-bar-input, .waffle-formula-bar-input');
-  if (sheetsFormulaBar) {
-    const val = sheetsFormulaBar.value || sheetsFormulaBar.textContent;
-    if (val && val.trim()) return val.trim();
+  // Selector priority (most stable → least stable):
+  //   1. aria-label="Formula bar" — Google keeps this for screen-reader
+  //      compat so it survives DOM restructures that rename internal classes.
+  //   2. Known internal class names as fallback.
+  //
+  // [role="textbox"] is intentionally EXCLUDED: it also matches the Sheets
+  // Name Box (shows "A1", "B2" etc.) and other unrelated textboxes, causing
+  // the shortcut to return wrong content or silently fail.
+  const candidates = [
+    document.querySelector('[aria-label="Formula bar"]'),
+    document.querySelector('.cell-input, #t-formula-bar-input, .waffle-formula-bar-input'),
+  ];
+  for (const el of candidates) {
+    if (!el) continue;
+    const val = (el.value != null ? el.value : el.textContent || '').trim();
+    if (val) return val;
   }
-
-  const ariaCandidates = document.querySelectorAll(
-    '[aria-label*="Formula bar" i], [aria-label*="formula" i], [role="textbox"]'
-  );
-  for (const el of ariaCandidates) {
-    const val = el.value ?? el.textContent;
-    if (val && val.trim()) return val.trim();
-  }
-
   return null;
 }
 
@@ -114,7 +109,7 @@ function detectCellClick() {
         const val = target.textContent.trim();
         if (val) lastCellValue = val;
       }
-    }, 100); // slight delay — Sheets needs time to update formula bar
+    }, 300); // delay — Sheets needs time to update the formula bar after a click
   });
 }
 
