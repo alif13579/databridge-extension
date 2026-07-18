@@ -90,7 +90,25 @@
 
   function initState(holdExpected, returnExpected) {
     const existing = loadState();
-    if (existing) return existing;
+    if (existing) {
+      // If the cached expected sets are empty but a fresh page read finds real
+      // candidates, the cache was almost certainly written while the DOM selectors
+      // didn't match yet (or before the parcel list had finished loading) — rebuild
+      // the expected sets from the current, correctly-parsed page instead of staying
+      // stuck on a stale empty cache for up to 72h. holdReceived/returnReceived (any
+      // real save progress) are left untouched either way.
+      const cacheLooksStale =
+        !existing.holdExpected.length && !existing.returnExpected.length &&
+        (holdExpected.length || returnExpected.length);
+      if (cacheLooksStale) {
+        console.log('[DataBridge] Cached expected sets were empty, rebuilding from live page:',
+          holdExpected.length, 'hold /', returnExpected.length, 'return');
+        existing.holdExpected = holdExpected;
+        existing.returnExpected = returnExpected;
+        persistState(existing);
+      }
+      return existing;
+    }
     const s = {
       runId: getRunId(),
       createdAt: Date.now(),
