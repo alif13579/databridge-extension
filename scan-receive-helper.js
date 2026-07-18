@@ -205,6 +205,37 @@
         white-space: nowrap; letter-spacing: .2px;
       }
 
+      /* Row number badge - prominent identifier */
+      .db-row-badge {
+        position: absolute;
+        top: 2px;
+        left: 2px;
+        display: inline-flex;
+        align-items: center;
+        gap: 3px;
+        background: #22c55e;
+        color: #fff;
+        border-radius: 6px;
+        padding: 2px 6px;
+        font-size: 11px;
+        font-weight: 800;
+        line-height: 1;
+        white-space: nowrap;
+        box-shadow: 0 1px 4px rgba(34,197,94,0.4);
+        z-index: 10;
+      }
+      .db-row-badge-pending {
+        background: #ef4444;
+        box-shadow: 0 1px 4px rgba(239,68,68,0.4);
+      }
+      .db-scan-num {
+        font-size: 10px;
+        opacity: 0.9;
+      }
+      .db-scan-icon {
+        font-size: 12px;
+      }
+
       /* Toast */
       .db-toast {
         position: fixed; top: 20px; right: 20px; z-index: 2147483647;
@@ -496,26 +527,49 @@
   function refreshBorders(st) {
     const received = new Set([...st.holdReceived, ...st.returnReceived]);
     const expected = new Set([...st.holdExpected, ...st.returnExpected]);
-    parcelRows().forEach(row => {
+    parcelRows().forEach((row, index) => {
       const id   = rowId(row);
       const idEl = rowIdEl(row);
       row.classList.remove('db-row-received', 'db-row-pending');
 
-      // Remove any previously injected tick
+      // Remove any previously injected identifiers
       if (idEl) idEl.querySelectorAll('.db-tick').forEach(e => e.remove());
+      row.querySelectorAll('.db-row-badge').forEach(e => e.remove());
 
       if (!expected.has(id)) return;
 
       if (received.has(id)) {
         row.classList.add('db-row-received');
+
+        // 1. Tick in ID column
         if (idEl) {
           const tick = document.createElement('span');
           tick.className = 'db-tick';
-          tick.textContent = '\u2713 Received';
+          tick.textContent = '\u2713 SCANNED';
           idEl.appendChild(tick);
+        }
+
+        // 2. Prominent row index badge in first column
+        const firstCol = row.querySelector(':scope > *:first-child');
+        if (firstCol) {
+          const badge = document.createElement('div');
+          badge.className = 'db-row-badge';
+          badge.innerHTML = `<span class="db-scan-num">#${index + 1}</span><span class="db-scan-icon">\u2713</span>`;
+          firstCol.style.position = 'relative';
+          firstCol.appendChild(badge);
         }
       } else {
         row.classList.add('db-row-pending');
+
+        // Show row number for pending items too
+        const firstCol = row.querySelector(':scope > *:first-child');
+        if (firstCol) {
+          const badge = document.createElement('div');
+          badge.className = 'db-row-badge db-row-badge-pending';
+          badge.innerHTML = `<span class="db-scan-num">#${index + 1}</span><span class="db-scan-icon">\u25cb</span>`;
+          firstCol.style.position = 'relative';
+          firstCol.appendChild(badge);
+        }
       }
     });
   }
