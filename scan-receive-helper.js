@@ -553,6 +553,8 @@
   }
 
   // ── SCAN INPUT HANDLER ───────────────────────────────────────────────────
+  // Use capture-phase listener so we always fire before Hermes' own handlers
+  // that might call stopPropagation(). Also survives React/Vue re-renders.
   const listenedInputs = new Set();
   function attachScanListeners(st) {
     [
@@ -563,25 +565,38 @@
       if (!input || listenedInputs.has(inputId)) return;
       listenedInputs.add(inputId);
 
+      // Capture-phase listener — fires before Hermes bubble-phase handlers
       input.addEventListener('keydown', e => {
         if (e.key !== 'Enter') return;
         const id = (input.value || '').trim().toUpperCase();
-        if (!ID_REGEX.test(id)) return;
+        console.log('[DataBridge] Scan in', inputId, '→ ID:', id);
+        if (!ID_REGEX.test(id)) {
+          console.log('[DataBridge] ID rejected by regex:', id);
+          return;
+        }
 
         setTimeout(() => {
-          const row    = findRowById(id);
-          const status = row ? rowStatus(row) : 'Not Found';
-          const stLow  = (status || '').toLowerCase();
+          try {
+            const row    = findRowById(id);
+            const status = row ? rowStatus(row) : 'Not Found';
+            const stLow  = (status || '').toLowerCase();
+            console.log('[DataBridge] Status for', id, ':', status, '| check:', stLow, '!==', noToastStatus);
 
-          // Show toast unless this is the "silent" match for this field
-          if (stLow !== noToastStatus) {
-            const isInvalid = !validSet.has(stLow);
-            showToast(id, status || 'Not Found', isInvalid);
+            // Show toast unless this is the "silent" match for this field
+            if (stLow !== noToastStatus) {
+              const isInvalid = !validSet.has(stLow);
+              console.log('[DataBridge] → SHOW toast (invalid:', isInvalid + ')');
+              showToast(id, status || 'Not Found', isInvalid);
+            } else {
+              console.log('[DataBridge] → Silent match, no toast');
+            }
+
+            refreshPanel(st);
+          } catch (err) {
+            console.error('[DataBridge] Scan handler error:', err);
           }
-
-          refreshPanel(st);
         }, 300);
-      });
+      }, true); // ← capture phase
     });
   }
 
@@ -635,7 +650,7 @@
     });
 
     // Retry attaching listeners after async drawer open
-    [1500, 4000].forEach(ms => setTimeout(() => attachScanListeners(appState), ms));
+    [1500, 4000].forEach(ms => setTimeout(() => { listenedInputs.clear(); attachScanListeners(appState); }, ms));
 
     // Observe DOM changes → refresh panel + borders
     let debounce = null;
