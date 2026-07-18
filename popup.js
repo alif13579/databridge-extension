@@ -634,10 +634,18 @@ async function loadHistory(append = false) {
   }
 
   console.log('📦 loadHistory | historyPath:', historyPath, '| extensionId:', extensionId, '| userId:', userId);
+  // container/{id}/records and users/{uid}/... are Google-account-scoped paths — Firebase
+  // rules require the signed-in user's own ID token to read them (401 otherwise). This was
+  // never attached here, which only started surfacing as an actual symptom once the
+  // Google-linked container ID itself started resolving correctly (see the container-
+  // resolution fix above this in history). getValidFirebaseIdToken() returns null when
+  // there's no Google session, so QR-only users are unaffected.
+  const idToken = await getValidFirebaseIdToken().catch(() => null);
+  const authQuery = idToken ? `&auth=${idToken}` : '';
   try {
     // 1. Container records (permanent / logged-in)
     if (historyPath) {
-      const res = await fetch(`${FIREBASE_URL}/${historyPath}.json?cb=${Date.now()}`);
+      const res = await fetch(`${FIREBASE_URL}/${historyPath}.json?cb=${Date.now()}${authQuery}`);
       const containerData = await res.json();
       console.log('📦 Container fetch status:', res.status, '| data type:', typeof containerData,
         '| keys:', containerData && typeof containerData === 'object' ? Object.keys(containerData).length : containerData);
@@ -651,7 +659,7 @@ async function loadHistory(append = false) {
     // If logged in, also pull every connected extension's session for this user
     if (userId) {
       try {
-        const extRes = await fetch(`${FIREBASE_URL}/users/${userId}/connections/extensions.json?cb=${Date.now()}`);
+        const extRes = await fetch(`${FIREBASE_URL}/users/${userId}/connections/extensions.json?cb=${Date.now()}${authQuery}`);
         const extMap = await extRes.json();
         if (extMap && typeof extMap === 'object') {
           Object.keys(extMap).forEach(id => sessionIds.add(id));
