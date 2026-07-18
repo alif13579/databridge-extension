@@ -227,16 +227,17 @@
     const s = document.createElement('style');
     s.id = 'db-scan-style';
     s.textContent = `
-      /* Row borders - applied to inner container */
-      .db-row-received { 
-        border-left: 6px solid #22c55e !important; 
-        background: #f0fdf4 !important; 
-        box-shadow: inset 4px 0 0 #22c55e !important;
+      /* Row borders - applied to the row's inner .p-4 container */
+      .db-row-received, .db-row-pending {
+        position: relative;
       }
-      .db-row-pending  { 
-        border-left: 6px solid #ef4444 !important; 
-        background: #fff5f5 !important; 
-        box-shadow: inset 4px 0 0 #ef4444 !important;
+      .db-row-received {
+        border-left: 5px solid #22c55e !important;
+        background: rgba(34,197,94,0.07) !important;
+      }
+      .db-row-pending {
+        border-left: 5px solid #ef4444 !important;
+        background: rgba(239,68,68,0.07) !important;
       }
 
       /* Tick mark */
@@ -580,8 +581,11 @@
       const idEl = rowIdEl(row);
       console.log('[DataBridge] Row', index, 'ID:', id, 'inExpected:', expected.has(id), 'inReceived:', received.has(id));
 
-      // Target the inner content container for styling
-      const innerContainer = row.querySelector('.p-4.flex.flex-row.w-full');
+      // Apply to the inner .p-4 container — this is always present and
+      // lets border + background render without fighting the outer row's CSS.
+      // Fall back to the row itself if the inner container isn't found.
+      const innerContainer = row.querySelector('[class*="p-4"][class*="flex-row"]')
+                          || row.querySelector('.p-4');
       const targetEl = innerContainer || row;
 
       targetEl.classList.remove('db-row-received', 'db-row-pending');
@@ -644,13 +648,18 @@
     const holdBefore   = st.holdReceived.length;
     const returnBefore = st.returnReceived.length;
 
-    // Keep only IDs that still exist on the page with the correct status
-    st.holdReceived   = st.holdReceived.filter(id =>
-      pageStatus[id] !== undefined && HOLD_VALID.has(pageStatus[id])
-    );
-    st.returnReceived = st.returnReceived.filter(id =>
-      pageStatus[id] !== undefined && RETURN_VALID.has(pageStatus[id])
-    );
+    // Remove an ID ONLY when the page explicitly shows it with a WRONG status.
+    // If the row is absent (undefined) — e.g. mid Hermes re-render — keep the
+    // ID: removing it here would kill the green border every time Hermes
+    // refreshes the DOM after processing a scan.
+    st.holdReceived   = st.holdReceived.filter(id => {
+      if (pageStatus[id] === undefined) return true; // row absent → keep
+      return HOLD_VALID.has(pageStatus[id]);          // wrong status → remove
+    });
+    st.returnReceived = st.returnReceived.filter(id => {
+      if (pageStatus[id] === undefined) return true;
+      return RETURN_VALID.has(pageStatus[id]);
+    });
 
     const changed =
       st.holdReceived.length   !== holdBefore ||
@@ -791,7 +800,13 @@
     new MutationObserver(mutations => {
       const skip = mutations.every(m =>
         [...m.addedNodes, ...m.removedNodes].every(n =>
-          n.nodeType === Node.ELEMENT_NODE && (n.id === 'db-panel' || n.classList?.contains('db-toast') || n.classList?.contains('db-row-badge'))
+          // Skip mutations caused by our own injections so we don't
+          // trigger a reconcile loop every time refreshBorders runs.
+          n.nodeType !== Node.ELEMENT_NODE ||
+          n.id === 'db-panel' ||
+          n.classList?.contains('db-toast') ||
+          n.classList?.contains('db-row-badge') ||
+          n.classList?.contains('db-tick')
         )
       );
       if (skip) return;
