@@ -271,6 +271,17 @@
         padding: 2px 6px; font: 11px/1.4 monospace; color: #334155;
       }
       .db-more { font-size: 11px; color: #94a3b8; padding: 2px 4px; align-self: center; }
+      .db-id {
+        cursor: pointer;
+        transition: background .15s, border-color .15s;
+      }
+      .db-id:hover { background: #e0f2fe !important; border-color: #7dd3fc !important; color: #0369a1 !important; }
+      @keyframes db-flash {
+        0%   { background: #fef08a; box-shadow: 0 0 0 3px #fde047; }
+        60%  { background: #fef08a; box-shadow: 0 0 0 3px #fde047; }
+        100% { background: transparent; box-shadow: none; }
+      }
+      .db-row-flash { animation: db-flash 1.8s ease forwards !important; }
       .db-done { color: #22c55e; font-weight: 600; font-size: 13px; padding: 6px 4px; }
       .db-divider { border: none; border-top: 1px solid #f1f5f9; margin: 10px 0; }
     `;
@@ -383,7 +394,7 @@
             <span>● ${label}</span><span class="db-cnt">${ids.length}</span>
           </div>
           <div class="db-ids">
-            ${shown.map(id => `<span class="db-id">${id}</span>`).join('')}
+            ${shown.map(id => `<span class="db-id" data-scroll-id="${id}">${id}</span>`).join('')}
             ${extra > 0 ? `<span class="db-more">+${extra} more</span>` : ''}
           </div>
         </div>`;
@@ -397,6 +408,23 @@
     }
 
     document.getElementById('db-pending').innerHTML = pendHTML;
+
+    // Attach scroll-on-click to every ID badge
+    document.getElementById('db-pending').querySelectorAll('[data-scroll-id]').forEach(el => {
+      el.addEventListener('click', () => scrollToRow(el.dataset.scrollId));
+    });
+  }
+
+  // ── SCROLL TO ROW ───────────────────────────────────────────────────────────
+  function scrollToRow(id) {
+    const row = findRowById(id);
+    if (!row) return;
+    row.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    row.classList.remove('db-row-flash');
+    // Force reflow so re-adding the class re-triggers the animation
+    void row.offsetWidth;
+    row.classList.add('db-row-flash');
+    setTimeout(() => row.classList.remove('db-row-flash'), 1900);
   }
 
   // ── ROW BORDERS ──────────────────────────────────────────────────────────
