@@ -237,11 +237,16 @@
         background: none; border: none; color: #fff; font-size: 18px;
         cursor: pointer; line-height: 1; padding: 0 2px;
       }
-      /* flex:1 + min-height:0 lets this scroll WITHIN the panel's 225px cap instead
-         of pushing #db-panel taller; min-height:0 is required — flex children default
-         to their content's natural height as a floor, which would defeat overflow-y. */
-      .db-body { padding: 8px; flex: 1; min-height: 0; overflow-y: auto; }
-      .db-sec  { margin-bottom: 14px; }
+      /* Row layout: Run Summary (left) + Pending Scan (right) side-by-side instead
+         of stacked. .db-body itself no longer scrolls — each .db-sec column scrolls
+         independently, since the summary table (fixed row count) and the pending-ID
+         list (can grow long) rarely need the same amount of vertical space. */
+      .db-body {
+        padding: 8px; flex: 1; min-height: 0; overflow: hidden;
+        display: flex; flex-direction: row; gap: 10px;
+      }
+      .db-sec { flex: 1; min-width: 0; overflow-y: auto; }
+      .db-vdivider { flex-shrink: 0; width: 1px; background: #e5e7eb; align-self: stretch; }
       .db-sec-title {
         font-weight: 700; font-size: 10px; text-transform: uppercase;
         letter-spacing: .5px; color: #64748b; margin-bottom: 8px;
@@ -294,7 +299,6 @@
       }
       .db-row-flash { animation: db-flash 1.8s ease forwards !important; }
       .db-done { color: #22c55e; font-weight: 600; font-size: 13px; padding: 6px 4px; }
-      .db-divider { border: none; border-top: 1px solid #f1f5f9; margin: 10px 0; }
     `;
     document.head.appendChild(s);
   }
@@ -335,7 +339,7 @@
       </div>
       <div class="db-body" id="db-body">
         <div class="db-sec" id="db-summary"></div>
-        <hr class="db-divider">
+        <div class="db-vdivider"></div>
         <div class="db-sec" id="db-pending"></div>
       </div>
     `;
