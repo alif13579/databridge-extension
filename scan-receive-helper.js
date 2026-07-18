@@ -568,12 +568,17 @@
       // Capture-phase listener — fires before Hermes bubble-phase handlers
       input.addEventListener('keydown', e => {
         if (e.key !== 'Enter') return;
-        const id = (input.value || '').trim().toUpperCase();
-        console.log('[DataBridge] Scan in', inputId, '→ ID:', id);
+        let raw = (input.value || '').trim().toUpperCase();
+        // Strip pipe suffix (e.g. DB160726JFWRVN|120 → DB160726JFWRVN)
+        const pipeIdx = raw.lastIndexOf('|');
+        const id = pipeIdx !== -1 ? raw.substring(0, pipeIdx) : raw;
+        console.log('[DataBridge] Scan in', inputId, '→ raw:', raw, '→ parsed ID:', id);
         if (!ID_REGEX.test(id)) {
           console.log('[DataBridge] ID rejected by regex:', id);
           return;
         }
+        // Replace input value with clean ID so Hermes also receives the parsed ID
+        input.value = id;
 
         setTimeout(() => {
           try {
