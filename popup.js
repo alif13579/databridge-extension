@@ -136,23 +136,18 @@ async function getActivePaths() {
 }
 
 async function resolveContainerFromMeta(meta = {}) {
-  // Bidirectional: this must be able to CLEAR currentUserId/currentContainerID, not just
-  // set them. Previously it only ever added linkage and never removed it, so an app-side
-  // logout (which PATCHes sessions/{id}/meta/user_id back to "") had no visible effect
-  // here — new scans/history kept silently going into the stale, already-logged-out
-  // user's container forever. Google-linked state (currentGoogleUid) is a completely
-  // separate source of container_id and must not be touched by this QR-session resolve.
   const userId = meta.user_id || meta.uid || meta.userId || null;
   const containerId = meta.container_id || meta.containerId || (userId ? `container_${userId}` : null);
-  const validContainerId = (typeof containerId === 'string' && containerId.startsWith('container_')) ? containerId : null;
 
-  if (userId && validContainerId) {
-    currentUserId = userId;
-    currentContainerID = validContainerId;
-    await chrome.storage.local.set({ user_id: currentUserId, container_id: currentContainerID });
-  } else if (!currentGoogleUid) {
-    await clearContainerState();
+  if (userId) currentUserId = userId;
+  if (typeof containerId === 'string' && containerId.startsWith('container_')) {
+    currentContainerID = containerId;
   }
+
+  const updates = {};
+  if (currentUserId) updates.user_id = currentUserId;
+  if (currentContainerID) updates.container_id = currentContainerID;
+  if (Object.keys(updates).length) await chrome.storage.local.set(updates);
 }
 
 // ══════════════════════════════
@@ -709,30 +704,7 @@ function startSessionListener(id) {
       if (path.startsWith('/records')) await loadHistory(false);
     } catch (e) { console.error('SSE put parse error:', e); }
   });
-  sseSource.addEventListener('patch', async (event) => {
-    try {
-      const parsed = JSON.parse(event.data);
-      const path = parsed.path || '';
-      // A patch on /meta (e.g. AuthManager.completeGoogleSignIn PATCHing user_id+type into
-      // an already-"connected" session, or a logout resetting them back to guest) only
-      // carries the CHANGED subtree in parsed.data — re-fetch the full meta node so
-      // resolveContainerFromMeta() sees the complete picture before deciding anything.
-      // This was the gap: previously this handler ignored event.data entirely and only
-      // reloaded history, so currentUserId/currentContainerID went stale the moment App
-      // logged in or out *after* the session was already connected — any scan made in
-      // that window got container_id: null forever, and a same-popup Google login on the
-      // extension side couldn't detect the conflict because currentUserId was never updated.
-      if (path.startsWith('/meta')) {
-        try {
-          const metaRes = await fetch(`${FIREBASE_URL}/sessions/${currentExtensionID}/meta.json?cb=${Date.now()}`);
-          const meta = await metaRes.json();
-          await resolveContainerFromMeta(meta || {});
-          if (currentContainerID) startContainerListener(currentContainerID);
-        } catch (e) { console.warn('Patch meta re-resolve failed:', e); }
-      }
-      await loadHistory(false);
-    } catch (e) { console.error('SSE patch parse error:', e); }
-  });
+  sseSource.addEventListener('patch', async () => { await loadHistory(false); });
   sseSource.onerror = () => {
     setTimeout(() => { if (currentExtensionID) startSessionListener(currentExtensionID); }, 5000);
   };
@@ -1013,10 +985,22 @@ async function linkExtensionToUid(extensionId, uid, email) {
   // users/{uid} read/write the Android app does via the SDK, which attaches auth automatically).
   const idToken = await getValidFirebaseIdToken().catch(() => null);
   const authParam = idToken ? `?auth=${idToken}` : '';
+  // Shape MUST match UserRepository.saveExtensionConnection()'s object exactly — the
+  // Android app's UnifiedHistoryFetcher.listenToConnectedExtensions() discovers extensions
+  // by reading connections/extensions/{id}/status === "connected". This previously wrote
+  // a bare number (`now`) here instead of an object, so that .status child was always
+  // null/missing and the app could never auto-discover a Google-linked extension — the
+  // entire "sign in with the same Google account, no QR needed" path silently did nothing
+  // on the app side even though the extension believed it had linked successfully.
   await fetch(`${FIREBASE_URL}/users/${uid}/connections/extensions/${extensionId}.json${authParam}`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(now)
+    body: JSON.stringify({
+      status: 'connected',
+      type: 'google_linked',
+      connected_at: now,
+      last_sync: now
+    })
   });
 }
 
@@ -1146,6 +1130,23 @@ async function setupDisconnect(id) {
       console.log("✅ meta.status → disconnected");
     } catch (e) {
       console.error('❌ Disconnect signal failed:', e);
+    }
+
+    // If this extension was Google-linked, also remove the discovery entry under
+    // users/{uid}/connections/extensions — otherwise the app keeps listening to
+    // sessions/{id}/records forever, believing this extension is still "connected"
+    // (see linkExtensionToUid()'s PUT of status:"connected" there).
+    if (currentGoogleUid) {
+      try {
+        const idToken = await getValidFirebaseIdToken().catch(() => null);
+        const authParam = idToken ? `?auth=${idToken}` : '';
+        await fetch(`${FIREBASE_URL}/users/${currentGoogleUid}/connections/extensions/${id}.json${authParam}`, {
+          method: "DELETE",
+          keepalive: true
+        });
+      } catch (e) {
+        console.error('❌ Extension-connection cleanup failed:', e);
+      }
     }
 
     // ② তারপর local cleanup
