@@ -21,6 +21,8 @@ let sortOrder = 'newest';
 
 let currentGoogleUid = null;
 let currentGoogleEmail = null;
+let currentGoogleName = null;
+let currentGooglePhotoUrl = null;
 let currentIdToken = null;
 let currentRefreshToken = null;
 function normalizePhoneKey(text) {
@@ -735,6 +737,15 @@ function startContainerListener(containerId) {
 // ══════════════════════════════
 // 🔗 কানেকশন স্টেট UI
 // ══════════════════════════════
+/** meta object for showConnectedState() when the active session is Google-linked —
+ *  prefers the real profile name/photo (from users/{uid}/profile) over the raw email. */
+function googleLinkedMeta() {
+  return {
+    device_info: currentGoogleName || currentGoogleEmail || 'Google account',
+    avatar_url: currentGooglePhotoUrl || ''
+  };
+}
+
 function showConnectedState(d) {
   document.getElementById('screen-google-login')?.classList.remove('active');
   document.getElementById('screen-connect')?.classList.remove('active');
@@ -743,7 +754,16 @@ function showConnectedState(d) {
   const n = d?.meta?.device_info || d?.meta?.android_id?.substring(0, 8) || 'Connected';
   document.getElementById('status-name').textContent = n;
   document.getElementById('agent-name').textContent = n;
-  document.getElementById('agent-avatar').textContent = n.charAt(0).toUpperCase();
+
+  const avatarEl = document.getElementById('agent-avatar');
+  const avatarUrl = d?.meta?.avatar_url;
+  if (avatarEl) {
+    if (avatarUrl) {
+      avatarEl.innerHTML = `<img src="${avatarUrl}" alt="" referrerpolicy="no-referrer">`;
+    } else {
+      avatarEl.textContent = n.charAt(0).toUpperCase();
+    }
+  }
 
   // Extension ID
   const extEl = document.getElementById('connected-ext-id');
@@ -768,7 +788,7 @@ function showDisconnectedState() {
   // checkConnectionWithFallback()), but checking here too means a future caller forgetting
   // that guard can't accidentally wipe a valid Google session and bounce the user back to Guest.
   if (currentGoogleUid) {
-    showConnectedState({ meta: { device_info: currentGoogleEmail || 'Google account' } });
+    showConnectedState({ meta: googleLinkedMeta() });
     return;
   }
   clearContainerState(); // wipe container so subsequent loadHistory won't fetch it
@@ -792,7 +812,7 @@ async function checkConnectionWithFallback(extension_id, retries = 5) {
   // reopening the popup after a successful Google login showed Guest + the QR screen again.
   const googleLinked = !!currentGoogleUid;
   if (googleLinked) {
-    showConnectedState({ meta: { device_info: currentGoogleEmail || 'Google account' } });
+    showConnectedState({ meta: googleLinkedMeta() });
   }
 
   for (let i = 0; i < retries; i++) {
@@ -909,10 +929,58 @@ async function exchangeGoogleTokenForFirebaseUid(accessToken) {
   return {
     uid: data.localId,
     email: data.email || '',
+    displayName: data.displayName || '',
+    photoUrl: data.photoUrl || '',
     idToken: data.idToken,
     refreshToken: data.refreshToken,
     expiresIn: parseInt(data.expiresIn, 10) || 3600
   };
+}
+
+/** Mirrors AuthManager.completeGoogleSignIn() / UserRepository.createNewProfile() on the
+ *  Android app side: checks users/{uid}/profile — if it already exists, leaves it completely
+ *  untouched and just returns it (so this extension never clobbers a real profile the app or
+ *  an admin has set up, e.g. role, branch assignments). If it doesn't exist, creates a brand
+ *  new one with the exact same shape/fields the app writes, so the app and extension agree on
+ *  what a "new user" profile looks like regardless of which side signs in first. */
+async function ensureUserProfile(uid, idToken, displayName, email, photoUrl) {
+  const authParam = idToken ? `?auth=${idToken}` : '';
+  const profileUrl = `${FIREBASE_URL}/users/${uid}/profile.json${authParam}`;
+
+  const existing = await fetch(profileUrl).then(r => r.json()).catch(() => null);
+  if (existing) return existing; // ✅ existing user — profile untouched, just return it
+
+  // ✅ new user — create fresh profile with guest role (same defaults as
+  // UserRepository.createNewProfile on the Android app)
+  const now = Date.now();
+  const newProfile = {
+    name: displayName || (email ? email.split('@')[0] : 'User'),
+    email: email || '',
+    containerId: `container_${uid}`,
+    user_id: uid,
+    photo_url: photoUrl || '',
+    createdAt: now,
+    lastActive: now,
+    company_info: {
+      role_id: 'guest',
+      branch_ids: [],
+      employee_id: '',
+      designation: '',
+      agent_type: '',
+      salary_model: '',
+      salary_type: '',
+      fixed_amount: '',
+      status: 'active'
+    }
+  };
+
+  await fetch(profileUrl, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(newProfile)
+  });
+
+  return newProfile;
 }
 
 // In-memory Firebase auth token state — mirrored to chrome.storage.local so it survives
@@ -1009,7 +1077,7 @@ async function handleGoogleLogin() {
   if (btn) { btn.disabled = true; btn.textContent = 'Signing in...'; }
   try {
     const accessToken = await getGoogleAuthToken(true);
-    const { uid, email, idToken, refreshToken, expiresIn } = await exchangeGoogleTokenForFirebaseUid(accessToken);
+    const { uid, email, displayName, photoUrl, idToken, refreshToken, expiresIn } = await exchangeGoogleTokenForFirebaseUid(accessToken);
 
     // Conflict check: currentUserId gets set by resolveContainerFromMeta() whenever a QR
     // session's meta carries a user_id (i.e., this extension is already paired to an Android
@@ -1035,9 +1103,22 @@ async function handleGoogleLogin() {
     currentIdToken = idToken;
     currentRefreshToken = refreshToken;
     idTokenExpiresAt = Date.now() + expiresIn * 1000;
+
+    // ✅ users/{uid}/profile — check if it already exists (existing user, e.g. already
+    // signed in on the Android app) or needs to be created fresh (brand-new user). Same
+    // path + shape as AuthManager.completeGoogleSignIn() on the app side.
+    const profile = await ensureUserProfile(uid, idToken, displayName, email, photoUrl).catch((err) => {
+      console.error('ensureUserProfile failed:', err);
+      return null;
+    });
+    currentGoogleName = profile?.name || displayName || email;
+    currentGooglePhotoUrl = profile?.photo_url || photoUrl || '';
+
     await chrome.storage.local.set({
       google_uid: uid,
       google_email: email,
+      google_name: currentGoogleName,
+      google_photo_url: currentGooglePhotoUrl,
       google_id_token: currentIdToken,
       google_refresh_token: currentRefreshToken,
       google_token_expires_at: idTokenExpiresAt
@@ -1054,7 +1135,7 @@ async function handleGoogleLogin() {
     await chrome.storage.local.set({ container_id: currentContainerID, user_id: uid });
 
     document.getElementById('screen-google-login')?.classList.remove('active');
-    showConnectedState({ meta: { device_info: email || 'Google account' } });
+    showConnectedState({ meta: googleLinkedMeta() });
     // NOTE: getActivePaths() is intentionally NOT called here — it re-derives
     // containerID from sessions/{extension_id}/meta, which only exists for the
     // QR-connect flow. Calling it here was clobbering the containerID we just
@@ -1072,13 +1153,15 @@ async function handleGoogleLogin() {
 async function restoreGoogleLoginState() {
   const stored = await new Promise((resolve) =>
     chrome.storage.local.get(
-      ['google_uid', 'google_email', 'google_id_token', 'google_refresh_token', 'google_token_expires_at'],
+      ['google_uid', 'google_email', 'google_name', 'google_photo_url', 'google_id_token', 'google_refresh_token', 'google_token_expires_at'],
       resolve
     )
   );
   if (stored.google_uid) {
     currentGoogleUid = stored.google_uid;
     currentGoogleEmail = stored.google_email || '';
+    currentGoogleName = stored.google_name || '';
+    currentGooglePhotoUrl = stored.google_photo_url || '';
     currentIdToken = stored.google_id_token || null;
     currentRefreshToken = stored.google_refresh_token || null;
     idTokenExpiresAt = stored.google_token_expires_at || 0;
@@ -1095,11 +1178,13 @@ async function clearGoogleLoginState() {
   // stored session state below.
   currentGoogleUid = null;
   currentGoogleEmail = null;
+  currentGoogleName = null;
+  currentGooglePhotoUrl = null;
   currentIdToken = null;
   currentRefreshToken = null;
   idTokenExpiresAt = 0;
   await chrome.storage.local.remove([
-    'google_uid', 'google_email',
+    'google_uid', 'google_email', 'google_name', 'google_photo_url',
     'google_id_token', 'google_refresh_token', 'google_token_expires_at'
   ]);
 }
