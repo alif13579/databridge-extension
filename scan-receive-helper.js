@@ -371,10 +371,7 @@
       rows += `<tr>
         <td><span class="db-dot" style="background:${c}"></span>${status}</td>
         <td class="num">${d.qty}</td>
-        <td class="num" style="white-space:nowrap">
-          ${amtStr}
-          ${d.total ? `<button class="db-copy-btn" data-copy="${d.total}" title="Copy amount">⎘</button>` : ''}
-        </td>
+        <td class="num">${amtStr}</td>
       </tr>`;
     });
     document.getElementById('db-summary').innerHTML = `
