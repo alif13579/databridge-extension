@@ -223,19 +223,24 @@
       #db-panel {
         position: fixed; top: 80px; right: 100px; z-index: 2147483646;
         background: #fff; border: 1px solid #e2e8f0; border-radius: 12px;
-        box-shadow: 0 4px 24px rgba(0,0,0,.13); width: 200px;
+        box-shadow: 0 4px 24px rgba(0,0,0,.13); width: 415px; max-height: 225px;
         font: 13px/1.5 -apple-system, Segoe UI, sans-serif; overflow: hidden;
+        display: flex; flex-direction: column;
       }
       .db-hdr {
         background: #1e293b; color: #fff; padding: 7px 10px;
         display: flex; justify-content: space-between; align-items: center;
         cursor: move; user-select: none; font-weight: 600; font-size: 11px;
+        flex-shrink: 0;
       }
       .db-hdr button {
         background: none; border: none; color: #fff; font-size: 18px;
         cursor: pointer; line-height: 1; padding: 0 2px;
       }
-      .db-body { padding: 8px; max-height: 85vh; overflow-y: auto; }
+      /* flex:1 + min-height:0 lets this scroll WITHIN the panel's 225px cap instead
+         of pushing #db-panel taller; min-height:0 is required — flex children default
+         to their content's natural height as a floor, which would defeat overflow-y. */
+      .db-body { padding: 8px; flex: 1; min-height: 0; overflow-y: auto; }
       .db-sec  { margin-bottom: 14px; }
       .db-sec-title {
         font-weight: 700; font-size: 10px; text-transform: uppercase;
