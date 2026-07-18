@@ -798,8 +798,20 @@
     // Observe DOM changes → refresh panel + borders
     let debounce = null;
     new MutationObserver(mutations => {
-      const skip = mutations.every(m =>
-        [...m.addedNodes, ...m.removedNodes].every(n =>
+      const skip = mutations.every(m => {
+        // Any mutation whose target lives inside our own panel. This was the missing
+        // case: refreshPanel() replaces #db-summary/#db-pending's innerHTML on every
+        // scan/save/reconcile, and every one of those mutations has a TARGET inside
+        // #db-panel even though the individual added/removed nodes below (a fresh
+        // .db-sec-title, .db-table, .db-copy-btn, etc.) don't carry id="db-panel"
+        // themselves. Without this check, each refresh re-triggered this same observer
+        // ~100-300ms later, which refreshed again, forever — tearing down and rebuilding
+        // every button/listener in the panel on a loop. That's why the copy button (and
+        // pending-ID click-to-scroll) needed several clicks: some fraction of clicks
+        // landed in the instant the button was mid-rebuild and had no listener yet.
+        if (m.target && m.target.closest && m.target.closest('#db-panel')) return true;
+
+        return [...m.addedNodes, ...m.removedNodes].every(n =>
           // Skip mutations caused by our own injections so we don't
           // trigger a reconcile loop every time refreshBorders runs.
           n.nodeType !== Node.ELEMENT_NODE ||
@@ -807,8 +819,8 @@
           n.classList?.contains('db-toast') ||
           n.classList?.contains('db-row-badge') ||
           n.classList?.contains('db-tick')
-        )
-      );
+        );
+      });
       if (skip) return;
 
       // Check if any monitored input changed value (Hermes processed scan)
