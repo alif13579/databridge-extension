@@ -221,7 +221,7 @@
 
       /* Floating panel */
       #db-panel {
-        position: fixed; top: 80px; right: 375px; z-index: 2147483646;
+        position: fixed; top: 0px; right: 375px; z-index: 2147483646;
         background: #fff; border: 1px solid #e2e8f0; border-radius: 12px;
         box-shadow: 0 4px 24px rgba(0,0,0,.13); width: 415px; max-height: 225px;
         font: 13px/1.5 -apple-system, Segoe UI, sans-serif; overflow: hidden;
