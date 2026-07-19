@@ -4,6 +4,13 @@
 const FIREBASE_URL = CONFIG.FIREBASE_URL;
 const FIREBASE_WEB_API_KEY = CONFIG.FIREBASE_WEB_API_KEY;
 const PAGINATION_LIMIT = CONFIG.PAGINATION_LIMIT || 20;
+// users/{uid}/connections/extensions/{id} is meant to hold only CURRENTLY ACTIVE
+// extensions (so the Android app knows how many/which are live right now). Nothing
+// previously re-confirmed presence after initial Google-login, so an entry from a
+// browser that just closed/uninstalled without clicking Disconnect stayed "connected"
+// forever. Agreed cleanup threshold: 1 day — see touchExtensionConnection() (heartbeat)
+// and loadHistory()'s pruning below.
+const EXTENSION_STALE_MS = 24 * 60 * 60 * 1000;
 
 // ══════════════════════════════
 // 🌐 গ্লোবাল স্টেট
@@ -661,28 +668,59 @@ async function loadHistory(append = false) {
       absorb(containerData, 'permanent', null);
     }
 
-    // 2. Collect all session IDs to fetch
+    // 2. Collect all session IDs to fetch — and prune sibling extension connections
+    // that have gone stale (>1 day since last_sync). This list is meant to hold only
+    // currently-active extensions (so the Android app knows what's live right now),
+    // but nothing previously re-confirmed presence after initial Google-login (see
+    // touchExtensionConnection()), so entries from a browser that closed/uninstalled
+    // without clicking Disconnect stayed "connected" forever — both a data-hygiene
+    // problem and, since every one of these got fetched below on every popup open,
+    // the main cause of slow load times once several had piled up.
+    // Scoped to type === 'google_linked' only (this extension's own connection shape) —
+    // never touches Android-app-originated entries (different type/lifecycle, and this
+    // repo can't confirm whether the app side keeps its own presence fresh).
     const sessionIds = new Set();
     if (extensionId) sessionIds.add(extensionId);
 
-    // If logged in, also pull every connected extension's session for this user
     if (userId) {
       try {
         const extRes = await fetch(`${FIREBASE_URL}/users/${userId}/connections/extensions.json?cb=${Date.now()}${authQuery}`);
         const extMap = await extRes.json();
         if (extMap && typeof extMap === 'object') {
-          Object.keys(extMap).forEach(id => sessionIds.add(id));
+          const now = Date.now();
+          Object.entries(extMap).forEach(([id, conn]) => {
+            const lastSeen = conn?.last_sync || conn?.connected_at || 0;
+            const isStale = id !== extensionId && conn?.type === 'google_linked' && (now - lastSeen) > EXTENSION_STALE_MS;
+            if (isStale) {
+              // Fire-and-forget — don't block this popup's own load on cleaning up
+              // someone else's dead entry.
+              fetch(`${FIREBASE_URL}/users/${userId}/connections/extensions/${id}.json${authQuery}`, { method: 'DELETE' }).catch(() => {});
+              console.log('🧹 Pruned stale extension connection:', id, '(last seen', lastSeen ? new Date(lastSeen).toISOString() : 'never', ')');
+            } else {
+              sessionIds.add(id);
+            }
+          });
         }
       } catch (e) { console.warn('Could not fetch user extensions list:', e); }
     }
 
-    // 3. Fetch records from each session
-    for (const extId of sessionIds) {
+    // 3. Fetch records from each still-active session IN PARALLEL — this loop used to
+    // await one fetch at a time, so total wait time was the SUM of every session's
+    // latency; with several sessions (very likely once several devices had connected
+    // over time, especially before the pruning above existed) that stacked up to real,
+    // user-visible delay on every popup open.
+    const sessionResults = await Promise.all([...sessionIds].map(async extId => {
       try {
         const res = await fetch(`${FIREBASE_URL}/sessions/${extId}/records.json?cb=${Date.now()}`);
-        absorb(await res.json(), extId === extensionId ? 'session' : 'session_other', extId);
-      } catch (e) { console.warn(`Session ${extId} fetch failed:`, e); }
-    }
+        return { extId, data: await res.json() };
+      } catch (e) {
+        console.warn(`Session ${extId} fetch failed:`, e);
+        return { extId, data: null };
+      }
+    }));
+    sessionResults.forEach(({ extId, data }) => {
+      absorb(data, extId === extensionId ? 'session' : 'session_other', extId);
+    });
 
     // Sort: Newest → Oldest
     allItems.sort((a, b) => (b.received_at || 0) - (a.received_at || 0));
@@ -1165,6 +1203,27 @@ async function linkExtensionToUid(extensionId, uid, email) {
   });
 }
 
+/**
+ * Heartbeat: refreshes this extension's own last_sync under
+ * users/{uid}/connections/extensions/{extensionId}. linkExtensionToUid() above only
+ * ever runs once, at Google-login time — without something re-touching last_sync on
+ * every subsequent popup open, a genuinely still-in-use extension would look just as
+ * stale as an abandoned one once EXTENSION_STALE_MS has passed, and loadHistory()'s
+ * pruning below would delete it. Fire-and-forget: this is presence bookkeeping, not
+ * data anything on this popup-open actually waits on.
+ */
+async function touchExtensionConnection(extensionId, uid) {
+  try {
+    const idToken = await getValidFirebaseIdToken().catch(() => null);
+    const authParam = idToken ? `?auth=${idToken}` : '';
+    await fetch(`${FIREBASE_URL}/users/${uid}/connections/extensions/${extensionId}.json${authParam}`, {
+      method : 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body   : JSON.stringify({ last_sync: Date.now() })
+    });
+  } catch (e) { console.warn('touchExtensionConnection failed:', e); }
+}
+
 async function handleGoogleLogin() {
   const btn = document.getElementById('google-login-btn');
   if (btn) { btn.disabled = true; btn.textContent = 'Signing in...'; }
@@ -1460,6 +1519,9 @@ async function init() {
     setupDisconnect(extension_id);
     setupGoogleLogin();
     await restoreGoogleLoginState();
+    // Fire-and-forget heartbeat — not on the critical path, see touchExtensionConnection()'s
+    // doc comment for why this needs to run on every open, not just at login.
+    if (currentGoogleUid) touchExtensionConnection(extension_id, currentGoogleUid);
     setupSearch();
     setupSettings();
     setupLoadMore();
@@ -1472,7 +1534,9 @@ async function init() {
 
     // ✅ ৩. কানেকশন চেক & হিস্ট্রি লোড
     await checkConnectionWithFallback(extension_id);
-    await getActivePaths();
+    // (getActivePaths() used to be called again here — removed: loadHistory() calls it
+    // internally at its own start and uses that result directly, so this was a second,
+    // fully redundant sessions/{id}/meta.json fetch every single popup open.)
     await loadHistory(false);
     startSessionListener(extension_id);
     if (currentContainerID) startContainerListener(currentContainerID);
