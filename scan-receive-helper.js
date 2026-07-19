@@ -187,14 +187,30 @@
 
   // Build expected ID lists by reading the current parcel list DOM
   function buildExpected() {
-    const holdExpected = [], returnExpected = [];
-    parcelRows().forEach(row => {
+    const holdExpected = [], returnExpected = [], skipped = [];
+    const rows = parcelRows();
+    console.log('[DB] buildExpected → total rows found by parcelRows():', rows.length);
+
+    rows.forEach((row, i) => {
       const id  = rowId(row);
-      const st  = (rowStatus(row) || '').toLowerCase();
-      if (!ID_REGEX.test(id)) return;
-      if (HOLD_VALID.has(st))   holdExpected.push(id);
-      else if (RETURN_VALID.has(st)) returnExpected.push(id);
+      const st  = rowStatus(row) || '';
+      const stL = st.toLowerCase();
+
+      if (!ID_REGEX.test(id)) {
+        skipped.push({ i, id: id || '(empty)', st, reason: 'ID_REGEX fail' });
+        return;
+      }
+      if (HOLD_VALID.has(stL))        holdExpected.push(id);
+      else if (RETURN_VALID.has(stL)) returnExpected.push(id);
+      else                            skipped.push({ i, id, st, reason: 'status not in hold/return' });
     });
+
+    console.group('[DB] buildExpected result');
+    console.log('Hold expected   (%d):', holdExpected.length, holdExpected);
+    console.log('Return expected (%d):', returnExpected.length, returnExpected);
+    if (skipped.length)
+      console.table(skipped);
+    console.groupEnd();
     return { holdExpected, returnExpected };
   }
 
@@ -228,14 +244,14 @@
 
   function findRowById(id) {
     const rows = parcelRows();
-    console.log('[DataBridge] findRowById: searching', rows.length, 'rows for', id);
+    // (findRowById logs suppressed to reduce noise)
     const found = rows.find(r => {
       const rid = rowId(r);
       const match = rid === id;
-      if (match) console.log('[DataBridge] Found match! Row ID:', rid);
+
       return match;
     });
-    if (!found) console.log('[DataBridge] No row found for ID:', id);
+
     return found;
   }
 
@@ -493,6 +509,7 @@
       </table>
     `;
 
+    console.groupEnd(); // refreshBorders
     // Attach copy listeners on amount buttons
     document.getElementById('db-summary').querySelectorAll('.db-copy-btn').forEach(btn => {
       btn.addEventListener('click', (e) => {
@@ -591,13 +608,13 @@
   function refreshBorders(st) {
     const received = new Set([...st.holdReceived, ...st.returnReceived]);
     const expected = new Set([...st.holdExpected, ...st.returnExpected]);
-    console.log('[DataBridge] refreshBorders: received=', received.size, 'expected=', expected.size);
-    console.log('[DataBridge] holdReceived:', st.holdReceived);
-    console.log('[DataBridge] returnReceived:', st.returnReceived);
+    console.group('[DB] refreshBorders — expected:%d  received:%d', expected.size, received.size);
+    console.log('holdReceived   :', st.holdReceived);
+    console.log('returnReceived :', st.returnReceived);
     parcelRows().forEach((row, index) => {
       const id   = rowId(row);
       const idEl = rowIdEl(row);
-      console.log('[DataBridge] Row', index, 'ID:', id, 'inExpected:', expected.has(id), 'inReceived:', received.has(id));
+      console.log('[DB] row', index, '|', id || '(no id)', '| expected:', expected.has(id), '| received:', received.has(id));
 
       // Apply to the inner .p-4 container — this is always present and
       // lets border + background render without fighting the outer row's CSS.
@@ -710,9 +727,9 @@
         // Strip pipe suffix (e.g. DB160726JFWRVN|120 → DB160726JFWRVN)
         const pipeIdx = raw.lastIndexOf('|');
         const id = pipeIdx !== -1 ? raw.substring(0, pipeIdx) : raw;
-        console.log('[DataBridge] Scan in', inputId, '→ raw:', raw, '→ parsed ID:', id);
+        console.log('[DB] SCAN in', inputId, '→ raw:', raw, '→ parsed ID:', id);
         if (!ID_REGEX.test(id)) {
-          console.log('[DataBridge] ID rejected by regex:', id);
+          console.warn('[DB] ID rejected by regex:', id);
           return;
         }
         // Replace input value with clean ID so Hermes also receives the parsed ID
@@ -720,28 +737,19 @@
 
         setTimeout(() => {
           try {
-            console.log('[DataBridge] Looking for row with ID:', id);
-            const allRows = parcelRows();
-            console.log('[DataBridge] Total rows found:', allRows.length);
-            allRows.forEach((r, i) => {
-              const rid = rowId(r);
-              console.log('[DataBridge] Row', i, 'ID:', rid, '| Match:', rid === id);
-            });
-
+            console.log('[DB] Looking for row ID:', id, '— rows available:', parcelRows().length);
             const row    = findRowById(id);
-            console.log('[DataBridge] Row found:', !!row);
             const status = row ? rowStatus(row) : 'Not Found';
-            console.log('[DataBridge] Status:', status);
             const stLow  = (status || '').toLowerCase();
-            console.log('[DataBridge] Status for', id, ':', status, '| check:', stLow, '!==', noToastStatus);
+            console.log('[DB] Row found:', !!row, '| status:', status, '| noToastStatus:', noToastStatus);
 
             // Show toast unless this is the "silent" match for this field
             if (stLow !== noToastStatus) {
               const isInvalid = !validSet.has(stLow);
-              console.log('[DataBridge] → SHOW toast (invalid:', isInvalid + ')');
+              console.log('[DB] → toast (invalid:', isInvalid, ')');
               showToast(id, status || 'Not Found', isInvalid);
             } else {
-              console.log('[DataBridge] → Silent match, no toast');
+              console.log('[DB] → silent match, no toast');
             }
 
             // IMPORTANT: Add ID to received list immediately for visual feedback
@@ -794,8 +802,27 @@
   function init() {
     injectStyle();
 
+    // ── PARCEL LIST SNAPSHOT (for debugging) ──
+    const allRows = parcelRows();
+    console.group('[DB] INIT — parcel list snapshot (%d rows)', allRows.length);
+    const snapshot = allRows.map((row, i) => ({
+      '#': i + 1,
+      id:      rowId(row)     || '(none)',
+      status:  rowStatus(row) || '(none)',
+    }));
+    console.table(snapshot);
+    console.log('[DB] Run ID:', getRunId());
+    console.log('[DB] Storage key:', STORAGE_KEY);
+    console.groupEnd();
+    // ────────────────────────────────────────────
+
     const { holdExpected, returnExpected } = buildExpected();
     appState = initState(holdExpected, returnExpected);
+    console.log('[DB] State loaded from storage?', !!(loadState()));
+    console.log('[DB] appState.holdExpected:', appState.holdExpected);
+    console.log('[DB] appState.returnExpected:', appState.returnExpected);
+    console.log('[DB] appState.holdReceived:', appState.holdReceived);
+    console.log('[DB] appState.returnReceived:', appState.returnReceived);
 
     reconcileWithPageState(appState); // clean stale received IDs on load
     createPanel();
