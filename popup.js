@@ -14,6 +14,7 @@ let currentUserId = null;
 let historyItems = [];
 let sseSource = null;
 let containerSseSource = null;
+let scanSseSource = null;
 let searchQuery = '';
 let refreshInterval = null;
 let isInitialized = false;
@@ -787,6 +788,36 @@ async function startContainerListener(containerId) {
   };
 }
 
+// scanned/barcode_scans is a flat, global node (not scoped under container/{id}) — every
+// agent's scans land here regardless of device/session. loadScanHistory() does a one-shot
+// full fetch of it (so new barcodes from other sessions are discovered, not just already-
+// known local ones), and this listener keeps that in sync live afterwards. Requires a
+// Google ID token (same as container/), so this is a no-op for QR-only sessions — there's
+// no token mechanism for those, and retrying a stream that will only ever 401 would just
+// spam reconnects every 5s forever.
+async function startScanListener() {
+  if (scanSseSource) { scanSseSource.close(); scanSseSource = null; }
+  if (!currentGoogleUid) return;
+  const idToken = await getValidFirebaseIdToken().catch(() => null);
+  if (!idToken) return;
+  scanSseSource = new EventSource(`${FIREBASE_URL}/scanned/barcode_scans.json?auth=${idToken}`);
+  const reload = () => { if (isInitialized) loadScanHistory(); };
+  scanSseSource.addEventListener('put', (event) => {
+    try {
+      const parsed = JSON.parse(event.data);
+      // The very first event on connect is always a full snapshot at path "/" — skip it,
+      // loadScanHistory()'s own full fetch already covers that. Only reload for actual
+      // deltas afterwards (path like "/DA123..." or "/DA123.../scan_...").
+      if (parsed.path === '/') return;
+      reload();
+    } catch (e) { console.error('Scan SSE error:', e); }
+  });
+  scanSseSource.addEventListener('patch', reload);
+  scanSseSource.onerror = () => {
+    setTimeout(() => { if (currentGoogleUid) startScanListener(); }, 5000);
+  };
+}
+
 // ══════════════════════════════
 // 🔗 কানেকশন স্টেট UI
 // ══════════════════════════════
@@ -1196,6 +1227,7 @@ async function handleGoogleLogin() {
     // loadHistory() right after Google login.
     await loadHistory(false);
     if (currentContainerID) startContainerListener(currentContainerID);
+    startScanListener();
   } catch (e) {
     console.error('Google Sign-In failed:', e);
     if (btn) { btn.textContent = 'Sign in with Google'; btn.disabled = false; }
@@ -1290,6 +1322,7 @@ async function setupDisconnect(id) {
     // ② তারপর local cleanup
     if (sseSource) { sseSource.close(); sseSource = null; }
     if (containerSseSource) { containerSseSource.close(); containerSseSource = null; }
+    if (scanSseSource) { scanSseSource.close(); scanSseSource = null; }
     await clearContainerState();
     await clearGoogleLoginState();
     // Every connection gets a fresh extension ID — old one is dropped so it
@@ -1432,6 +1465,7 @@ async function init() {
     await loadHistory(false);
     startSessionListener(extension_id);
     if (currentContainerID) startContainerListener(currentContainerID);
+    startScanListener();
 
     isInitialized = true;
     console.log("✅ Popup initialized with ID:", extension_id);
@@ -1555,14 +1589,11 @@ function loadScanHistory() {
     const log = result.scan_log || {};
     const barcodeKeys = Object.keys(log);
 
-    if (barcodeKeys.length === 0) {
-      scanItems = [];
-      renderScanList();
-      updateScanBadge();
-      return;
-    }
-
-    // Build initial items from local data (shown immediately)
+    // Build initial items from local data (shown immediately, before Firebase responds).
+    // NOTE: Firebase is always queried below regardless of whether any local scans exist —
+    // this function used to return early here when scan_log was empty, which meant a
+    // barcode scanned on another device/session (never touching this browser's storage)
+    // could never appear, no matter how long the tab stayed open.
     scanItems = barcodeKeys.map(safeKey => {
       const localScans = log[safeKey] || {};
       const entries = Object.entries(localScans).map(([scanKey, d]) => ({
@@ -1586,40 +1617,52 @@ function loadScanHistory() {
     renderScanList();
     updateScanBadge();
 
-    // Fetch from Firebase for each barcode, update cards as they load
-    await Promise.all(barcodeKeys.map(async safeKey => {
-      try {
-        const idToken = await getValidFirebaseIdToken().catch(() => null);
-        const authParam = idToken ? `&auth=${idToken}` : '';
-        const res  = await fetch(`${FIREBASE_URL}/scanned/barcode_scans/${safeKey}.json?cb=${Date.now()}${authParam}`);
-        const data = await res.json();
-        const item = scanItems.find(i => i.barcodeKey === safeKey);
-        if (!item) return;
-        item.loading = false;
+    // Fetch the FULL scanned/barcode_scans list in a single call. This both enriches
+    // barcodes already known locally AND discovers barcodes scanned elsewhere (another
+    // device/session) that never touched this browser's local storage — previously this
+    // only re-fetched per already-known local key via Promise.all, one request per key,
+    // so anything scanned on another device never appeared here at all.
+    try {
+      const idToken = await getValidFirebaseIdToken().catch(() => null);
+      const authParam = idToken ? `&auth=${idToken}` : '';
+      const res = await fetch(`${FIREBASE_URL}/scanned/barcode_scans.json?cb=${Date.now()}${authParam}`);
+      const allData = await res.json();
 
-        if (data && typeof data === 'object') {
-          const fbEntries = Object.entries(data).map(([scanKey, val]) => ({
-            scanKey,
-            scanned_by  : val.scanned_by   || '—',
-            uid         : val.uid          || '—',
-            createdAt   : val.createdAt,
-            url         : val.url,
-            hostname    : getHostname(val.url),
-            fromFirebase: true,
-          }));
+      if (allData && typeof allData === 'object') {
+        Object.entries(allData).forEach(([safeKey, data]) => {
+          let item = scanItems.find(i => i.barcodeKey === safeKey);
+          if (!item) {
+            item = { barcodeKey: safeKey, barcode: safeKey, entries: [], loading: false };
+            scanItems.push(item);
+          }
 
-          // Merge: Firebase is truth, keep any local-only entries
-          const fbKeys = new Set(fbEntries.map(e => e.scanKey));
-          const localOnly = (item.entries || []).filter(e => !fbKeys.has(e.scanKey));
-          item.entries = [...fbEntries, ...localOnly]
-            .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
-        }
-      } catch {
-        const item = scanItems.find(i => i.barcodeKey === safeKey);
-        if (item) item.loading = false;
+          if (data && typeof data === 'object') {
+            const fbEntries = Object.entries(data).map(([scanKey, val]) => ({
+              scanKey,
+              scanned_by  : val.scanned_by   || '—',
+              uid         : val.uid          || '—',
+              createdAt   : val.createdAt,
+              url         : val.url,
+              hostname    : getHostname(val.url),
+              fromFirebase: true,
+            }));
+
+            // Merge: Firebase is truth, keep any local-only entries (not yet synced)
+            const fbKeys = new Set(fbEntries.map(e => e.scanKey));
+            const localOnly = (item.entries || []).filter(e => !fbKeys.has(e.scanKey));
+            item.entries = [...fbEntries, ...localOnly]
+              .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+          }
+        });
       }
-      renderScanList();
-    }));
+    } catch (e) {
+      console.warn('Could not fetch scan list from Firebase:', e);
+    }
+
+    scanItems.forEach(item => { item.loading = false; });
+    scanItems.sort((a, b) => (b.entries[0]?.createdAt || 0) - (a.entries[0]?.createdAt || 0));
+    renderScanList();
+    updateScanBadge();
   });
 }
 
