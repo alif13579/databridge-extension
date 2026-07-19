@@ -854,3 +854,97 @@ input:checked + .toggle-slider:before { transform: translateX(14px); }
   100% { background: transparent; }
 }
 .memory-row-flash { animation: memory-flash 0.8s ease; }
+
+/* ── Memory Brain Icon & Overlay ── */
+.memory-brain-btn {
+  background: none;
+  border: none;
+  font-size: 16px;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 5px;
+  line-height: 1;
+  transition: background 0.15s;
+}
+.memory-brain-btn:hover { background: rgba(255,255,255,0.1); }
+
+.memory-overlay {
+  position: absolute;
+  top: 52px;
+  left: 0; right: 0;
+  background: #111827;
+  border-bottom: 2px solid #1e3a5f;
+  z-index: 9999;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.4);
+  max-height: 300px;
+  display: flex;
+  flex-direction: column;
+}
+.memory-overlay.hidden { display: none; }
+
+.memory-overlay-hdr {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 12px;
+  background: #0d1b2e;
+  border-bottom: 1px solid #1e3a5f;
+  flex-shrink: 0;
+}
+.memory-overlay-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: #e0e6f0;
+}
+.memory-overlay-run {
+  font-size: 10px;
+  color: #4a7fa5;
+  margin-left: 6px;
+}
+.memory-fill-btn {
+  background: #3b82f6;
+  border: none;
+  border-radius: 4px;
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  padding: 3px 8px;
+  cursor: pointer;
+}
+.memory-fill-btn:hover { background: #2563eb; }
+.memory-overlay-close {
+  background: none;
+  border: none;
+  color: #4a7fa5;
+  font-size: 14px;
+  cursor: pointer;
+  padding: 0 2px;
+  margin-left: 4px;
+}
+.memory-overlay-close:hover { color: #ef4444; }
+
+.memory-overlay-list {
+  overflow-y: auto;
+  flex: 1;
+}
+.memory-overlay-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 7px 12px;
+  border-bottom: 1px solid #0d1b2e;
+  transition: opacity 0.2s;
+}
+.memory-overlay-row:hover { background: #0d1b2e; }
+.memory-overlay-copy-btn {
+  background: #1e3a5f;
+  border: 1px solid #2d5a8e;
+  border-radius: 4px;
+  color: #7ab3e0;
+  font-size: 10px;
+  font-weight: 600;
+  padding: 3px 8px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.memory-overlay-copy-btn:hover { background: #22c55e; border-color: #22c55e; color: #fff; }

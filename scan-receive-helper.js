@@ -580,11 +580,32 @@
     pendHTML += pendingGroup('On Hold', '#3b82f6', holdPending);
     pendHTML += pendingGroup('Return', '#ef4444', returnPending);
 
+    // "Fill from Memory" button — shown when memory has IDs for this run
+    const memKey   = `db-memory-${getRunId()}`;
+    let   memCount = 0;
+    try {
+      const raw = localStorage.getItem(memKey);
+      if (raw) memCount = (JSON.parse(raw).ids || []).length;
+    } catch {}
+
+    if (memCount > 0) {
+      pendHTML += `<div style="margin-top:8px">
+        <button id="db-memory-fill-btn" style="
+          width:100%;padding:5px 0;background:#1e3a5f;border:1px solid #3b82f6;
+          border-radius:5px;color:#7ab3e0;font-size:10px;font-weight:700;cursor:pointer">
+          🧠 Auto-fill from Memory (${memCount})
+        </button></div>`;
+    }
+
     if (!holdPending.length && !returnPending.length) {
       pendHTML += '<div class="db-done">✅ All parcels received!</div>';
     }
 
     document.getElementById('db-pending').innerHTML = pendHTML;
+
+    // Attach memory fill button
+    const fillBtn = document.getElementById('db-memory-fill-btn');
+    if (fillBtn) fillBtn.addEventListener('click', () => fillFromMemory());
 
     // Attach scroll-on-click to every ID badge
     document.getElementById('db-pending').querySelectorAll('[data-scroll-id]').forEach(el => {
@@ -832,6 +853,63 @@
       console.warn('[DB] Memory load failed:', e);
     }
   }
+
+
+  // ── FILL FROM MEMORY ─────────────────────────────────────────────────────
+  // Iterates saved memory IDs into correct Hermes scan fields.
+  // On Hold status → #onHoldConsId, everything else → #returnConsId.
+  // Each ID is removed from memory after being input.
+  // Called from popup via chrome.runtime.onMessage.
+  async function fillFromMemory() {
+    const memKey = `db-memory-${getRunId()}`;
+    let mem;
+    try {
+      const raw = localStorage.getItem(memKey);
+      if (!raw) { showToast('Memory', 'No IDs saved for this run', false); return; }
+      mem = JSON.parse(raw);
+    } catch { return; }
+
+    const ids = [...(mem.ids || [])];
+    if (!ids.length) { showToast('Memory', 'Memory is empty', false); return; }
+
+    showToast('Memory', `Auto-filling ${ids.length} ID(s)…`, false);
+
+    for (const id of ids) {
+      const row    = findRowById(id);
+      const status = (row ? rowStatus(row) || '' : '').toLowerCase();
+      const inputId = HOLD_VALID.has(status) ? HOLD_INPUT_ID : RETURN_INPUT_ID;
+      const input   = document.getElementById(inputId);
+
+      if (input) {
+        input.focus();
+        // Set value via native input setter so Vue/React reactivity fires
+        const nativeSet = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+        nativeSet.call(input, id);
+        input.dispatchEvent(new Event('input',   { bubbles: true }));
+        input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', keyCode: 13, bubbles: true }));
+        input.dispatchEvent(new KeyboardEvent('keyup',   { key: 'Enter', keyCode: 13, bubbles: true }));
+      }
+
+      // Remove used ID from memory
+      mem.ids = mem.ids.filter(x => x !== id);
+      try { localStorage.setItem(memKey, JSON.stringify(mem)); } catch {}
+
+      await new Promise(r => setTimeout(r, 600)); // Hermes needs time per scan
+    }
+
+    showToast('Memory', 'Auto-fill complete ✓', false);
+    refreshPanel(appState);
+  }
+
+  // Listen for message from popup
+  chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+    if (message.action === 'db_memory_fill' && message.runId === getRunId()) {
+      fillFromMemory();
+      sendResponse({ ok: true });
+    }
+    return false;
+  });
+
 
   // ── INIT ─────────────────────────────────────────────────────────────────
   let appState = null;

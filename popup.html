@@ -14,6 +14,7 @@
 
   <div class="header">
     <h2>📲 DataBridge</h2>
+    <button class="memory-brain-btn" id="memory-brain-btn" title="Memory">🧠</button>
     <div class="header-status">
       <div class="dot" id="status-dot"></div>
       <span class="status-name" id="status-name">Guest</span>
@@ -156,6 +157,23 @@
         <span>Clear local history</span>
         <button class="danger-btn" id="clear-history-btn">Clear</button>
       </div>
+    </div>
+  </div>
+
+  <!-- ── Memory Quick Overlay ── -->
+  <div class="memory-overlay hidden" id="memory-overlay">
+    <div class="memory-overlay-hdr">
+      <div>
+        <span class="memory-overlay-title">🧠 Memory</span>
+        <span class="memory-overlay-run" id="memory-overlay-run"></span>
+      </div>
+      <div style="display:flex;gap:6px;align-items:center">
+        <button class="memory-fill-btn" id="memory-overlay-fill" title="Auto-fill into Hermes fields">▶ Auto-fill</button>
+        <button class="memory-overlay-close" id="memory-overlay-close">✕</button>
+      </div>
+    </div>
+    <div class="memory-overlay-list" id="memory-overlay-list">
+      <div class="empty-state" style="font-size:11px;padding:12px">No IDs in memory.</div>
     </div>
   </div>
 

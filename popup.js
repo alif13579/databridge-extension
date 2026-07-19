@@ -1465,7 +1465,8 @@ async function init() {
     setupLoadMore();
     setupSortButton();
     setupScanTab(); // 📷 Scanner tab
-    setupMemoryTab(); // 🧠 Memory tab
+    setupMemoryTab();    // 🧠 Memory tab
+    setupMemoryOverlay(); // 🧠 Brain icon overlay
     setupConnectedInfoCopy();
     setupAutoRefresh();
 
@@ -2013,6 +2014,119 @@ function setupMemoryTab() {
       st.ids = [];
       saveMemoryState(st);
       renderMemoryList();
+    });
+  }
+}
+
+
+// ══════════════════════════════════════════════════════════════════════
+// 🧠 MEMORY QUICK OVERLAY (brain icon in header)
+// Shows memory IDs for current run. Copy → removes from memory.
+// Auto-fill → sends message to scan-receive-helper.js to iterate IDs
+//             into the correct Hermes scan fields.
+// ══════════════════════════════════════════════════════════════════════
+
+function renderMemoryOverlay() {
+  const overlay = document.getElementById('memory-overlay');
+  const list    = document.getElementById('memory-overlay-list');
+  const runEl   = document.getElementById('memory-overlay-run');
+  if (!overlay || !list) return;
+
+  if (!memoryRunId) {
+    if (runEl) runEl.textContent = '— no active run';
+    list.innerHTML = '<div class="empty-state" style="font-size:11px;padding:12px">Open a Hermes run page first.</div>';
+    return;
+  }
+
+  const state = getMemoryState(memoryRunId);
+  const ids   = state.ids || [];
+  if (runEl) runEl.textContent = `Run #${memoryRunId}`;
+
+  if (ids.length === 0) {
+    list.innerHTML = '<div class="empty-state" style="font-size:11px;padding:12px">No IDs saved for this run.</div>';
+    return;
+  }
+
+  list.innerHTML = '';
+  ids.forEach(id => {
+    const row = document.createElement('div');
+    row.className = 'memory-overlay-row';
+    row.innerHTML = `
+      <span class="memory-id-text">${escapeHtml(id)}</span>
+      <button class="memory-overlay-copy-btn" data-id="${escapeHtml(id)}">⎘ Copy</button>`;
+
+    row.querySelector('.memory-overlay-copy-btn').addEventListener('click', () => {
+      navigator.clipboard.writeText(id).then(() => {
+        // Remove from memory after copy
+        const st = getMemoryState(memoryRunId);
+        st.ids   = st.ids.filter(x => x !== id);
+        saveMemoryState(st);
+        row.style.opacity = '0';
+        setTimeout(() => { row.remove(); renderMemoryList(); }, 200);
+
+        // Update count
+        const remaining = document.querySelectorAll('.memory-overlay-row').length - 1;
+        if (remaining === 0) {
+          list.innerHTML = '<div class="empty-state" style="font-size:11px;padding:12px">All IDs used ✓</div>';
+        }
+      });
+    });
+
+    list.appendChild(row);
+  });
+}
+
+function setupMemoryOverlay() {
+  const btn     = document.getElementById('memory-brain-btn');
+  const overlay = document.getElementById('memory-overlay');
+  const closeBtn = document.getElementById('memory-overlay-close');
+  const fillBtn  = document.getElementById('memory-overlay-fill');
+
+  if (btn) {
+    btn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      // Re-detect run on every open
+      const detected = await detectActiveRun();
+      memoryRunId  = detected?.runId  || null;
+      memoryRunUrl = detected?.url    || null;
+      renderMemoryOverlay();
+      overlay?.classList.toggle('hidden');
+    });
+  }
+
+  if (closeBtn) {
+    closeBtn.addEventListener('click', () => overlay?.classList.add('hidden'));
+  }
+
+  // Close on outside click
+  document.addEventListener('click', e => {
+    if (overlay && !overlay.classList.contains('hidden') &&
+        !overlay.contains(e.target) && e.target.id !== 'memory-brain-btn') {
+      overlay.classList.add('hidden');
+    }
+  });
+
+  // Auto-fill → message to content script
+  if (fillBtn) {
+    fillBtn.addEventListener('click', async () => {
+      if (!memoryRunId) return;
+      const state = getMemoryState(memoryRunId);
+      if (!state.ids.length) return;
+
+      chrome.tabs.query({ active: true, currentWindow: true }, tabs => {
+        const tabId = tabs[0]?.id;
+        if (!tabId) return;
+        chrome.tabs.sendMessage(tabId, {
+          action : 'db_memory_fill',
+          runId  : memoryRunId,
+        }, (resp) => {
+          if (chrome.runtime.lastError) {
+            console.warn('[DB] memory fill send error:', chrome.runtime.lastError.message);
+          }
+        });
+      });
+
+      overlay?.classList.add('hidden');
     });
   }
 }
