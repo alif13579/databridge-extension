@@ -148,18 +148,25 @@ async function getActivePaths() {
 }
 
 async function resolveContainerFromMeta(meta = {}) {
+  // Bidirectional: must be able to CLEAR currentUserId/currentContainerID too, not just
+  // set them — e.g. AuthManager.signOut() PATCHes sessions/{id}/meta/user_id back to ""
+  // while leaving status:"connected" (the QR pairing itself is still active, only the
+  // owning account changed). Without clearing here, the extension keeps resolving to the
+  // stale, already-logged-out user's container forever. Never touches Google-linked state
+  // (currentGoogleUid) — that's a completely separate source of container_id, and every
+  // call site already gates on `!currentGoogleUid` before calling this at all, so this is
+  // safe alongside the Google-priority protections elsewhere in this file.
   const userId = meta.user_id || meta.uid || meta.userId || null;
   const containerId = meta.container_id || meta.containerId || (userId ? `container_${userId}` : null);
+  const validContainerId = (typeof containerId === 'string' && containerId.startsWith('container_')) ? containerId : null;
 
-  if (userId) currentUserId = userId;
-  if (typeof containerId === 'string' && containerId.startsWith('container_')) {
-    currentContainerID = containerId;
+  if (userId && validContainerId) {
+    currentUserId = userId;
+    currentContainerID = validContainerId;
+    await chrome.storage.local.set({ user_id: currentUserId, container_id: currentContainerID });
+  } else if (!currentGoogleUid) {
+    await clearContainerState();
   }
-
-  const updates = {};
-  if (currentUserId) updates.user_id = currentUserId;
-  if (currentContainerID) updates.container_id = currentContainerID;
-  if (Object.keys(updates).length) await chrome.storage.local.set(updates);
 }
 
 // ══════════════════════════════
@@ -724,7 +731,33 @@ function startSessionListener(id) {
       if (path.startsWith('/records')) await loadHistory(false);
     } catch (e) { console.error('SSE put parse error:', e); }
   });
-  sseSource.addEventListener('patch', async () => { await loadHistory(false); });
+  sseSource.addEventListener('patch', async (event) => {
+    try {
+      const parsed = JSON.parse(event.data);
+      const path = parsed.path || '';
+      // A patch on /meta (e.g. AuthManager PATCHing user_id+type into an already-
+      // "connected" session on app login, or resetting them back to "" on app logout)
+      // only carries the CHANGED subtree, not the full object — re-fetch the whole meta
+      // node and run it through the SAME connected/disconnected + Google-priority logic
+      // the 'put' handler above uses, instead of staying stale until the popup happens
+      // to be closed and reopened.
+      if (path.startsWith('/meta')) {
+        try {
+          const metaRes = await fetch(`${FIREBASE_URL}/sessions/${currentExtensionID}/meta.json?cb=${Date.now()}`);
+          const meta = await metaRes.json();
+          const status = meta?.status;
+          if (status === 'connected' && !currentGoogleUid) {
+            showConnectedState({ meta: meta || {} });
+            await resolveContainerFromMeta(meta || {});
+            if (currentContainerID) startContainerListener(currentContainerID);
+          } else if (status === 'disconnected' && !currentGoogleUid) {
+            showDisconnectedState();
+          }
+        } catch (e) { console.warn('Patch meta re-resolve failed:', e); }
+      }
+      await loadHistory(false);
+    } catch (e) { console.error('SSE patch parse error:', e); }
+  });
   sseSource.onerror = () => {
     setTimeout(() => { if (currentExtensionID) startSessionListener(currentExtensionID); }, 5000);
   };
