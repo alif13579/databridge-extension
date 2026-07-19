@@ -1517,7 +1517,7 @@ function loadScanHistory() {
       const entries = Object.entries(localScans).map(([scanKey, d]) => ({
         scanKey,
         scanned_by  : d.scanned_by || '—',
-        container_id: d.container_id || '—',
+        uid         : d.uid || '—',
         createdAt   : d.createdAt,
         url         : d.url,
         hostname    : getHostname(d.url),
@@ -1550,7 +1550,7 @@ function loadScanHistory() {
           const fbEntries = Object.entries(data).map(([scanKey, val]) => ({
             scanKey,
             scanned_by  : val.scanned_by   || '—',
-            container_id: val.container_id  || '—',
+            uid         : val.uid          || '—',
             createdAt   : val.createdAt,
             url         : val.url,
             hostname    : getHostname(val.url),
@@ -1635,10 +1635,10 @@ function renderScanList() {
             <span class="scan-detail-label">By</span>
             <span class="scan-detail-value mono">${escapeHtml(entry.scanned_by)}</span>
           </div>
-          ${entry.container_id && entry.container_id !== '—' ? `
+          ${entry.uid && entry.uid !== '—' ? `
           <div class="scan-log-meta">
-            <span class="scan-detail-label">Container</span>
-            <span class="scan-detail-value mono">${escapeHtml(entry.container_id)}</span>
+            <span class="scan-detail-label">UID</span>
+            <span class="scan-detail-value mono">${escapeHtml(entry.uid)}</span>
           </div>` : ''}
         </div>`;
       body.appendChild(row);
