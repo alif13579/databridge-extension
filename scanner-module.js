@@ -8,14 +8,20 @@
 // PAYLOAD STRUCTURE:
 //   {
 //     scanned_by   : extension_id,
-//     container_id : container_id | null,   ← null if not logged in
+//     uid          : firebase uid | null,   ← null if not logged in
 //     createdAt    : timestamp,
 //     url          : page url
 //   }
 //
 //   → barcode lookup:  scanned/barcode_scans/{barcode}
-//   → user filter:     where container_id == "{id}"
+//   → user filter:     where uid == "{firebase_uid}"
 //   → no duplication, no session/container split
+//
+//   Note: this path is NEVER written under container/ — it's always its own top-level
+//   scanned/ tree, so a "container_id" field here was misleading. uid is the extension's
+//   own chrome.storage.local user_id (stored side-by-side with container_id by
+//   resolveContainerFromMeta/completeSignIn in popup.js), i.e. the raw identity rather
+//   than the container-formatted string.
 //
 // BARCODE PARSING:
 //   "DN82692872|120"  →  "DN82692872"  (strip from last pipe)
@@ -57,12 +63,12 @@
   }
 
   // ── ② Push to Firebase (single path) ────────────────────
-  async function pushToFirebase(barcode, timestamp, pageUrl, extensionId, containerId) {
+  async function pushToFirebase(barcode, timestamp, pageUrl, extensionId, uid) {
     const safeKey = safeBarcodeKey(barcode);
     const scanKey = `scan_${timestamp}`;
     const payload = {
       scanned_by   : extensionId || 'unknown',
-      container_id : containerId || null,
+      uid          : uid || null,
       createdAt    : timestamp,
       url          : pageUrl
     };
@@ -89,13 +95,13 @@
     const barcode = parseBarcode(message.barcode);
     if (!barcode) return; // empty after parsing → skip
 
-    chrome.storage.local.get(['extension_id', 'container_id'], (stored) => {
+    chrome.storage.local.get(['extension_id', 'user_id'], (stored) => {
       const extensionId = stored.extension_id;
-      const containerId = stored.container_id || null;
+      const uid = stored.user_id || null;
       const { timestamp, url } = message;
 
       saveLocally(barcode, timestamp, url, extensionId);
-      pushToFirebase(barcode, timestamp, url, extensionId, containerId);
+      pushToFirebase(barcode, timestamp, url, extensionId, uid);
     });
   });
 
