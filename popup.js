@@ -1721,16 +1721,15 @@ function renderScanList() {
       // Short placeholder shown immediately; upgraded to the real profile name (if any)
       // once resolveScanEntryNames() fetches it on expand — never fetched eagerly.
       const placeholder = hasUid ? entry.uid.slice(0, 10) + '…' : (entry.scanned_by || '—');
-      row.title = `Device: ${entry.scanned_by || '—'}`;
       row.innerHTML = `
         <div class="scan-log-index">#${i + 1}</div>
         <div class="scan-log-details">
           <div class="scan-log-meta">
             <span class="scan-log-time">${scanExactTime(entry.createdAt)}</span>
-            <span class="scan-url-chip">🌐 ${escapeHtml(entry.hostname)}</span>
+            <span class="scan-url-chip" title="${escapeHtml(entry.url || entry.hostname)}">🌐 ${escapeHtml(entry.hostname)}</span>
             ${!entry.fromFirebase ? '<span class="scan-local-chip">local</span>' : ''}
           </div>
-          <div class="scan-by-row">
+          <div class="scan-by-row" title="Device: ${escapeHtml(entry.scanned_by || '—')}">
             <span class="scan-by-icon">👤</span>
             <span class="scan-by-name"${hasUid ? ` data-uid="${escapeHtml(entry.uid)}"` : ''}>${escapeHtml(placeholder)}</span>
           </div>
