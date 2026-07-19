@@ -1495,6 +1495,57 @@ function safeFirebaseKey(barcode) {
   return String(barcode).replace(/[.#$[\]/+\s]/g, '_');
 }
 
+// ══════════════════════════════
+// 👤 Profile name resolution — lazy + cached
+// ══════════════════════════════
+// uid -> resolved name string | null (not found) | Promise (in-flight).
+// Session-lifetime cache: shared across every scan card, so the same scanner's
+// name is only ever fetched once no matter how many barcodes they appear on.
+const profileNameCache = {};
+
+async function fetchProfileName(uid) {
+  if (!uid) return null;
+  if (uid in profileNameCache && !(profileNameCache[uid] instanceof Promise)) {
+    return profileNameCache[uid];
+  }
+  if (profileNameCache[uid] instanceof Promise) return profileNameCache[uid];
+
+  const promise = (async () => {
+    try {
+      const idToken = await getValidFirebaseIdToken().catch(() => null);
+      const authParam = idToken ? `?auth=${idToken}` : '';
+      const res = await fetch(`${FIREBASE_URL}/users/${uid}/profile/name.json${authParam}`);
+      if (!res.ok) return null;
+      const name = await res.json();
+      return (typeof name === 'string' && name.trim()) ? name.trim() : null;
+    } catch (e) {
+      console.warn('[Scan] profile name fetch failed:', e);
+      return null;
+    }
+  })();
+
+  profileNameCache[uid] = promise;
+  const resolved = await promise;
+  profileNameCache[uid] = resolved; // replace in-flight promise with the final value
+  return resolved;
+}
+
+// Resolves every distinct uid inside one expanded card's body, updating each
+// .scan-by-name span in place once its name comes back (falls back to staying
+// on the short-uid placeholder if no profile name exists).
+async function resolveScanEntryNames(bodyEl) {
+  const spans = [...bodyEl.querySelectorAll('.scan-by-name[data-uid]')];
+  const uniqueUids = [...new Set(spans.map(s => s.dataset.uid).filter(Boolean))];
+
+  await Promise.all(uniqueUids.map(async (uid) => {
+    const name = await fetchProfileName(uid);
+    if (!name) return; // keep the short-uid placeholder
+    spans.forEach(s => {
+      if (s.dataset.uid === uid) s.textContent = name;
+    });
+  }));
+}
+
 function getHostname(url) {
   try { return new URL(url || '').hostname; } catch { return '—'; }
 }
@@ -1623,23 +1674,23 @@ function renderScanList() {
     item.entries.forEach((entry, i) => {
       const row = document.createElement('div');
       row.className = 'scan-log-entry';
+      const hasUid = entry.uid && entry.uid !== '—';
+      // Short placeholder shown immediately; upgraded to the real profile name (if any)
+      // once resolveScanEntryNames() fetches it on expand — never fetched eagerly.
+      const placeholder = hasUid ? entry.uid.slice(0, 10) + '…' : (entry.scanned_by || '—');
+      row.title = `Device: ${entry.scanned_by || '—'}`;
       row.innerHTML = `
         <div class="scan-log-index">#${i + 1}</div>
         <div class="scan-log-details">
-          <div class="scan-log-time">${scanExactTime(entry.createdAt)}</div>
           <div class="scan-log-meta">
+            <span class="scan-log-time">${scanExactTime(entry.createdAt)}</span>
             <span class="scan-url-chip">🌐 ${escapeHtml(entry.hostname)}</span>
             ${!entry.fromFirebase ? '<span class="scan-local-chip">local</span>' : ''}
           </div>
-          <div class="scan-log-meta">
-            <span class="scan-detail-label">By</span>
-            <span class="scan-detail-value mono">${escapeHtml(entry.scanned_by)}</span>
+          <div class="scan-by-row">
+            <span class="scan-by-icon">👤</span>
+            <span class="scan-by-name"${hasUid ? ` data-uid="${escapeHtml(entry.uid)}"` : ''}>${escapeHtml(placeholder)}</span>
           </div>
-          ${entry.uid && entry.uid !== '—' ? `
-          <div class="scan-log-meta">
-            <span class="scan-detail-label">UID</span>
-            <span class="scan-detail-value mono">${escapeHtml(entry.uid)}</span>
-          </div>` : ''}
         </div>`;
       body.appendChild(row);
     });
@@ -1664,6 +1715,13 @@ function renderScanList() {
       if (b) {
         const isOpen = b.classList.toggle('visible');
         if (chev) chev.classList.toggle('open', isOpen);
+        // Only fetch profile names when expanding, and only once per card —
+        // keeps this off the initial render entirely (no eager fetching for
+        // items the user never opens).
+        if (isOpen && !b.dataset.namesLoaded) {
+          b.dataset.namesLoaded = '1';
+          resolveScanEntryNames(b);
+        }
       }
     });
 
