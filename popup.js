@@ -1460,9 +1460,13 @@ function setupConnectedInfoCopy() {
 // ══════════════════════════════
 // 📷 Scan Tab — Local Storage
 // ══════════════════════════════
+// ── Scan Tab State ─────────────────────────────────────────────────────────
+// scanItems = [{ barcodeKey, barcode, entries: [{scanKey, scanned_by,
+//   container_id, createdAt, url, hostname}], loading }]
+// One item per unique barcode. entries sorted newest-first.
+// Always fetched from Firebase; local scan_log = temp queue pre-sync.
 let scanItems = [];
 let scanSearchQuery = '';
-let scanFirebaseResult = null; // null = show local log; object = show Firebase details
 
 function scanExactTime(timestamp) {
   if (!timestamp) return '—';
@@ -1481,106 +1485,182 @@ function scanExactTime(timestamp) {
   return `${time} · ${date}`;
 }
 
+function safeFirebaseKey(barcode) {
+  return String(barcode).replace(/[.#$[\]/+\s]/g, '_');
+}
+
+function getHostname(url) {
+  try { return new URL(url || '').hostname; } catch { return '—'; }
+}
+
 function loadScanHistory() {
-  chrome.storage.local.get(['scan_log'], (result) => {
+  chrome.storage.local.get(['scan_log'], async (result) => {
     const log = result.scan_log || {};
-    const flat = [];
-    Object.entries(log).forEach(([barcodeKey, scans]) => {
-      Object.entries(scans).forEach(([scanKey, data]) => {
-        let hostname = '—';
-        try { hostname = new URL(data.url).hostname; } catch (e) {}
-        flat.push({
-          barcodeKey,
-          scanKey,
-          barcode   : data.barcode || barcodeKey,
-          scanned_by: data.scanned_by,
-          createdAt : data.createdAt,
-          url       : data.url,
-          hostname
-        });
-      });
-    });
-    flat.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
-    scanItems = flat;
+    const barcodeKeys = Object.keys(log);
+
+    if (barcodeKeys.length === 0) {
+      scanItems = [];
+      renderScanList();
+      updateScanBadge();
+      return;
+    }
+
+    // Build initial items from local data (shown immediately)
+    scanItems = barcodeKeys.map(safeKey => {
+      const localScans = log[safeKey] || {};
+      const entries = Object.entries(localScans).map(([scanKey, d]) => ({
+        scanKey,
+        scanned_by  : d.scanned_by || '—',
+        container_id: d.container_id || '—',
+        createdAt   : d.createdAt,
+        url         : d.url,
+        hostname    : getHostname(d.url),
+        fromFirebase: false,
+      })).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+
+      return {
+        barcodeKey: safeKey,
+        barcode   : safeKey,          // uppercase key = barcode
+        entries,
+        loading   : true,
+      };
+    }).sort((a, b) => (b.entries[0]?.createdAt || 0) - (a.entries[0]?.createdAt || 0));
+
     renderScanList();
-    const badge = document.getElementById('scan-count-badge');
-    if (badge) badge.textContent = `${flat.length} record${flat.length !== 1 ? 's' : ''}`;
+    updateScanBadge();
+
+    // Fetch from Firebase for each barcode, update cards as they load
+    await Promise.all(barcodeKeys.map(async safeKey => {
+      try {
+        const res  = await fetch(`${FIREBASE_URL}/scanned/barcode_scans/${safeKey}.json?cb=${Date.now()}`);
+        const data = await res.json();
+        const item = scanItems.find(i => i.barcodeKey === safeKey);
+        if (!item) return;
+        item.loading = false;
+
+        if (data && typeof data === 'object') {
+          const fbEntries = Object.entries(data).map(([scanKey, val]) => ({
+            scanKey,
+            scanned_by  : val.scanned_by   || '—',
+            container_id: val.container_id  || '—',
+            createdAt   : val.createdAt,
+            url         : val.url,
+            hostname    : getHostname(val.url),
+            fromFirebase: true,
+          }));
+
+          // Merge: Firebase is truth, keep any local-only entries
+          const fbKeys = new Set(fbEntries.map(e => e.scanKey));
+          const localOnly = (item.entries || []).filter(e => !fbKeys.has(e.scanKey));
+          item.entries = [...fbEntries, ...localOnly]
+            .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+        }
+      } catch {
+        const item = scanItems.find(i => i.barcodeKey === safeKey);
+        if (item) item.loading = false;
+      }
+      renderScanList();
+    }));
   });
+}
+
+function updateScanBadge() {
+  const badge = document.getElementById('scan-count-badge');
+  if (badge) badge.textContent = `${scanItems.length} barcode${scanItems.length !== 1 ? 's' : ''}`;
 }
 
 function renderScanList() {
   const list = document.getElementById('scan-list');
   if (!list) return;
 
-  const q = scanSearchQuery.trim().toLowerCase();
+  const q = scanSearchQuery.trim().toUpperCase();
   const filtered = q
-    ? scanItems.filter(s => (s.barcode || '').toLowerCase().includes(q))
+    ? scanItems.filter(s => s.barcode.toUpperCase().includes(q))
     : [...scanItems];
 
   list.innerHTML = '';
 
   if (filtered.length === 0) {
-    list.innerHTML = '<div class="empty-state">No scans yet.<br>Scan a barcode in any tab!</div>';
+    list.innerHTML = '<div class="empty-state">No barcodes yet.<br>Scan something!</div>';
     return;
   }
 
-  filtered.forEach(scan => {
-    const uid = `scan-${scan.barcodeKey}-${scan.scanKey}`;
+  filtered.forEach(item => {
+    const uid  = `bc-${item.barcodeKey}`;
     const card = document.createElement('div');
     card.className = 'history-card';
 
-    // Header (always visible, compact — same pattern as history cards)
+    // ── Header (always visible) ──
     const header = document.createElement('div');
     header.className = 'card-header';
+    const lastScan = item.entries[0];
+    const scanCount = item.entries.length;
     header.innerHTML = `
-      <div class="scan-dot"></div>
+      <div class="scan-dot${item.loading ? ' scan-dot-loading' : ''}"></div>
       <div class="card-main">
-        <div class="card-text">${escapeHtml(scan.barcode)}</div>
+        <div class="card-text">${escapeHtml(item.barcode)}</div>
         <div class="card-meta">
-          <span class="card-time">${scanExactTime(scan.createdAt)}</span>
-          <span class="scan-url-chip">🌐 ${escapeHtml(scan.hostname)}</span>
+          <span class="card-time">${lastScan ? scanExactTime(lastScan.createdAt) : '—'}</span>
+          <span class="scan-count-chip">${scanCount} scan${scanCount !== 1 ? 's' : ''}</span>
+          ${item.loading ? '<span class="scan-loading-chip">syncing…</span>' : ''}
         </div>
       </div>
       <div class="chevron" id="chev-${uid}">▼</div>`;
 
-    // Actions (hidden by default, toggle on header click)
-    const actions = document.createElement('div');
-    actions.className = 'card-actions';
-    actions.id = `actions-${uid}`;
+    // ── Log body (hidden by default) ──
+    const body = document.createElement('div');
+    body.className = 'card-actions scan-log-body';
+    body.id = `body-${uid}`;
 
+    item.entries.forEach((entry, i) => {
+      const row = document.createElement('div');
+      row.className = 'scan-log-entry';
+      row.innerHTML = `
+        <div class="scan-log-index">#${i + 1}</div>
+        <div class="scan-log-details">
+          <div class="scan-log-time">${scanExactTime(entry.createdAt)}</div>
+          <div class="scan-log-meta">
+            <span class="scan-url-chip">🌐 ${escapeHtml(entry.hostname)}</span>
+            ${!entry.fromFirebase ? '<span class="scan-local-chip">local</span>' : ''}
+          </div>
+          <div class="scan-log-meta">
+            <span class="scan-detail-label">By</span>
+            <span class="scan-detail-value mono">${escapeHtml(entry.scanned_by)}</span>
+          </div>
+          ${entry.container_id && entry.container_id !== '—' ? `
+          <div class="scan-log-meta">
+            <span class="scan-detail-label">Container</span>
+            <span class="scan-detail-value mono">${escapeHtml(entry.container_id)}</span>
+          </div>` : ''}
+        </div>`;
+      body.appendChild(row);
+    });
+
+    // Copy button
     const copyBtn = document.createElement('button');
     copyBtn.className = 'action-btn btn-copy';
-    copyBtn.textContent = '⎘ Copy';
-    copyBtn.addEventListener('click', (e) => {
+    copyBtn.style.cssText = 'margin: 6px 8px 8px; width: calc(100% - 16px);';
+    copyBtn.textContent = '⎘ Copy barcode';
+    copyBtn.addEventListener('click', e => {
       e.stopPropagation();
-      navigator.clipboard.writeText(scan.barcode);
-      copyBtn.textContent = '✅';
-      setTimeout(() => { copyBtn.textContent = '⎘ Copy'; }, 1500);
+      navigator.clipboard.writeText(item.barcode);
+      copyBtn.textContent = '✅ Copied!';
+      setTimeout(() => { copyBtn.textContent = '⎘ Copy barcode'; }, 1500);
     });
-
-    const delBtn = document.createElement('button');
-    delBtn.className = 'action-btn btn-delete';
-    delBtn.textContent = '🗑';
-    delBtn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      deleteScanRecord(scan.barcodeKey, scan.scanKey);
-    });
-
-    actions.appendChild(copyBtn);
-    actions.appendChild(delBtn);
+    body.appendChild(copyBtn);
 
     // Toggle on header click
     header.addEventListener('click', () => {
-      const act = document.getElementById(`actions-${uid}`);
+      const b    = document.getElementById(`body-${uid}`);
       const chev = document.getElementById(`chev-${uid}`);
-      if (act) {
-        const isOpen = act.classList.toggle('visible');
+      if (b) {
+        const isOpen = b.classList.toggle('visible');
         if (chev) chev.classList.toggle('open', isOpen);
       }
     });
 
     card.appendChild(header);
-    card.appendChild(actions);
+    card.appendChild(body);
     list.appendChild(card);
   });
 }
@@ -1596,89 +1676,12 @@ function deleteScanRecord(barcodeKey, scanKey) {
   });
 }
 
-async function fetchBarcodeFromFirebase(barcode) {
-  const list = document.getElementById('scan-list');
-  if (!list) return;
-  list.innerHTML = '<div class="empty-state">🔍 Fetching from Firebase...</div>';
-
-  // Sanitize barcode key (same logic as scanner-module.js)
-  const safeKey = barcode.replace(/[.#$/\[\]]/g, '_');
-  try {
-    const res = await fetch(
-      `${FIREBASE_URL}/scanned/barcode_scans/${safeKey}.json?cb=${Date.now()}`
-    );
-    const data = await res.json();
-
-    if (!data || typeof data !== 'object') {
-      list.innerHTML = `<div class="empty-state">No records found for <b>${escapeHtml(barcode)}</b></div>`;
-      return;
-    }
-
-    // data = { scan_ts1: {...}, scan_ts2: {...} }
-    const entries = Object.entries(data)
-      .map(([key, val]) => ({ key, ...val }))
-      .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
-
-    scanFirebaseResult = { barcode, entries };
-    renderFirebaseDetails(barcode, entries);
-  } catch (err) {
-    list.innerHTML = `<div class="empty-state">⚠️ Firebase fetch failed: ${escapeHtml(String(err))}</div>`;
-  }
-}
-
-function renderFirebaseDetails(barcode, entries) {
-  const list = document.getElementById('scan-list');
-  if (!list) return;
-  list.innerHTML = '';
-
-  const header = document.createElement('div');
-  header.className = 'scan-firebase-header';
-  header.innerHTML = `
-    <div class="scan-firebase-barcode">📦 ${escapeHtml(barcode)}</div>
-    <div class="scan-firebase-count">${entries.length} scan record${entries.length !== 1 ? 's' : ''} in Firebase</div>`;
-  list.appendChild(header);
-
-  entries.forEach((entry, i) => {
-    let hostname = '—';
-    try { hostname = new URL(entry.url || '').hostname; } catch {}
-
-    const card = document.createElement('div');
-    card.className = 'scan-card scan-firebase-card';
-    card.innerHTML = `
-      <div class="scan-card-header">
-        <div class="scan-firebase-index">#${i + 1}</div>
-        <div class="scan-detail-row"><span class="scan-detail-label">Scan Key</span><span class="scan-detail-value mono">${escapeHtml(entry.key)}</span></div>
-        <div class="scan-detail-row"><span class="scan-detail-label">Time</span><span class="scan-detail-value">${scanExactTime(entry.createdAt)}</span></div>
-        <div class="scan-detail-row"><span class="scan-detail-label">Scanned By</span><span class="scan-detail-value mono">${escapeHtml(entry.scanned_by || '—')}</span></div>
-        <div class="scan-detail-row"><span class="scan-detail-label">Container</span><span class="scan-detail-value mono">${escapeHtml(entry.container_id || '—')}</span></div>
-        <div class="scan-detail-row"><span class="scan-detail-label">Page</span><span class="scan-url-chip">🌐 ${escapeHtml(hostname)}</span></div>
-      </div>`;
-    list.appendChild(card);
-  });
-}
-
 function setupScanTab() {
   const searchInput = document.getElementById('scan-search-input');
   if (searchInput) {
     searchInput.addEventListener('input', () => {
-      const q = searchInput.value.trim();
-      scanSearchQuery = q;
-      // Clear Firebase results when user clears the search box
-      if (!q) {
-        scanFirebaseResult = null;
-        renderScanList();
-      } else {
-        // Just filter local list while typing
-        renderScanList();
-      }
-    });
-
-    // Enter → fetch full details from Firebase
-    searchInput.addEventListener('keydown', (e) => {
-      if (e.key !== 'Enter') return;
-      const q = searchInput.value.trim();
-      if (!q) return;
-      fetchBarcodeFromFirebase(q);
+      scanSearchQuery = searchInput.value.trim();
+      renderScanList();
     });
   }
 
@@ -1689,8 +1692,7 @@ function setupScanTab() {
       chrome.storage.local.remove(['scan_log'], () => {
         scanItems = [];
         renderScanList();
-        const badge = document.getElementById('scan-count-badge');
-        if (badge) badge.textContent = '0 records';
+        updateScanBadge();
       });
     });
   }

@@ -31,7 +31,7 @@
   function parseBarcode(raw) {
     const lastPipe = raw.lastIndexOf('|');
     const code = lastPipe !== -1 ? raw.substring(0, lastPipe) : raw;
-    return code.trim();
+    return code.trim().toUpperCase();
   }
 
   // Firebase key cannot contain . # $ [ ] / + or spaces

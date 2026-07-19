@@ -658,3 +658,60 @@ input:checked + .toggle-slider:before { transform: translateX(14px); }
   font-size: 10px;
 }
 .mono { font-family: monospace; font-size: 10px; }
+
+/* ── Scan log body (per-barcode grouped card) ── */
+.scan-log-body {
+  padding: 0 !important;
+}
+.scan-log-entry {
+  display: flex;
+  gap: 8px;
+  padding: 7px 10px;
+  border-bottom: 1px solid #0d2137;
+}
+.scan-log-entry:last-of-type { border-bottom: none; }
+.scan-log-index {
+  font-size: 10px;
+  font-weight: 700;
+  color: #3b82f6;
+  min-width: 18px;
+  padding-top: 1px;
+}
+.scan-log-details { flex: 1; min-width: 0; }
+.scan-log-time { font-size: 11px; color: #c9d8ec; font-weight: 600; margin-bottom: 3px; }
+.scan-log-meta {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-top: 2px;
+  flex-wrap: wrap;
+}
+.scan-count-chip {
+  background: #1e3a5f;
+  color: #7ab3e0;
+  border-radius: 8px;
+  padding: 0 6px;
+  font-size: 9px;
+  font-weight: 700;
+}
+.scan-loading-chip {
+  color: #f59e0b;
+  font-size: 9px;
+  font-style: italic;
+}
+.scan-local-chip {
+  background: #78350f;
+  color: #fcd34d;
+  border-radius: 8px;
+  padding: 0 5px;
+  font-size: 9px;
+  font-weight: 700;
+}
+.scan-dot-loading {
+  background: #f59e0b !important;
+  animation: db-pulse 1s ease-in-out infinite;
+}
+@keyframes db-pulse {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.3; }
+}
