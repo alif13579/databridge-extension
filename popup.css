@@ -659,9 +659,14 @@ input:checked + .toggle-slider:before { transform: translateX(14px); }
 }
 .mono { font-family: monospace; font-size: 10px; }
 
-/* ── Scan log body (per-barcode grouped card) ── */
+/* ── Scan log body (per-barcode grouped card) ──
+   Shares .card-actions with the phone-history action-button row, which wants
+   flex-direction: row (buttons side-by-side). This one needs the opposite —
+   each past scan of the same barcode should stack as its own line, not sit
+   next to the others — so flex-direction is pinned to column here. */
 .scan-log-body {
   padding: 0 !important;
+  flex-direction: column;
 }
 .scan-log-entry {
   display: flex;
