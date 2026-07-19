@@ -712,6 +712,21 @@ input:checked + .toggle-slider:before { transform: translateX(14px); }
   font-size: 9px;
   font-weight: 700;
 }
+.scan-by-row {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-top: 4px;
+}
+.scan-by-icon { font-size: 10px; opacity: 0.55; }
+.scan-by-name {
+  font-size: 11px;
+  color: #9db8d4;
+  font-family: monospace;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 .scan-dot-loading {
   background: #f59e0b !important;
   animation: db-pulse 1s ease-in-out infinite;
