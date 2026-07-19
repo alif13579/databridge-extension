@@ -28,10 +28,28 @@
 (function ScannerModule() {
 
   // ── Barcode Parser ──────────────────────────────────────
+  // Zebra scanners often append a pipe-separated suffix, e.g.:
+  //   "DA140726BDFMZ2|980"  → amount 980 (3+ digits) → strip → "DA140726BDFMZ2"
+  //   "DA140726BDFMZ200|00" → suffix "00" (≤2 digits) → KEEP → "DA140726BDFMZ200"
+  //   "DN82692872"          → no pipe → keep as-is
+  // Rule: only strip if suffix after last | is purely numeric AND 3+ digits.
   function parseBarcode(raw) {
+    console.log('[Scanner] raw barcode received:', JSON.stringify(raw));
     const lastPipe = raw.lastIndexOf('|');
-    const code = lastPipe !== -1 ? raw.substring(0, lastPipe) : raw;
-    return code.trim();
+    if (lastPipe !== -1) {
+      const suffix = raw.substring(lastPipe + 1).trim();
+      if (/^\d{3,}$/.test(suffix)) {
+        // 3+ digit numeric suffix → likely scanner amount/weight → strip it
+        const code = raw.substring(0, lastPipe).trim();
+        console.log('[Scanner] stripped numeric suffix:', JSON.stringify(suffix), '→', JSON.stringify(code));
+        return code;
+      }
+      // suffix is ≤2 digits or non-numeric → part of the barcode, keep all
+      console.log('[Scanner] suffix kept (≤2 digits or non-numeric):', JSON.stringify(suffix));
+    }
+    const code = raw.trim();
+    console.log('[Scanner] parsed barcode:', JSON.stringify(code));
+    return code;
   }
 
   // Firebase key cannot contain . # $ [ ] / + or spaces
