@@ -1144,15 +1144,23 @@ async function linkExtensionToUid(extensionId, uid, email) {
   // null/missing and the app could never auto-discover a Google-linked extension — the
   // entire "sign in with the same Google account, no QR needed" path silently did nothing
   // on the app side even though the extension believed it had linked successfully.
-  await fetch(`${FIREBASE_URL}/users/${uid}/connections/extensions/${extensionId}.json${authParam}`, {
-    method: 'PUT',
+  //
+  // Check-then-write rather than a blind PUT: this same node can already exist from a
+  // QR-based pairing, with its own android_id/type/connected_at set by the Android side.
+  // A blind PUT here would silently erase those fields the moment someone also signs in
+  // with Google on the same extension. Only status/last_sync change on a node that
+  // already exists; a brand-new node gets the full default shape.
+  const extConnPath = `users/${uid}/connections/extensions/${extensionId}`;
+  const existingConn = await fetch(`${FIREBASE_URL}/${extConnPath}.json${authParam}`)
+    .then(r => r.json()).catch(() => null);
+  await fetch(`${FIREBASE_URL}/${extConnPath}.json${authParam}`, {
+    method: existingConn && typeof existingConn === 'object' ? 'PATCH' : 'PUT',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      status: 'connected',
-      type: 'google_linked',
-      connected_at: now,
-      last_sync: now
-    })
+    body: JSON.stringify(
+      existingConn && typeof existingConn === 'object'
+        ? { status: 'connected', last_sync: now }
+        : { status: 'connected', type: 'google_linked', connected_at: now, last_sync: now }
+    )
   });
 }
 
