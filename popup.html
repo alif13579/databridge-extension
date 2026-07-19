@@ -23,6 +23,7 @@
   <div class="bottom-nav">
     <div class="nav-item active" id="nav-history"><span class="nav-icon">📋</span>History</div>
     <div class="nav-item" id="nav-scan"><span class="nav-icon"><svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><rect x="1" y="2" width="1.5" height="12"/><rect x="3.5" y="2" width="1" height="12"/><rect x="5.5" y="2" width="2" height="12"/><rect x="8.5" y="2" width="1" height="12"/><rect x="10.5" y="2" width="1.5" height="12"/><rect x="13" y="2" width="2" height="12"/></svg></span>Barcodes</div>
+    <div class="nav-item" id="nav-memory"><span class="nav-icon">🧠</span>Memory</div>
     <div class="nav-item" id="nav-connect"><span class="nav-icon">🔗</span>Connect</div>
     <div class="nav-item" id="nav-settings"><span class="nav-icon">⚙️</span>Settings</div>
   </div>
@@ -60,6 +61,33 @@
     </div>
     <div class="scan-clear-wrap">
       <button class="danger-btn" id="clear-scan-btn">🗑 Clear all scans</button>
+    </div>
+  </div>
+
+  <!-- ── Memory Tab ── -->
+  <div class="tab-content" id="tab-memory">
+    <div class="memory-run-header" id="memory-run-header">
+      <div class="memory-run-label">Active Run</div>
+      <div class="memory-run-id" id="memory-run-id">Detecting...</div>
+      <div class="memory-run-url" id="memory-run-url"></div>
+    </div>
+
+    <div class="memory-input-row">
+      <input type="text" id="memory-scan-input" placeholder="Scan or type parcel ID..." autocomplete="off">
+      <button class="memory-add-btn" id="memory-add-btn">＋ Add</button>
+    </div>
+
+    <div class="sort-bar">
+      <span class="sort-label">Saved IDs</span>
+      <span class="scan-count-badge" id="memory-count-badge">0 IDs</span>
+    </div>
+
+    <div class="memory-list" id="memory-list">
+      <div class="empty-state">No IDs saved.<br>Scan a parcel to remember it.</div>
+    </div>
+
+    <div class="scan-clear-wrap">
+      <button class="danger-btn" id="memory-clear-btn">🗑 Clear this run's memory</button>
     </div>
   </div>
 

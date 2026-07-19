@@ -89,12 +89,13 @@ function switchTab(tab) {
   if (navEl) navEl.classList.add('active');
 }
 function setupNavigation() {
-  ['history', 'scan', 'connect', 'settings'].forEach(tab => {
+  ['history', 'scan', 'memory', 'connect', 'settings'].forEach(tab => {
     const el = document.getElementById(`nav-${tab}`);
     if (el) el.addEventListener('click', () => {
       switchTab(tab);
       if (tab === 'history' && isInitialized) loadHistory(false);
       if (tab === 'scan') loadScanHistory();
+      if (tab === 'memory') loadMemoryTab();
     });
   });
 }
@@ -1464,6 +1465,7 @@ async function init() {
     setupLoadMore();
     setupSortButton();
     setupScanTab(); // 📷 Scanner tab
+    setupMemoryTab(); // 🧠 Memory tab
     setupConnectedInfoCopy();
     setupAutoRefresh();
 
@@ -1842,6 +1844,175 @@ function setupScanTab() {
         renderScanList();
         updateScanBadge();
       });
+    });
+  }
+}
+
+
+// ══════════════════════════════════════════════════════════════════════
+// 🧠 MEMORY TAB
+// Saves parcel IDs for a specific run so they don't need to be
+// re-scanned in the close stage. Persisted in localStorage.
+// Key: db-memory-{runId}  →  { runId, ids: [...], savedAt }
+// ══════════════════════════════════════════════════════════════════════
+
+let memoryRunId   = null;
+let memoryRunUrl  = null;
+
+const MEMORY_ID_REGEX = /(?=[A-Z0-9]*[0-9])(?=[A-Z0-9]*[A-Z])[A-Z0-9]{10,}/;
+
+function memoryStorageKey(runId) { return `db-memory-${runId}`; }
+
+function getMemoryState(runId) {
+  try {
+    const raw = localStorage.getItem(memoryStorageKey(runId));
+    return raw ? JSON.parse(raw) : { runId, ids: [], savedAt: null };
+  } catch { return { runId, ids: [], savedAt: null }; }
+}
+
+function saveMemoryState(state) {
+  try {
+    state.savedAt = Date.now();
+    localStorage.setItem(memoryStorageKey(state.runId), JSON.stringify(state));
+  } catch {}
+}
+
+function parseMemoryId(raw) {
+  // Strip pipe suffix, uppercase — same as scanner-module parseBarcode
+  const pipe = raw.lastIndexOf('|');
+  const code  = (pipe !== -1 ? raw.substring(0, pipe) : raw).trim().toUpperCase();
+  return MEMORY_ID_REGEX.test(code) ? code : null;
+}
+
+async function detectActiveRun() {
+  return new Promise(resolve => {
+    chrome.tabs.query({ active: true, currentWindow: true }, tabs => {
+      const url = tabs[0]?.url || '';
+      const m   = url.match(/hermes\.pathaointernal\.com\/run-routes\/(\d+)/);
+      if (m) resolve({ runId: m[1], url });
+      else   resolve(null);
+    });
+  });
+}
+
+async function loadMemoryTab() {
+  const runHeader = document.getElementById('memory-run-header');
+  const runIdEl   = document.getElementById('memory-run-id');
+  const runUrlEl  = document.getElementById('memory-run-url');
+
+  const detected = await detectActiveRun();
+
+  if (detected) {
+    memoryRunId  = detected.runId;
+    memoryRunUrl = detected.url;
+    if (runIdEl)  runIdEl.textContent  = `#${detected.runId}`;
+    if (runUrlEl) runUrlEl.textContent  = 'hermes.pathaointernal.com';
+    if (runHeader) runHeader.classList.add('memory-run-active');
+  } else {
+    memoryRunId  = null;
+    memoryRunUrl = null;
+    if (runIdEl)  runIdEl.textContent  = 'No Hermes run page active';
+    if (runUrlEl) runUrlEl.textContent  = 'Open a run-routes page first';
+    if (runHeader) runHeader.classList.remove('memory-run-active');
+  }
+
+  renderMemoryList();
+}
+
+function renderMemoryList() {
+  const list  = document.getElementById('memory-list');
+  const badge = document.getElementById('memory-count-badge');
+  const input = document.getElementById('memory-scan-input');
+
+  if (!list) return;
+
+  if (!memoryRunId) {
+    list.innerHTML = '<div class="empty-state">Open a Hermes run page first.</div>';
+    if (badge) badge.textContent = '0 IDs';
+    if (input) input.disabled = true;
+    return;
+  }
+
+  if (input) input.disabled = false;
+
+  const state = getMemoryState(memoryRunId);
+  const ids   = state.ids || [];
+
+  if (badge) badge.textContent = `${ids.length} ID${ids.length !== 1 ? 's' : ''}`;
+
+  if (ids.length === 0) {
+    list.innerHTML = '<div class="empty-state">No IDs saved.<br>Scan a parcel to remember it.</div>';
+    return;
+  }
+
+  list.innerHTML = '';
+  ids.forEach((id, i) => {
+    const row = document.createElement('div');
+    row.className = 'memory-id-row';
+    row.innerHTML = `
+      <span class="memory-id-index">${i + 1}</span>
+      <span class="memory-id-text">${escapeHtml(id)}</span>
+      <button class="memory-del-btn" data-id="${escapeHtml(id)}" title="Remove">✕</button>`;
+    row.querySelector('.memory-del-btn').addEventListener('click', () => {
+      const st = getMemoryState(memoryRunId);
+      st.ids   = st.ids.filter(x => x !== id);
+      saveMemoryState(st);
+      renderMemoryList();
+    });
+    list.appendChild(row);
+  });
+}
+
+function addMemoryId(raw) {
+  if (!memoryRunId) return;
+  const id = parseMemoryId(raw);
+  if (!id) return;
+
+  const state = getMemoryState(memoryRunId);
+  if (state.ids.includes(id)) return; // already saved
+  state.ids.push(id);
+  saveMemoryState(state);
+  renderMemoryList();
+
+  // Flash the newly added row
+  const list = document.getElementById('memory-list');
+  if (list) {
+    const last = list.lastElementChild;
+    if (last) {
+      last.classList.add('memory-row-flash');
+      setTimeout(() => last.classList.remove('memory-row-flash'), 800);
+    }
+  }
+}
+
+function setupMemoryTab() {
+  const input   = document.getElementById('memory-scan-input');
+  const addBtn  = document.getElementById('memory-add-btn');
+  const clearBtn = document.getElementById('memory-clear-btn');
+
+  if (input) {
+    input.addEventListener('keydown', e => {
+      if (e.key !== 'Enter') return;
+      const val = input.value.trim();
+      if (val) { addMemoryId(val); input.value = ''; }
+    });
+  }
+
+  if (addBtn) {
+    addBtn.addEventListener('click', () => {
+      const val = (input?.value || '').trim();
+      if (val) { addMemoryId(val); if (input) input.value = ''; }
+    });
+  }
+
+  if (clearBtn) {
+    clearBtn.addEventListener('click', () => {
+      if (!memoryRunId) return;
+      if (!confirm(`Run #${memoryRunId} এর সব saved IDs delete হবে। নিশ্চিত?`)) return;
+      const st = getMemoryState(memoryRunId);
+      st.ids = [];
+      saveMemoryState(st);
+      renderMemoryList();
     });
   }
 }

@@ -796,6 +796,43 @@
         || text === 'save';
   }
 
+
+  // ── MEMORY INTEGRATION ───────────────────────────────────────────────────
+  // Reads IDs saved via the popup Memory tab for this run and auto-applies
+  // them as received (hold or return) based on current page status.
+  // This means parcels scanned in the save stage don't need re-scanning
+  // when the agent reaches the close stage on the same run.
+  function applyMemoryToState(st) {
+    const memKey = `db-memory-${getRunId()}`;
+    try {
+      const raw = localStorage.getItem(memKey);
+      if (!raw) return;
+      const mem = JSON.parse(raw);
+      const ids = mem.ids || [];
+      if (!ids.length) return;
+
+      let applied = 0;
+      ids.forEach(id => {
+        const row    = findRowById(id);
+        const status = (row ? rowStatus(row) : '').toLowerCase();
+        if (HOLD_VALID.has(status) && !st.holdReceived.includes(id)) {
+          st.holdReceived.push(id);
+          applied++;
+        } else if (RETURN_VALID.has(status) && !st.returnReceived.includes(id)) {
+          st.returnReceived.push(id);
+          applied++;
+        }
+      });
+
+      if (applied > 0) {
+        console.log(`[DB] Memory: applied ${applied} ID(s) from memory for run ${getRunId()}`);
+        persistState(st);
+      }
+    } catch (e) {
+      console.warn('[DB] Memory load failed:', e);
+    }
+  }
+
   // ── INIT ─────────────────────────────────────────────────────────────────
   let appState = null;
 
@@ -824,6 +861,7 @@
     console.log('[DB] appState.holdReceived:', appState.holdReceived);
     console.log('[DB] appState.returnReceived:', appState.returnReceived);
 
+    applyMemoryToState(appState); // auto-apply IDs saved in popup Memory tab
     reconcileWithPageState(appState); // clean stale received IDs on load
     createPanel();
     refreshPanel(appState);
