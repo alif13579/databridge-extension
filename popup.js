@@ -763,10 +763,16 @@ function startSessionListener(id) {
   };
 }
 
-function startContainerListener(containerId) {
+async function startContainerListener(containerId) {
   if (containerSseSource) { containerSseSource.close(); containerSseSource = null; }
   if (!containerId) return;
-  containerSseSource = new EventSource(`${FIREBASE_URL}/container/${containerId}.json`);
+  // EventSource can't send custom headers, so an ID token (when the extension itself is
+  // Google-signed-in) has to go in the URL as ?auth=. Without this, Firebase rules that
+  // require auth on container/ reads return 401 and the SSE connection never opens —
+  // this was silently failing with no visible error beyond the browser console.
+  const idToken = await getValidFirebaseIdToken().catch(() => null);
+  const authParam = idToken ? `?auth=${idToken}` : '';
+  containerSseSource = new EventSource(`${FIREBASE_URL}/container/${containerId}.json${authParam}`);
   const reload = async () => { if (isInitialized) await loadHistory(false); };
   containerSseSource.addEventListener('put', (event) => {
     try {
@@ -1532,7 +1538,9 @@ function loadScanHistory() {
     // Fetch from Firebase for each barcode, update cards as they load
     await Promise.all(barcodeKeys.map(async safeKey => {
       try {
-        const res  = await fetch(`${FIREBASE_URL}/scanned/barcode_scans/${safeKey}.json?cb=${Date.now()}`);
+        const idToken = await getValidFirebaseIdToken().catch(() => null);
+        const authParam = idToken ? `&auth=${idToken}` : '';
+        const res  = await fetch(`${FIREBASE_URL}/scanned/barcode_scans/${safeKey}.json?cb=${Date.now()}${authParam}`);
         const data = await res.json();
         const item = scanItems.find(i => i.barcodeKey === safeKey);
         if (!item) return;
