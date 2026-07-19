@@ -692,6 +692,7 @@ input:checked + .toggle-slider:before { transform: translateX(14px); }
   border-bottom: 1px solid #0d2137;
 }
 .scan-log-entry:last-of-type { border-bottom: none; }
+.scan-log-entry-continuation { padding-top: 2px; }
 .scan-log-index {
   font-size: 10px;
   font-weight: 700;

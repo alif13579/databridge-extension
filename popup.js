@@ -1714,10 +1714,22 @@ function renderScanList() {
     body.className = 'card-actions scan-log-body';
     body.id = `body-${uid}`;
 
+    // Same user/device scanning the same barcode multiple times in a row shouldn't look
+    // like different people did it — the 'by' line is only shown on the first entry of
+    // each same-identity run, not repeated on every single row.
+    const sameScanIdentity = (a, b) => {
+      if (!a || !b) return false;
+      const aUid = a.uid && a.uid !== '—' ? a.uid : null;
+      const bUid = b.uid && b.uid !== '—' ? b.uid : null;
+      if (aUid || bUid) return aUid === bUid;
+      return (a.scanned_by || '—') === (b.scanned_by || '—') && a.scanned_by !== '—';
+    };
+
     item.entries.forEach((entry, i) => {
       const row = document.createElement('div');
       row.className = 'scan-log-entry';
       const hasUid = entry.uid && entry.uid !== '—';
+      const isContinuation = sameScanIdentity(entry, item.entries[i - 1]);
       // Short placeholder shown immediately; upgraded to the real profile name (if any)
       // once resolveScanEntryNames() fetches it on expand — never fetched eagerly.
       const placeholder = hasUid ? entry.uid.slice(0, 10) + '…' : (entry.scanned_by || '—');
@@ -1730,10 +1742,11 @@ function renderScanList() {
             <button type="button" class="scan-url-copy-btn" title="Copy URL">⎘</button>
             ${!entry.fromFirebase ? '<span class="scan-local-chip">local</span>' : ''}
           </div>
+          ${isContinuation ? '' : `
           <div class="scan-by-row" title="Device: ${escapeHtml(entry.scanned_by || '—')}">
             <span class="scan-by-icon">👤</span>
             <span class="scan-by-name"${hasUid ? ` data-uid="${escapeHtml(entry.uid)}"` : ''}>${escapeHtml(placeholder)}</span>
-          </div>
+          </div>`}
         </div>`;
 
       // Wired here (not inline in the template) so the raw entry.url is used directly
@@ -1752,6 +1765,7 @@ function renderScanList() {
         });
       }
 
+      if (isContinuation) row.classList.add('scan-log-entry-continuation');
       body.appendChild(row);
     });
 
