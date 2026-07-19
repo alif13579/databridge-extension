@@ -1727,6 +1727,7 @@ function renderScanList() {
           <div class="scan-log-meta">
             <span class="scan-log-time">${scanExactTime(entry.createdAt)}</span>
             <span class="scan-url-chip" title="${escapeHtml(entry.url || entry.hostname)}">🌐 ${escapeHtml(entry.hostname)}</span>
+            <button type="button" class="scan-url-copy-btn" title="Copy URL">⎘</button>
             ${!entry.fromFirebase ? '<span class="scan-local-chip">local</span>' : ''}
           </div>
           <div class="scan-by-row" title="Device: ${escapeHtml(entry.scanned_by || '—')}">
@@ -1734,6 +1735,23 @@ function renderScanList() {
             <span class="scan-by-name"${hasUid ? ` data-uid="${escapeHtml(entry.uid)}"` : ''}>${escapeHtml(placeholder)}</span>
           </div>
         </div>`;
+
+      // Wired here (not inline in the template) so the raw entry.url is used directly
+      // from closure — safer than round-tripping it through an HTML attribute.
+      const urlChip = row.querySelector('.scan-url-chip');
+      if (urlChip && entry.url) {
+        urlChip.addEventListener('click', () => chrome.tabs.create({ url: entry.url }));
+      }
+      const urlCopyBtn = row.querySelector('.scan-url-copy-btn');
+      if (urlCopyBtn) {
+        urlCopyBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          navigator.clipboard.writeText(entry.url || entry.hostname);
+          urlCopyBtn.textContent = '✅';
+          setTimeout(() => { urlCopyBtn.textContent = '⎘'; }, 1200);
+        });
+      }
+
       body.appendChild(row);
     });
 

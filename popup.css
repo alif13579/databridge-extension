@@ -604,7 +604,20 @@ input:checked + .toggle-slider:before { transform: translateX(14px); }
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  cursor: pointer;
 }
+.scan-url-chip:hover { background: #1e3a5f; color: #c9d8ec; }
+.scan-url-copy-btn {
+  background: #0f3460;
+  border: none;
+  color: #7ab3e0;
+  font-size: 10px;
+  padding: 1px 5px;
+  border-radius: 3px;
+  cursor: pointer;
+  line-height: 1.4;
+}
+.scan-url-copy-btn:hover { background: #1e3a5f; color: #c9d8ec; }
 /* scan dot — green indicator replacing new/old-indicator */
 .scan-dot {
   width: 5px; height: 5px;
