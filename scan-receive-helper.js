@@ -509,7 +509,6 @@
       </table>
     `;
 
-    console.groupEnd(); // refreshBorders
     // Attach copy listeners on amount buttons
     document.getElementById('db-summary').querySelectorAll('.db-copy-btn').forEach(btn => {
       btn.addEventListener('click', (e) => {
@@ -953,8 +952,24 @@
       }
     });
 
-    // Retry attaching listeners after async drawer open
-    [1500, 4000].forEach(ms => setTimeout(() => { listenedInputs.clear(); attachScanListeners(appState); }, ms));
+    // Retry: re-build expected sets + re-attach listeners if Hermes
+    // rendered the parcel list after init() (SPA async render).
+    [1500, 3500].forEach(ms => setTimeout(() => {
+      if (!appState.holdExpected.length && !appState.returnExpected.length) {
+        const { holdExpected, returnExpected } = buildExpected();
+        if (holdExpected.length || returnExpected.length) {
+          appState.holdExpected   = holdExpected;
+          appState.returnExpected = returnExpected;
+          persistState(appState);
+          console.log(`[DB] Retry @${ms}ms: rebuilt expected sets`,
+            holdExpected.length, 'hold /', returnExpected.length, 'return');
+          refreshBorders(appState);
+          refreshPanel(appState);
+        }
+      }
+      listenedInputs.clear();
+      attachScanListeners(appState);
+    }, ms));
 
     // Observe DOM changes → refresh panel + borders
     let debounce = null;
@@ -1003,6 +1018,19 @@
 
       clearTimeout(debounce);
       debounce = setTimeout(() => {
+        // Hermes is a Vue SPA — parcel rows may not have been in the DOM
+        // when init() ran. If expected sets are still empty but rows exist
+        // now, rebuild them before refreshing borders.
+        if (!appState.holdExpected.length && !appState.returnExpected.length) {
+          const { holdExpected, returnExpected } = buildExpected();
+          if (holdExpected.length || returnExpected.length) {
+            appState.holdExpected   = holdExpected;
+            appState.returnExpected = returnExpected;
+            persistState(appState);
+            console.log('[DB] MutationObserver: rebuilt expected sets from live DOM',
+              holdExpected.length, 'hold /', returnExpected.length, 'return');
+          }
+        }
         reconcileWithPageState(appState);
         refreshPanel(appState);
         refreshBorders(appState);
