@@ -22,6 +22,7 @@
   </div>
 
   <div class="bottom-nav">
+    <div class="nav-item" id="nav-dashboard"><span class="nav-icon">📊</span>Dashboard</div>
     <div class="nav-item active" id="nav-history"><span class="nav-icon">📋</span>History</div>
     <div class="nav-item" id="nav-scan"><span class="nav-icon"><svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><rect x="1" y="2" width="1.5" height="12"/><rect x="3.5" y="2" width="1" height="12"/><rect x="5.5" y="2" width="2" height="12"/><rect x="8.5" y="2" width="1" height="12"/><rect x="10.5" y="2" width="1.5" height="12"/><rect x="13" y="2" width="2" height="12"/></svg></span>Barcodes</div>
     <div class="nav-item" id="nav-memory"><span class="nav-icon">🧠</span>Memory</div>
@@ -63,6 +64,35 @@
     <div class="scan-clear-wrap">
       <button class="danger-btn" id="clear-scan-btn">🗑 Clear all scans</button>
     </div>
+  </div>
+
+  <!-- ── Dashboard Tab (demo) ── -->
+  <div class="tab-content" id="tab-dashboard">
+    <div class="dash-stats" id="dash-stats">
+      <div class="dash-stat-card">
+        <div class="dash-stat-value" id="dash-stat-history">0</div>
+        <div class="dash-stat-label">History records</div>
+      </div>
+      <div class="dash-stat-card">
+        <div class="dash-stat-value" id="dash-stat-barcodes">0</div>
+        <div class="dash-stat-label">Barcodes scanned</div>
+      </div>
+      <div class="dash-stat-card">
+        <div class="dash-stat-value" id="dash-stat-today">0</div>
+        <div class="dash-stat-label">Scans today</div>
+      </div>
+    </div>
+
+    <div class="dash-export-section">
+      <div class="dash-export-label">History records → Excel</div>
+      <button class="dash-export-btn" id="export-history-btn">⬇ Export</button>
+    </div>
+    <div class="dash-export-section">
+      <div class="dash-export-label">Barcode scans → Excel</div>
+      <button class="dash-export-btn" id="export-scans-btn">⬇ Export</button>
+    </div>
+
+    <div class="dash-note">📊 Demo dashboard — tell me what else this should show.</div>
   </div>
 
   <!-- ── Memory Tab ── -->

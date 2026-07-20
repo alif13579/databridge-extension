@@ -948,3 +948,46 @@ input:checked + .toggle-slider:before { transform: translateX(14px); }
   white-space: nowrap;
 }
 .memory-overlay-copy-btn:hover { background: #22c55e; border-color: #22c55e; color: #fff; }
+
+/* ── Dashboard tab (demo) ── */
+.dash-stats {
+  display: flex;
+  gap: 8px;
+  padding: 10px;
+}
+.dash-stat-card {
+  flex: 1;
+  background: #16213e;
+  border: 1px solid #0f3460;
+  border-radius: 8px;
+  padding: 10px 6px;
+  text-align: center;
+}
+.dash-stat-value { font-size: 20px; font-weight: 700; color: #00d4ff; }
+.dash-stat-label { font-size: 9px; color: #888; margin-top: 2px; }
+.dash-export-section {
+  margin: 0 10px 10px;
+  padding: 10px;
+  background: #16213e;
+  border: 1px solid #0f3460;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.dash-export-label { font-size: 11px; color: #c9d8ec; }
+.dash-export-btn {
+  background: #00d4ff22;
+  color: #00d4ff;
+  border: 1px solid #00d4ff55;
+  border-radius: 6px;
+  padding: 6px 10px;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.dash-export-btn:hover { background: #00d4ff33; }
+.dash-note { text-align: center; font-size: 10px; color: #555; padding: 10px; }
