@@ -991,3 +991,26 @@ input:checked + .toggle-slider:before { transform: translateX(14px); }
 }
 .dash-export-btn:hover { background: #00d4ff33; }
 .dash-note { text-align: center; font-size: 10px; color: #555; padding: 10px; }
+
+.dash-filter-row {
+  display: flex;
+  gap: 6px;
+  padding: 10px 10px 0;
+}
+.dash-filter-chip {
+  flex: 1;
+  background: #00d4ff14;
+  color: #00d4ff;
+  border: 1px solid #00d4ff40;
+  border-radius: 14px;
+  padding: 5px 8px;
+  font-size: 10px;
+  font-weight: 600;
+  cursor: pointer;
+  appearance: none;
+  -webkit-appearance: none;
+  text-align: center;
+  text-align-last: center;
+}
+.dash-filter-chip:focus { outline: none; border-color: #00d4ff; }
+.dash-filter-chip option { background: #16213e; color: #c9d8ec; }

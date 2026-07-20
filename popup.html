@@ -68,6 +68,21 @@
 
   <!-- ── Dashboard Tab (demo) ── -->
   <div class="tab-content" id="tab-dashboard">
+    <!-- Filter chips — UI only for now, not wired to the stats/export below yet -->
+    <div class="dash-filter-row">
+      <select class="dash-filter-chip" id="dash-filter-daterange">
+        <option value="today">Today</option>
+        <option value="week">This Week</option>
+        <option value="month">This Month</option>
+        <option value="all" selected>All Time</option>
+      </select>
+      <select class="dash-filter-chip" id="dash-filter-datatype">
+        <option value="all" selected>All Data</option>
+        <option value="history">History</option>
+        <option value="barcodes">Barcodes</option>
+      </select>
+    </div>
+
     <div class="dash-stats" id="dash-stats">
       <div class="dash-stat-card">
         <div class="dash-stat-value" id="dash-stat-history">0</div>
