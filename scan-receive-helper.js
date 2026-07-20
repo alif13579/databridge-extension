@@ -477,7 +477,7 @@
     });
   }
 
-  function refreshPanel(st) {
+  async function refreshPanel(st) {
     if (!panel) createPanel();
 
     // ── Summary section ──
@@ -579,12 +579,14 @@
     pendHTML += pendingGroup('On Hold', '#3b82f6', holdPending);
     pendHTML += pendingGroup('Return', '#ef4444', returnPending);
 
-    // "Fill from Memory" button — shown when memory has IDs for this run
+    // "Fill from Memory" button — shown when memory has IDs for this run.
+    // chrome.storage.local (not localStorage) — shared with popup.js, which is
+    // where IDs actually get saved. See doc comment on applyMemoryToState() below.
     const memKey   = `db-memory-${getRunId()}`;
     let   memCount = 0;
     try {
-      const raw = localStorage.getItem(memKey);
-      if (raw) memCount = (JSON.parse(raw).ids || []).length;
+      const result = await chrome.storage.local.get([memKey]);
+      memCount = (result[memKey]?.ids || []).length;
     } catch {}
 
     if (memCount > 0) {
@@ -822,12 +824,19 @@
   // them as received (hold or return) based on current page status.
   // This means parcels scanned in the save stage don't need re-scanning
   // when the agent reaches the close stage on the same run.
-  function applyMemoryToState(st) {
+  // Uses chrome.storage.local (not localStorage) — localStorage here would be
+  // this PAGE's own storage bucket, completely separate from the extension
+  // popup's storage even though popup.js used to write to a same-named key;
+  // IDs saved via the Memory tab never actually reached this page that way.
+  // chrome.storage.local is shared across both contexts, which is the point.
+  // async + not awaited by init() below, so re-renders the panel itself once
+  // the storage read resolves rather than making init() wait on it.
+  async function applyMemoryToState(st) {
     const memKey = `db-memory-${getRunId()}`;
     try {
-      const raw = localStorage.getItem(memKey);
-      if (!raw) return;
-      const mem = JSON.parse(raw);
+      const result = await chrome.storage.local.get([memKey]);
+      const mem = result[memKey];
+      if (!mem) return;
       const ids = mem.ids || [];
       if (!ids.length) return;
 
@@ -847,6 +856,8 @@
       if (applied > 0) {
         console.log(`[DB] Memory: applied ${applied} ID(s) from memory for run ${getRunId()}`);
         persistState(st);
+        refreshPanel(st);
+        refreshBorders(st);
       }
     } catch (e) {
       console.warn('[DB] Memory load failed:', e);
@@ -863,9 +874,9 @@
     const memKey = `db-memory-${getRunId()}`;
     let mem;
     try {
-      const raw = localStorage.getItem(memKey);
-      if (!raw) { showToast('Memory', 'No IDs saved for this run', false); return; }
-      mem = JSON.parse(raw);
+      const result = await chrome.storage.local.get([memKey]);
+      mem = result[memKey];
+      if (!mem) { showToast('Memory', 'No IDs saved for this run', false); return; }
     } catch { return; }
 
     const ids = [...(mem.ids || [])];
@@ -891,7 +902,7 @@
 
       // Remove used ID from memory
       mem.ids = mem.ids.filter(x => x !== id);
-      try { localStorage.setItem(memKey, JSON.stringify(mem)); } catch {}
+      try { await chrome.storage.local.set({ [memKey]: mem }); } catch {}
 
       await new Promise(r => setTimeout(r, 600)); // Hermes needs time per scan
     }

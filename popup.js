@@ -2013,17 +2013,24 @@ const MEMORY_ID_REGEX = /(?=[A-Z0-9]*[0-9])(?=[A-Z0-9]*[A-Z])[A-Z0-9]{10,}/;
 
 function memoryStorageKey(runId) { return `db-memory-${runId}`; }
 
-function getMemoryState(runId) {
+// NOTE: these were localStorage-based, which meant popup.js (chrome-extension://
+// origin) and scan-receive-helper.js (injected into hermes.pathaointernal.com,
+// reads/writes THAT page's own localStorage) were silently using two totally
+// separate storage buckets despite sharing the same key string — IDs saved here
+// never actually reached the page. chrome.storage.local is shared across both
+// contexts, which is the whole reason it exists.
+async function getMemoryState(runId) {
   try {
-    const raw = localStorage.getItem(memoryStorageKey(runId));
-    return raw ? JSON.parse(raw) : { runId, ids: [], savedAt: null };
+    const key = memoryStorageKey(runId);
+    const result = await chrome.storage.local.get([key]);
+    return result[key] || { runId, ids: [], savedAt: null };
   } catch { return { runId, ids: [], savedAt: null }; }
 }
 
-function saveMemoryState(state) {
+async function saveMemoryState(state) {
   try {
     state.savedAt = Date.now();
-    localStorage.setItem(memoryStorageKey(state.runId), JSON.stringify(state));
+    await chrome.storage.local.set({ [memoryStorageKey(state.runId)]: state });
   } catch {}
 }
 
@@ -2066,10 +2073,10 @@ async function loadMemoryTab() {
     if (runHeader) runHeader.classList.remove('memory-run-active');
   }
 
-  renderMemoryList();
+  await renderMemoryList();
 }
 
-function renderMemoryList() {
+async function renderMemoryList() {
   const list  = document.getElementById('memory-list');
   const badge = document.getElementById('memory-count-badge');
   const input = document.getElementById('memory-scan-input');
@@ -2085,7 +2092,7 @@ function renderMemoryList() {
 
   if (input) input.disabled = false;
 
-  const state = getMemoryState(memoryRunId);
+  const state = await getMemoryState(memoryRunId);
   const ids   = state.ids || [];
 
   if (badge) badge.textContent = `${ids.length} ID${ids.length !== 1 ? 's' : ''}`;
@@ -2103,25 +2110,25 @@ function renderMemoryList() {
       <span class="memory-id-index">${i + 1}</span>
       <span class="memory-id-text">${escapeHtml(id)}</span>
       <button class="memory-del-btn" data-id="${escapeHtml(id)}" title="Remove">✕</button>`;
-    row.querySelector('.memory-del-btn').addEventListener('click', () => {
-      const st = getMemoryState(memoryRunId);
+    row.querySelector('.memory-del-btn').addEventListener('click', async () => {
+      const st = await getMemoryState(memoryRunId);
       st.ids   = st.ids.filter(x => x !== id);
-      saveMemoryState(st);
+      await saveMemoryState(st);
       renderMemoryList();
     });
     list.appendChild(row);
   });
 }
 
-function addMemoryId(raw) {
+async function addMemoryId(raw) {
   if (!memoryRunId) return;
   const id = parseMemoryId(raw);
   if (!id) return;
 
-  const state = getMemoryState(memoryRunId);
+  const state = await getMemoryState(memoryRunId);
   if (state.ids.includes(id)) return; // already saved
   state.ids.push(id);
-  saveMemoryState(state);
+  await saveMemoryState(state);
   renderMemoryList();
 
   // Flash the newly added row
@@ -2156,12 +2163,12 @@ function setupMemoryTab() {
   }
 
   if (clearBtn) {
-    clearBtn.addEventListener('click', () => {
+    clearBtn.addEventListener('click', async () => {
       if (!memoryRunId) return;
       if (!confirm(`Run #${memoryRunId} এর সব saved IDs delete হবে। নিশ্চিত?`)) return;
-      const st = getMemoryState(memoryRunId);
+      const st = await getMemoryState(memoryRunId);
       st.ids = [];
-      saveMemoryState(st);
+      await saveMemoryState(st);
       renderMemoryList();
     });
   }
@@ -2175,7 +2182,7 @@ function setupMemoryTab() {
 //             into the correct Hermes scan fields.
 // ══════════════════════════════════════════════════════════════════════
 
-function renderMemoryOverlay() {
+async function renderMemoryOverlay() {
   const overlay = document.getElementById('memory-overlay');
   const list    = document.getElementById('memory-overlay-list');
   const runEl   = document.getElementById('memory-overlay-run');
@@ -2187,7 +2194,7 @@ function renderMemoryOverlay() {
     return;
   }
 
-  const state = getMemoryState(memoryRunId);
+  const state = await getMemoryState(memoryRunId);
   const ids   = state.ids || [];
   if (runEl) runEl.textContent = `Run #${memoryRunId}`;
 
@@ -2205,11 +2212,11 @@ function renderMemoryOverlay() {
       <button class="memory-overlay-copy-btn" data-id="${escapeHtml(id)}">⎘ Copy</button>`;
 
     row.querySelector('.memory-overlay-copy-btn').addEventListener('click', () => {
-      navigator.clipboard.writeText(id).then(() => {
+      navigator.clipboard.writeText(id).then(async () => {
         // Remove from memory after copy
-        const st = getMemoryState(memoryRunId);
+        const st = await getMemoryState(memoryRunId);
         st.ids   = st.ids.filter(x => x !== id);
-        saveMemoryState(st);
+        await saveMemoryState(st);
         row.style.opacity = '0';
         setTimeout(() => { row.remove(); renderMemoryList(); }, 200);
 
@@ -2238,7 +2245,7 @@ function setupMemoryOverlay() {
       const detected = await detectActiveRun();
       memoryRunId  = detected?.runId  || null;
       memoryRunUrl = detected?.url    || null;
-      renderMemoryOverlay();
+      await renderMemoryOverlay();
       overlay?.classList.toggle('hidden');
     });
   }
@@ -2259,7 +2266,7 @@ function setupMemoryOverlay() {
   if (fillBtn) {
     fillBtn.addEventListener('click', async () => {
       if (!memoryRunId) return;
-      const state = getMemoryState(memoryRunId);
+      const state = await getMemoryState(memoryRunId);
       if (!state.ids.length) return;
 
       chrome.tabs.query({ active: true, currentWindow: true }, tabs => {
