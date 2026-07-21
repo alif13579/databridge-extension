@@ -416,7 +416,11 @@
         background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 4px;
         padding: 1px 4px; font: 10px/1.4 monospace; color: #334155;
       }
-      .db-more { font-size: 11px; color: #94a3b8; padding: 2px 4px; align-self: center; }
+      .db-more {
+        font-size: 11px; color: #94a3b8; padding: 2px 4px; align-self: center;
+        cursor: pointer; text-decoration: underline; text-decoration-style: dotted;
+      }
+      .db-more:hover { color: #64748b; }
       .db-id {
         cursor: pointer;
         transition: background .15s, border-color .15s;
@@ -554,6 +558,13 @@
     }
   }
 
+  // Tracks which pending-scan groups (by label) the user has expanded to show
+  // every ID instead of the default +N-more truncation. Declared outside
+  // refreshPanel() because that function rebuilds #db-pending's innerHTML
+  // wholesale on every scan/state change — without this living here, an
+  // expanded group would silently re-collapse on the very next refresh.
+  const expandedPendingGroups = new Set();
+
   async function refreshPanel(st) {
     if (!panel) createPanel();
 
@@ -639,7 +650,8 @@
 
     function pendingGroup(label, color, ids) {
       if (!ids.length) return '';
-      const shown = ids.slice(0, 4);
+      const isExpanded = expandedPendingGroups.has(label);
+      const shown = isExpanded ? ids : ids.slice(0, 4);
       const extra = ids.length - shown.length;
       return `
         <div class="db-pending-grp">
@@ -648,7 +660,8 @@
           </div>
           <div class="db-ids">
             ${shown.map(id => `<span class="db-id" data-scroll-id="${id}">${id}</span>`).join('')}
-            ${extra > 0 ? `<span class="db-more">+${extra} more</span>` : ''}
+            ${extra > 0 ? `<span class="db-more" data-toggle-group="${label}">+${extra} more</span>` : ''}
+            ${isExpanded && ids.length > 4 ? `<span class="db-more" data-toggle-group="${label}">Show less</span>` : ''}
           </div>
         </div>`;
     }
@@ -688,6 +701,16 @@
     // Attach scroll-on-click to every ID badge
     document.getElementById('db-pending').querySelectorAll('[data-scroll-id]').forEach(el => {
       el.addEventListener('click', () => scrollToRow(el.dataset.scrollId));
+    });
+
+    // Attach expand/collapse toggle for "+N more" / "Show less"
+    document.getElementById('db-pending').querySelectorAll('[data-toggle-group]').forEach(el => {
+      el.addEventListener('click', () => {
+        const label = el.dataset.toggleGroup;
+        if (expandedPendingGroups.has(label)) expandedPendingGroups.delete(label);
+        else expandedPendingGroups.add(label);
+        refreshPanel(st);
+      });
     });
   }
 
