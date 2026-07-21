@@ -344,10 +344,29 @@
         cursor: move; user-select: none; font-weight: 600; font-size: 11px;
         flex-shrink: 0;
       }
+      .db-hdr-actions { display: flex; gap: 2px; align-items: center; }
       .db-hdr button {
         background: none; border: none; color: #fff; font-size: 18px;
         cursor: pointer; line-height: 1; padding: 0 2px;
       }
+      /* Save-to-Memory popover — toggled by the 🧠 button in .db-hdr. Sits between
+         the header and .db-body as a normal (not absolutely-positioned) flow
+         element so it can't get clipped by #db-panel's overflow:hidden. */
+      .db-memory-popover {
+        padding: 8px 10px; background: #f8fafc; border-bottom: 1px solid #e2e8f0;
+        display: flex; flex-direction: column; gap: 6px; flex-shrink: 0;
+      }
+      .db-memory-popover.hidden { display: none; }
+      .db-memory-popover input {
+        padding: 5px 7px; font-size: 11px; border-radius: 5px;
+        border: 1px solid #cbd5e1; background: #fff; color: #1e293b;
+      }
+      .db-memory-popover input:focus { outline: none; border-color: #3b82f6; }
+      .db-memory-popover button {
+        padding: 6px 8px; background: #3b82f6; border: none; border-radius: 5px;
+        color: #fff; font-size: 11px; font-weight: 700; cursor: pointer;
+      }
+      .db-memory-popover button:hover { background: #2563eb; }
       /* Row layout: Run Summary (left) + Pending Scan (right) side-by-side instead
          of stacked. .db-body itself no longer scrolls — each .db-sec column scrolls
          independently, since the summary table (fixed row count) and the pending-ID
@@ -446,24 +465,19 @@
     panel.innerHTML = `
       <div class="db-hdr">
         <span>📦 DataBridge Reconcile</span>
-        <button id="db-min">−</button>
+        <div class="db-hdr-actions">
+          <button id="db-memory-toggle" title="Save to Memory">🧠</button>
+          <button id="db-min">−</button>
+        </div>
+      </div>
+      <div class="db-memory-popover hidden" id="db-memory-popover">
+        <input id="db-memory-save-input" type="text" placeholder="Scan or type ID + Enter">
+        <button id="db-memory-save-btn">💾 Save</button>
       </div>
       <div class="db-body" id="db-body">
         <div class="db-sec" id="db-summary"></div>
         <div class="db-vdivider"></div>
         <div class="db-sec" id="db-pending"></div>
-        <div class="db-vdivider"></div>
-        <div class="db-sec" id="db-memory-save">
-          <div class="db-sec-title">🧠 Save to Memory</div>
-          <div style="display:flex;gap:4px;margin-top:4px">
-            <input id="db-memory-save-input" type="text" placeholder="Scan or type ID + Enter"
-              style="flex:1;min-width:0;padding:4px 6px;font-size:11px;border-radius:4px;
-                     border:1px solid #2d5a8e;background:#0d1b2e;color:#c9d8ec">
-            <button id="db-memory-save-btn" style="padding:4px 8px;background:#1e3a5f;
-              border:1px solid #3b82f6;border-radius:4px;color:#7ab3e0;font-size:10px;
-              font-weight:700;cursor:pointer;white-space:nowrap">💾 Save</button>
-          </div>
-        </div>
       </div>
     `;
     document.body.appendChild(panel);
@@ -474,14 +488,22 @@
       document.getElementById('db-min').textContent = minimized ? '+' : '−';
     });
 
-    // Save-to-Memory — lets an agent add an ID straight from this page (scan-gun
-    // input ending in Enter, or the button) instead of needing to open the
-    // extension popup's Memory tab. Same chrome.storage.local key/shape as
-    // popup.js's Memory tab and applyMemoryToState()/fillFromMemory() above, so
-    // whatever gets saved here is immediately visible/usable in both places.
-    const memInput = document.getElementById('db-memory-save-input');
-    const memBtn   = document.getElementById('db-memory-save-btn');
-    const trySave  = () => { saveIdToMemory(memInput.value); memInput.value = ''; memInput.focus(); };
+    // Save-to-Memory — 🧠 icon in the header toggles a small popover (input on top,
+    // Save button below) so an agent can add an ID straight from this page (scan-gun
+    // input ending in Enter, or the button) instead of needing to open the extension
+    // popup. Same chrome.storage.local key/shape applyMemoryToState()/fillFromMemory()
+    // below already use, so whatever gets saved here is immediately visible/usable
+    // in the Auto-fill flow too.
+    const memToggle = document.getElementById('db-memory-toggle');
+    const memPopover = document.getElementById('db-memory-popover');
+    const memInput   = document.getElementById('db-memory-save-input');
+    const memBtn     = document.getElementById('db-memory-save-btn');
+    if (memToggle) memToggle.addEventListener('click', e => {
+      e.stopPropagation(); // don't let the header's drag handler below see this click
+      memPopover.classList.toggle('hidden');
+      if (!memPopover.classList.contains('hidden')) memInput.focus();
+    });
+    const trySave = () => { saveIdToMemory(memInput.value); memInput.value = ''; memInput.focus(); };
     if (memBtn)   memBtn.addEventListener('click', trySave);
     if (memInput) memInput.addEventListener('keydown', e => { if (e.key === 'Enter') trySave(); });
 
