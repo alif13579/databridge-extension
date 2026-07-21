@@ -48,29 +48,43 @@ function getWordUnderCursor(x, y) {
 // ══════════════════════════════
 let lastCellValue = null;
 
-/** Reads the current formula-bar value. Tries known internal class names
- *  first (fast path, kept for whichever Sheets version still uses them),
- *  then falls back to accessibility attributes (aria-label/role) — Google
- *  changes internal obfuscated class names across releases far more often
- *  than it changes accessibility labels (those need to stay stable for
- *  screen readers), so this fallback is meant to survive that churn without
- *  needing a code update every time Google restructures the DOM. */
+/**
+ * ⚠️ FRAGILE — READ BEFORE TOUCHING THIS FUNCTION ⚠️
+ *
+ * Reads the Google Sheets formula bar's current value (what the shortcut
+ * sends when a cell is selected). Confirmed WORKING as of 2026-07-21 with
+ * the exact selectors below.
+ *
+ * This function has regressed 4 times already — twice from Google actually
+ * changing Sheets' DOM, twice from well-intentioned refactors that
+ * introduced a NEW bug while "fixing" something else. Specific mistakes
+ * already made here before (do not repeat):
+ *
+ *   1. (commit 6a27eb7) Rewriting the combined, comma-separated
+ *      `querySelector('.a, .b, .c')` as a sequential per-selector loop
+ *      (`for (sel of list) querySelector(sel)`) seems equivalent but ISN'T:
+ *      the combined form returns whichever matches FIRST IN DOCUMENT ORDER
+ *      across all three; a sequential loop always tries the first selector
+ *      in the LIST first regardless of position, and can pick a stale/
+ *      hidden element over the real live formula bar.
+ *   2. (commit da80521) `[role="textbox"]` and `[aria-label*="formula" i]`
+ *      look like reasonable broader fallbacks but both ALSO match the
+ *      Sheets Name Box (the "A1"/"B2" cell-reference indicator) — causing
+ *      the shortcut to silently send the wrong thing instead of failing
+ *      loudly. Only the EXACT `[aria-label="Formula bar"]` is safe.
+ *
+ * If a person reports this broken again: do NOT guess at a new selector.
+ * Check the console logging already in place below first (page console,
+ * F12, on the actual Sheets tab) — it shows exactly which candidate
+ * element was found (if any) and its raw value, which tells you whether
+ * this is a real Google DOM change (both candidates null) or something
+ * else (element found, value empty/wrong).
+ */
 function readSheetsFormulaBarValue() {
   // Selector priority (most stable → least stable):
   //   1. aria-label="Formula bar" — Google keeps this for screen-reader
   //      compat so it survives DOM restructures that rename internal classes.
   //   2. Known internal class names as fallback.
-  //
-  // [role="textbox"] is intentionally EXCLUDED: it also matches the Sheets
-  // Name Box (shows "A1", "B2" etc.) and other unrelated textboxes, causing
-  // the shortcut to return wrong content or silently fail.
-  //
-  // DEBUG (2026-07-21): this exact function has regressed 3 times before —
-  // twice from a genuine Google DOM change, twice from our OWN selector-logic
-  // bugs (wrong document-order assumption, an over-broad selector). Rather
-  // than guess at a 4th "fix" blind, logging every candidate's outcome here
-  // so a real failure shows exactly which tier matched what (or nothing) —
-  // check the page console (F12) when the shortcut doesn't send.
   const ariaEl  = document.querySelector('[aria-label="Formula bar"]');
   const classEl = document.querySelector('.cell-input, #t-formula-bar-input, .waffle-formula-bar-input');
   console.log('[DB] readSheetsFormulaBarValue:', {
