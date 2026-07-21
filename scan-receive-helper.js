@@ -452,6 +452,18 @@
         <div class="db-sec" id="db-summary"></div>
         <div class="db-vdivider"></div>
         <div class="db-sec" id="db-pending"></div>
+        <div class="db-vdivider"></div>
+        <div class="db-sec" id="db-memory-save">
+          <div class="db-sec-title">🧠 Save to Memory</div>
+          <div style="display:flex;gap:4px;margin-top:4px">
+            <input id="db-memory-save-input" type="text" placeholder="Scan or type ID + Enter"
+              style="flex:1;min-width:0;padding:4px 6px;font-size:11px;border-radius:4px;
+                     border:1px solid #2d5a8e;background:#0d1b2e;color:#c9d8ec">
+            <button id="db-memory-save-btn" style="padding:4px 8px;background:#1e3a5f;
+              border:1px solid #3b82f6;border-radius:4px;color:#7ab3e0;font-size:10px;
+              font-weight:700;cursor:pointer;white-space:nowrap">💾 Save</button>
+          </div>
+        </div>
       </div>
     `;
     document.body.appendChild(panel);
@@ -461,6 +473,17 @@
       document.getElementById('db-body').style.display = minimized ? 'none' : '';
       document.getElementById('db-min').textContent = minimized ? '+' : '−';
     });
+
+    // Save-to-Memory — lets an agent add an ID straight from this page (scan-gun
+    // input ending in Enter, or the button) instead of needing to open the
+    // extension popup's Memory tab. Same chrome.storage.local key/shape as
+    // popup.js's Memory tab and applyMemoryToState()/fillFromMemory() above, so
+    // whatever gets saved here is immediately visible/usable in both places.
+    const memInput = document.getElementById('db-memory-save-input');
+    const memBtn   = document.getElementById('db-memory-save-btn');
+    const trySave  = () => { saveIdToMemory(memInput.value); memInput.value = ''; memInput.focus(); };
+    if (memBtn)   memBtn.addEventListener('click', trySave);
+    if (memInput) memInput.addEventListener('keydown', e => { if (e.key === 'Enter') trySave(); });
 
     // Draggable
     const hdr = panel.querySelector('.db-hdr');
@@ -475,6 +498,38 @@
       document.addEventListener('mousemove', move);
       document.addEventListener('mouseup', () => document.removeEventListener('mousemove', move), { once: true });
     });
+  }
+
+  /** Parses/validates raw scanner or typed input (same cleanup as the Hermes
+   *  scan-input listener below: strip pipe suffix, uppercase, ID_REGEX check),
+   *  then adds it to this run's memory in chrome.storage.local. */
+  async function saveIdToMemory(raw) {
+    const trimmed = (raw || '').trim().toUpperCase();
+    if (!trimmed) return;
+    const pipeIdx = trimmed.lastIndexOf('|');
+    const id = pipeIdx !== -1 ? trimmed.substring(0, pipeIdx) : trimmed;
+    if (!ID_REGEX.test(id)) {
+      showToast('Memory', `Invalid ID: ${id}`, true);
+      return;
+    }
+
+    const memKey = `db-memory-${getRunId()}`;
+    try {
+      const result = await chrome.storage.local.get([memKey]);
+      const mem = result[memKey] || { runId: getRunId(), ids: [], savedAt: null };
+      if (mem.ids.includes(id)) {
+        showToast('Memory', `${id} already saved`, false);
+        return;
+      }
+      mem.ids.push(id);
+      mem.savedAt = Date.now();
+      await chrome.storage.local.set({ [memKey]: mem });
+      showToast('Memory', `Saved ${id} (${mem.ids.length} total)`, false);
+      refreshPanel(appState); // updates the Auto-fill button's count immediately
+    } catch (e) {
+      console.warn('[DB] saveIdToMemory failed:', e);
+      showToast('Memory', 'Save failed — see console', true);
+    }
   }
 
   async function refreshPanel(st) {
