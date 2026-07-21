@@ -821,3 +821,32 @@ input:checked + .toggle-slider:before { transform: translateX(14px); }
 }
 .dash-filter-chip:focus { outline: none; border-color: #00d4ff; }
 .dash-filter-chip option { background: #16213e; color: #c9d8ec; }
+
+.dash-cc-section {
+  margin: 0 10px 10px;
+  padding: 10px;
+  background: #16213e;
+  border: 1px solid #0f3460;
+  border-radius: 8px;
+}
+.dash-sec-title { font-size: 11px; font-weight: 700; color: #c9d8ec; margin-bottom: 8px; }
+.dash-cc-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.dash-cc-label { font-size: 10px; color: #888; width: 44px; flex-shrink: 0; }
+.dash-cc-row select,
+.dash-cc-date {
+  flex: 1;
+  background: #0d1b2e;
+  color: #c9d8ec;
+  border: 1px solid #2d5a8e;
+  border-radius: 5px;
+  padding: 5px 6px;
+  font-size: 11px;
+}
+.dash-cc-date::-webkit-calendar-picker-indicator { filter: invert(1); cursor: pointer; }
+.dash-cc-export-btn { width: 100%; margin-top: 4px; }
+.dash-cc-status { font-size: 10px; color: #888; margin-top: 6px; text-align: center; min-height: 12px; }

@@ -102,7 +102,10 @@ function setupNavigation() {
       switchTab(tab);
       if (tab === 'history' && isInitialized) loadHistory(false);
       if (tab === 'scan') loadScanHistory();
-      if (tab === 'dashboard') renderDashboard();
+      if (tab === 'dashboard') {
+        renderDashboard();
+        if (!ccBranchIds.length) loadCcBranches(); // cached after first successful load
+      }
     });
   });
 }
@@ -1926,6 +1929,9 @@ function setupDashboardTab() {
 
   const exportScansBtn = document.getElementById('export-scans-btn');
   if (exportScansBtn) exportScansBtn.addEventListener('click', () => exportScansToCsv());
+
+  const exportCcBtn = document.getElementById('export-cc-btn');
+  if (exportCcBtn) exportCcBtn.addEventListener('click', () => exportCallCenterData());
 }
 
 function renderDashboard() {
@@ -1993,6 +1999,206 @@ function exportScansToCsv() {
     });
   });
   downloadCsv(`databridge-scans-${Date.now()}.csv`, rows);
+}
+
+
+// ══════════════════════════════════════════════════════════════════════
+// 📞 CALL CENTER EXPORT (Dashboard)
+// Branch + custom From/To date range → CSV. Deliberately does NOT change
+// databridge-app's Firebase schema (courier/runs_by_branchId → run_routes
+// → consignments/remarks_by_consignment stays as-is) — this is a one-time
+// export action, not a live-reloading list, so the extra reads a 4-hop
+// chain costs are an acceptable trade for zero schema/storage impact.
+// ══════════════════════════════════════════════════════════════════════
+
+let ccBranchIds   = [];  // cached after first successful load
+const ccBranchNames = {}; // branchId -> resolved display name
+
+/** Populates the branch <select> from users/{uid}/company_info/branch_ids —
+ *  same path RbacManager.kt reads on the Android app side. Called once, the
+ *  first time the Dashboard tab is opened while Google-linked. */
+async function loadCcBranches() {
+  const branchSelect = document.getElementById('dash-cc-branch');
+  if (!branchSelect) return;
+  if (!currentGoogleUid) {
+    branchSelect.innerHTML = '<option value="">Google দিয়ে লগইন করুন প্রথমে</option>';
+    return;
+  }
+
+  try {
+    const idToken = await getValidFirebaseIdToken().catch(() => null);
+    const authQuery = idToken ? `?auth=${idToken}` : '';
+    const res  = await fetch(`${FIREBASE_URL}/users/${currentGoogleUid}/company_info/branch_ids.json${authQuery}`);
+    const data = await res.json();
+    ccBranchIds = Array.isArray(data) ? data.filter(Boolean) : Object.values(data || {});
+
+    if (!ccBranchIds.length) {
+      branchSelect.innerHTML = '<option value="">কোনো branch assigned নেই</option>';
+      return;
+    }
+
+    await Promise.all(ccBranchIds.map(async id => {
+      try {
+        const r = await fetch(`${FIREBASE_URL}/branches/${id}/name.json${authQuery}`);
+        ccBranchNames[id] = (await r.json()) || id;
+      } catch { ccBranchNames[id] = id; }
+    }));
+
+    branchSelect.innerHTML = '<option value="">All My Branches</option>' +
+      ccBranchIds.map(id => `<option value="${escapeHtml(id)}">${escapeHtml(ccBranchNames[id])}</option>`).join('');
+  } catch (e) {
+    console.warn('[DB] loadCcBranches failed:', e);
+    branchSelect.innerHTML = '<option value="">⚠ Branch list load failed</option>';
+  }
+}
+
+/** Parses the ddMMyy date embedded in a run key (e.g. "220726" from
+ *  "run_220726_EMP001") into a real Date at local midnight. Assumes 20yy —
+ *  fine through 2099, matches the same assumption the ddMMyy format itself
+ *  already makes. Returns null if the run id doesn't match the expected
+ *  shape (defensive — a malformed/legacy key shouldn't crash the export). */
+function parseRunKeyDate(ddMMyy) {
+  const m = ddMMyy.match(/^(\d{2})(\d{2})(\d{2})$/);
+  if (!m) return null;
+  const dd = parseInt(m[1], 10), MM = parseInt(m[2], 10), yy = parseInt(m[3], 10);
+  return new Date(2000 + yy, MM - 1, dd);
+}
+
+async function exportCallCenterData() {
+  const statusEl  = document.getElementById('dash-cc-status');
+  const branchSel = document.getElementById('dash-cc-branch');
+  const fromInput = document.getElementById('dash-cc-from');
+  const toInput   = document.getElementById('dash-cc-to');
+  const setStatus = msg => { if (statusEl) statusEl.textContent = msg; };
+
+  if (!fromInput.value || !toInput.value) {
+    setStatus('⚠ From এবং To — দুটো date-ই select করুন');
+    return;
+  }
+  const fromDate = new Date(fromInput.value + 'T00:00:00');
+  const toDate   = new Date(toInput.value   + 'T00:00:00');
+  if (fromDate > toDate) {
+    setStatus('⚠ From date, To date-এর পরে হতে পারবে না');
+    return;
+  }
+
+  const selectedBranch  = branchSel.value;
+  const branchesToQuery = selectedBranch ? [selectedBranch] : ccBranchIds;
+  if (!branchesToQuery.length) {
+    setStatus('⚠ কোনো branch পাওয়া যায়নি — Connect tab-এ Google login check করো');
+    return;
+  }
+
+  const idToken   = await getValidFirebaseIdToken().catch(() => null);
+  const authQuery = idToken ? `?auth=${idToken}` : '';
+
+  try {
+    // Step 1 — one full runs_by_branchId fetch per branch (parallel), then
+    // filter run keys by date range CLIENT-SIDE. Run keys use a ddMMyy
+    // STRING that doesn't sort chronologically across month/year
+    // boundaries (day comes before month), so a single server-side range
+    // query can't safely span more than exactly one day — see loadData()'s
+    // own comment in CallCenterFragment.kt for the "Today" case this
+    // mirrors. A one-shot export reading a bit more than strictly needed
+    // is a fine trade for not needing N per-day queries here.
+    setStatus('⏳ Branch data আনা হচ্ছে…');
+    const branchResults = await Promise.all(branchesToQuery.map(async branchId => {
+      const res  = await fetch(`${FIREBASE_URL}/courier/runs_by_branchId/${branchId}.json${authQuery}`);
+      return { branchId, data: await res.json() };
+    }));
+
+    const runTuples = [];
+    branchResults.forEach(({ branchId, data }) => {
+      if (!data || typeof data !== 'object') return;
+      Object.entries(data).forEach(([runType, runsOfType]) => {
+        if (!runsOfType || typeof runsOfType !== 'object') return;
+        Object.keys(runsOfType).forEach(runId => {
+          const m = runId.match(/^run_(\d{6})_(.+)$/);
+          if (!m) return;
+          const runDate = parseRunKeyDate(m[1]);
+          if (!runDate || runDate < fromDate || runDate > toDate) return;
+          runTuples.push({ branchId, runType, runId, runDate, agentSystemId: m[2] });
+        });
+      });
+    });
+
+    if (!runTuples.length) {
+      setStatus('এই date range-এ কোনো run পাওয়া যায়নি');
+      return;
+    }
+
+    // Step 2 — each surviving run's consignments map, in parallel
+    setStatus(`⏳ ${runTuples.length}টা run থেকে consignment বের করা হচ্ছে…`);
+    const runNodeResults = await Promise.all(runTuples.map(async t => {
+      const res  = await fetch(`${FIREBASE_URL}/courier/run_routes/${t.runType}/${t.runId}.json${authQuery}`);
+      const data = await res.json();
+      return { ...t, consignments: (data && data.consignments) || {} };
+    }));
+
+    // One row per (runType, runId, consignmentId) — intentionally NOT
+    // deduped by consignment id alone, since the same id can legitimately
+    // appear in separate runs across different days in the range (a
+    // re-attempt), and each such occurrence is its own row.
+    const rows = [];
+    runNodeResults.forEach(t => {
+      Object.entries(t.consignments).forEach(([cId, status]) => {
+        rows.push({ ...t, cId, runStatus: status });
+      });
+    });
+
+    if (!rows.length) {
+      setStatus('Run পাওয়া গেছে কিন্তু কোনো consignment নেই');
+      return;
+    }
+
+    // Step 3 — each UNIQUE consignment's details + latest remark, in parallel
+    setStatus(`⏳ ${rows.length}টা consignment-এর detail আনা হচ্ছে…`);
+    const uniqueCids = [...new Set(rows.map(r => r.cId))];
+    const detailMap  = {};
+    await Promise.all(uniqueCids.map(async cId => {
+      const [cons, remarks] = await Promise.all([
+        fetch(`${FIREBASE_URL}/courier/consignments/${cId}.json${authQuery}`).then(r => r.json()),
+        fetch(`${FIREBASE_URL}/courier/remarks_by_consignment/${cId}.json${authQuery}`).then(r => r.json()),
+      ]);
+      let latestRemark = null;
+      if (remarks && typeof remarks === 'object') {
+        latestRemark = Object.values(remarks).reduce((latest, r) =>
+          (!latest || (r.createdAt || 0) > (latest.createdAt || 0)) ? r : latest, null);
+      }
+      detailMap[cId] = { cons: cons || {}, remark: latestRemark };
+    }));
+
+    // Step 4 — assemble + download
+    const csvRows = [[
+      'Date', 'Branch', 'Agent System ID', 'Consignment ID', 'Customer Name',
+      'Phone', 'Address', 'COD', 'Status', 'Latest Remark', 'Remark Status'
+    ]];
+    rows.forEach(r => {
+      const d    = detailMap[r.cId] || {};
+      const cons = d.cons || {};
+      const dd   = String(r.runDate.getDate()).padStart(2, '0');
+      const mm   = String(r.runDate.getMonth() + 1).padStart(2, '0');
+      csvRows.push([
+        `${dd}-${mm}-${r.runDate.getFullYear()}`,
+        ccBranchNames[r.branchId] || r.branchId,
+        r.agentSystemId,
+        r.cId,
+        cons.recipientName    || '',
+        cons.recipientPhone   || '',
+        cons.recipientAddress || '',
+        cons.collectableAmount ?? '',
+        r.runStatus || cons.status || '',
+        d.remark?.remarks || '',
+        d.remark?.status  || ''
+      ]);
+    });
+
+    downloadCsv(`databridge-callcenter-${fromInput.value}_to_${toInput.value}.csv`, csvRows);
+    setStatus(`✓ ${rows.length}টা row export হয়েছে`);
+  } catch (e) {
+    console.error('[DB] exportCallCenterData failed:', e);
+    setStatus('⚠ Export failed — console (F12) দেখো');
+  }
 }
 
 document.addEventListener('DOMContentLoaded', init);
