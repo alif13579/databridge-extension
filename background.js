@@ -48,13 +48,17 @@ chrome.commands.onCommand.addListener((cmd) => {
 function askContentScript(tabId) {
   chrome.tabs.sendMessage(tabId, { action: 'getBestText' }, (res) => {
     if (chrome.runtime.lastError || !res?.text) {
+      console.log('[DB] askContentScript: content-script path failed/empty —',
+        chrome.runtime.lastError?.message || 'res.text was empty', '— falling back to getSelection()');
       chrome.scripting.executeScript({
         target: { tabId },
         func: () => window.getSelection().toString().trim()
       }, (r) => {
         if (r?.[0]?.result) sendToFirebase(r[0].result);
+        else console.log('[DB] askContentScript: fallback getSelection() was also empty — nothing to send');
       });
     } else {
+      console.log('[DB] askContentScript: got text from content script:', res.text);
       sendToFirebase(res.text);
     }
   });
