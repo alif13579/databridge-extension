@@ -1701,37 +1701,51 @@ function loadScanHistory() {
     // so anything scanned on another device never appeared here at all.
     try {
       const idToken = await getValidFirebaseIdToken().catch(() => null);
-      const authParam = idToken ? `&auth=${idToken}` : '';
-      const res = await fetch(`${FIREBASE_URL}/scanned/barcode_scans.json?cb=${Date.now()}${authParam}`);
-      const allData = await res.json();
+      if (idToken) {
+        const res = await fetch(`${FIREBASE_URL}/scanned/barcode_scans.json?cb=${Date.now()}&auth=${idToken}`);
+        if (res.ok) {
+          const allData = await res.json();
 
-      if (allData && typeof allData === 'object') {
-        Object.entries(allData).forEach(([safeKey, data]) => {
-          let item = scanItems.find(i => i.barcodeKey === safeKey);
-          if (!item) {
-            item = { barcodeKey: safeKey, barcode: safeKey, entries: [], loading: false };
-            scanItems.push(item);
+          if (allData && typeof allData === 'object') {
+            Object.entries(allData).forEach(([safeKey, data]) => {
+              let item = scanItems.find(i => i.barcodeKey === safeKey);
+              if (!item) {
+                item = { barcodeKey: safeKey, barcode: safeKey, entries: [], loading: false };
+                scanItems.push(item);
+              }
+
+              if (data && typeof data === 'object') {
+                const fbEntries = Object.entries(data).map(([scanKey, val]) => ({
+                  scanKey,
+                  scanned_by  : val.scanned_by   || '—',
+                  uid         : val.uid          || '—',
+                  createdAt   : val.createdAt,
+                  url         : val.url,
+                  hostname    : getHostname(val.url),
+                  fromFirebase: true,
+                }));
+
+                // Merge: Firebase is truth, keep any local-only entries (not yet synced)
+                const fbKeys = new Set(fbEntries.map(e => e.scanKey));
+                const localOnly = (item.entries || []).filter(e => !fbKeys.has(e.scanKey));
+                item.entries = [...fbEntries, ...localOnly]
+                  .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+              }
+            });
           }
-
-          if (data && typeof data === 'object') {
-            const fbEntries = Object.entries(data).map(([scanKey, val]) => ({
-              scanKey,
-              scanned_by  : val.scanned_by   || '—',
-              uid         : val.uid          || '—',
-              createdAt   : val.createdAt,
-              url         : val.url,
-              hostname    : getHostname(val.url),
-              fromFirebase: true,
-            }));
-
-            // Merge: Firebase is truth, keep any local-only entries (not yet synced)
-            const fbKeys = new Set(fbEntries.map(e => e.scanKey));
-            const localOnly = (item.entries || []).filter(e => !fbKeys.has(e.scanKey));
-            item.entries = [...fbEntries, ...localOnly]
-              .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
-          }
-        });
+        } else {
+          // A non-OK response (401 etc.) still parses as valid JSON — Firebase's REST API
+          // returns a body like {"error": "..."} — which would otherwise sail through the
+          // typeof === 'object' check below and get misread as a barcode entry keyed
+          // "error". Bail out here instead of ever reaching that parsing.
+          console.warn('Scan list fetch failed:', res.status, res.statusText);
+        }
       }
+      // No idToken (QR-only session, or the token fetch itself failed): skip the Firebase
+      // fetch entirely rather than sending it unauthenticated and 401ing. Only this
+      // browser's own locally-stored scans (already built above) show for these sessions —
+      // same limitation startScanListener()'s SSE already documents for itself; there's no
+      // token mechanism for QR-only sessions, so a request here would only ever fail.
     } catch (e) {
       console.warn('Could not fetch scan list from Firebase:', e);
     }
