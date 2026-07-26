@@ -5,13 +5,21 @@
 //   ① chrome.storage.local → scan_log           (always, for popup)
 //   ② Firebase: scanned/barcode_scans/{barcode}/scan_{ts}     (always, single source of truth)
 //
-// PAYLOAD STRUCTURE:
+// PAYLOAD STRUCTURE (per scan, nested under {safeKey}/{scanKey}):
 //   {
 //     scanned_by   : extension_id,
 //     uid          : firebase uid | null,   ← null if not logged in
 //     createdAt    : timestamp,
 //     url          : page url
 //   }
+//
+// {safeKey} NODE ALSO CARRIES (direct children, written via PATCH — sibling to
+// the scan_{ts} entries above, not inside them):
+//   lastScannedAt  : timestamp   ← denormalized for orderBy="lastScannedAt" pagination
+//                                  (popup.js Barcodes tab — recent-20 + scroll-to-load-more)
+//   barcode        : original, un-sanitized barcode text ← safeKey is lossy (special
+//                                  chars replaced with "_", and could theoretically collide),
+//                                  so the true text is kept alongside for display
 //
 //   → barcode lookup:  scanned/barcode_scans/{barcode}
 //   → user filter:     where uid == "{firebase_uid}"
@@ -62,24 +70,33 @@
     });
   }
 
-  // ── ② Push to Firebase (single path) ────────────────────
+  // ── ② Push to Firebase (single path, one request) ───────
   async function pushToFirebase(barcode, timestamp, pageUrl, extensionId, uid) {
     const safeKey = safeBarcodeKey(barcode);
     const scanKey = `scan_${timestamp}`;
-    const payload = {
+    const entry = {
       scanned_by   : extensionId || 'unknown',
       uid          : uid || null,
       createdAt    : timestamp,
       url          : pageUrl
     };
 
+    // PATCH (not PUT) so this single request writes the scan entry AND the two
+    // denormalized sibling fields under {safeKey} without touching/removing any
+    // other existing scan_{ts} children already there.
+    const patchBody = {
+      [scanKey]     : entry,
+      lastScannedAt : timestamp,   // → orderBy="lastScannedAt" pagination in popup.js
+      barcode       : barcode      // → original text, since safeKey is a lossy sanitization
+    };
+
     try {
       const res = await fetch(
-        `${CONFIG.FIREBASE_URL}/scanned/barcode_scans/${safeKey}/${scanKey}.json`,
+        `${CONFIG.FIREBASE_URL}/scanned/barcode_scans/${safeKey}.json`,
         {
-          method : 'PUT',
+          method : 'PATCH',
           headers: { 'Content-Type': 'application/json' },
-          body   : JSON.stringify(payload)
+          body   : JSON.stringify(patchBody)
         }
       );
       if (!res.ok) console.error('[Scanner] Firebase error:', res.status);
