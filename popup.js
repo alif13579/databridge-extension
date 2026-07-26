@@ -1684,6 +1684,7 @@ function loadScanHistory() {
   chrome.storage.local.get(['scan_log'], async (result) => {
     const log = result.scan_log || {};
     const barcodeKeys = Object.keys(log);
+    console.log(`[Scan] loadScanHistory: ${barcodeKeys.length} barcode(s) in local storage`);
 
     // Build initial items from local data (shown immediately, before Firebase responds).
     // NOTE: Firebase is always queried below regardless of whether any local scans exist —
@@ -1726,8 +1727,13 @@ function loadScanHistory() {
     try {
       const idToken = await getValidFirebaseIdToken().catch(() => null);
       if (idToken) {
+        console.log('[Scan] idToken present — fetching first Firebase page');
         await fetchScanPage(idToken);
         fetchScanTotalCount(idToken); // lightweight — badge count only, doesn't block render
+      } else {
+        // Silent by design for guest/QR-only sessions — but logged clearly so a "no data"
+        // report can distinguish this from an actual failure below.
+        console.log('[Scan] no idToken — guest/local-only mode, Firebase fetch skipped');
       }
       // No idToken (QR-only session, or the token fetch itself failed): skip the Firebase
       // fetch entirely rather than sending it unauthenticated and 401ing. Only this
@@ -1735,10 +1741,11 @@ function loadScanHistory() {
       // same limitation startScanListener()'s SSE already documents for itself; there's no
       // token mechanism for QR-only sessions, so a request here would only ever fail.
     } catch (e) {
-      console.warn('Could not fetch scan list from Firebase:', e);
+      console.warn('[Scan] Could not fetch scan list from Firebase:', e);
     }
 
     scanItems.forEach(item => { item.loading = false; });
+    console.log(`[Scan] loadScanHistory done — ${scanItems.length} item(s) in feed, hasMore=${scanHasMore}`);
     renderScanList();
     updateScanBadge();
   });
@@ -1749,7 +1756,10 @@ function loadScanHistory() {
 // Called for the first page (loadScanHistory()) and again per scroll-triggered page —
 // each call costs the same regardless of how large the total dataset has grown.
 async function fetchScanPage(idToken) {
-  if (scanLoadingMore || !scanHasMore) return;
+  if (scanLoadingMore || !scanHasMore) {
+    console.log(`[Scan] fetchScanPage skipped (loadingMore=${scanLoadingMore}, hasMore=${scanHasMore})`);
+    return;
+  }
   scanLoadingMore = true;
   try {
     const isFirstPage = scanCursor === null;
@@ -1761,17 +1771,28 @@ async function fetchScanPage(idToken) {
     const limit = isFirstPage ? PAGINATION_LIMIT : PAGINATION_LIMIT + 1;
     let url = `${FIREBASE_URL}/scanned/barcode_scans.json?orderBy="lastScannedAt"&limitToLast=${limit}&cb=${Date.now()}&auth=${idToken}`;
     if (!isFirstPage) url += `&endAt=${scanCursor}`;
+    console.log(`[Scan] fetchScanPage: ${isFirstPage ? 'first page' : 'next page, cursor=' + scanCursor}, limit=${limit}`);
+    console.log('[Scan] request URL:', url.replace(/auth=[^&]+/, 'auth=***'));
 
     const res = await fetch(url);
+    console.log('[Scan] response status:', res.status, res.statusText);
     if (!res.ok) {
-      console.warn('Scan page fetch failed:', res.status, res.statusText);
+      // Firebase's error body usually says exactly what's wrong (bad/missing .indexOn,
+      // permission denied, malformed query, etc.) — capture it, not just the status code.
+      const bodyText = await res.text().catch(() => '(could not read body)');
+      console.warn('[Scan] fetchScanPage FAILED:', res.status, res.statusText, '| body:', bodyText);
       return;
     }
     const pageData = await res.json();
-    if (!pageData || typeof pageData !== 'object') { scanHasMore = false; return; }
+    if (!pageData || typeof pageData !== 'object') {
+      console.log('[Scan] fetchScanPage: request OK but page is empty (no barcodes matched) — nothing more to load');
+      scanHasMore = false;
+      return;
+    }
 
     const rows = Object.entries(pageData);
     scanHasMore = rows.length >= limit;
+    console.log(`[Scan] fetchScanPage: received ${rows.length} row(s), hasMore=${scanHasMore}`);
 
     let smallest = scanCursor;
     rows.forEach(([safeKey, data]) => {
@@ -1807,8 +1828,9 @@ async function fetchScanPage(idToken) {
     });
     scanCursor = smallest;
     scanItems.sort((a, b) => (b.entries[0]?.createdAt || 0) - (a.entries[0]?.createdAt || 0));
+    console.log(`[Scan] fetchScanPage merged — scanItems now ${scanItems.length} total, next cursor=${scanCursor}`);
   } catch (e) {
-    console.warn('Could not fetch scan page from Firebase:', e);
+    console.warn('[Scan] fetchScanPage threw:', e);
   } finally {
     scanLoadingMore = false;
   }
@@ -1819,12 +1841,17 @@ async function fetchScanPage(idToken) {
 async function fetchScanTotalCount(idToken) {
   try {
     const res = await fetch(`${FIREBASE_URL}/scanned/barcode_scans.json?shallow=true&cb=${Date.now()}&auth=${idToken}`);
-    if (!res.ok) return;
+    if (!res.ok) {
+      const bodyText = await res.text().catch(() => '(could not read body)');
+      console.warn('[Scan] fetchScanTotalCount FAILED:', res.status, res.statusText, '| body:', bodyText);
+      return;
+    }
     const data = await res.json();
     scanTotalCount = data && typeof data === 'object' ? Object.keys(data).length : 0;
+    console.log('[Scan] fetchScanTotalCount:', scanTotalCount);
     updateScanBadge();
   } catch (e) {
-    console.warn('Could not fetch scan total count:', e);
+    console.warn('[Scan] fetchScanTotalCount threw:', e);
   }
 }
 
@@ -1842,19 +1869,25 @@ async function runScanPrefixSearch(rawQuery) {
   scanSearchMode = true;
   const upper  = query.toUpperCase();
   const prefix = safeFirebaseKey(upper);
+  console.log(`[Scan] runScanPrefixSearch: query="${query}" → prefix="${prefix}"`);
 
   const localMatches = scanItems.filter(i =>
     i.barcodeKey.toUpperCase().startsWith(prefix) || i.barcode.toUpperCase().startsWith(upper)
   );
+  console.log(`[Scan] local matches: ${localMatches.length}`);
   const results = [...localMatches];
 
   try {
     const idToken = await getValidFirebaseIdToken().catch(() => null);
     if (idToken) {
       const url = `${FIREBASE_URL}/scanned/barcode_scans.json?orderBy="$key"&startAt="${prefix}"&endAt="${prefix}\uf8ff"&limitToFirst=${PAGINATION_LIMIT * 2}&cb=${Date.now()}&auth=${idToken}`;
+      console.log('[Scan] search request URL:', url.replace(/auth=[^&]+/, 'auth=***'));
       const res = await fetch(url);
+      console.log('[Scan] search response status:', res.status, res.statusText);
       if (res.ok) {
         const data = await res.json();
+        const fbCount = data && typeof data === 'object' ? Object.keys(data).length : 0;
+        console.log(`[Scan] search: ${fbCount} Firebase match(es)`);
         if (data && typeof data === 'object') {
           Object.entries(data).forEach(([safeKey, d]) => {
             if (!d || typeof d !== 'object') return;
@@ -1883,14 +1916,18 @@ async function runScanPrefixSearch(rawQuery) {
           });
         }
       } else {
-        console.warn('Barcode prefix search failed:', res.status, res.statusText);
+        const bodyText = await res.text().catch(() => '(could not read body)');
+        console.warn('[Scan] runScanPrefixSearch FAILED:', res.status, res.statusText, '| body:', bodyText);
       }
+    } else {
+      console.log('[Scan] search: no idToken — local-only results shown');
     }
   } catch (e) {
-    console.warn('Barcode prefix search failed:', e);
+    console.warn('[Scan] runScanPrefixSearch threw:', e);
   }
 
   results.sort((a, b) => (b.entries[0]?.createdAt || 0) - (a.entries[0]?.createdAt || 0));
+  console.log(`[Scan] search combined total: ${results.length}`);
   scanSearchResults = results;
   renderScanList();
   updateScanBadge();
