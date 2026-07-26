@@ -1988,7 +1988,7 @@ function renderScanList() {
     header.innerHTML = `
       <div class="scan-dot${item.loading ? ' scan-dot-loading' : ''}"></div>
       <div class="card-main">
-        <div class="card-text">${escapeHtml(item.barcode)}</div>
+        <div class="card-text" title="${escapeHtml(item.barcode)}">${escapeHtml(item.barcode)}</div>
         <div class="card-meta">
           <span class="card-time">${lastScan ? scanExactTime(lastScan.createdAt) : '—'}</span>
           <span class="scan-count-chip">${scanCount} scan${scanCount !== 1 ? 's' : ''}</span>
