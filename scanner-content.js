@@ -17,8 +17,9 @@
 
   let _buf    = '';
   let _lastAt = 0;
+  let _contextInvalidated = false; // set true once we detect a stale (post-reload) context
 
-  document.addEventListener('keydown', (e) => {
+  function handleKeydown(e) {
     const now = Date.now();
 
     // Gap too long → human typing, not a scanner; reset buffer
@@ -32,12 +33,25 @@
       _lastAt = 0;
 
       if (barcode.length >= MIN_LEN) {
-        chrome.runtime.sendMessage({
-          action   : 'zebra_scan',
-          barcode  : barcode,
-          timestamp: now,
-          url      : location.href
-        }).catch(() => {}); // silently ignore if background is inactive
+        // chrome.runtime.sendMessage() throws SYNCHRONOUSLY (not just a
+        // rejected promise) once the extension has been reloaded/updated
+        // while this page was already open — the content script is left
+        // pointing at a dead context. try/catch (not just .catch()) is
+        // required to actually suppress that throw.
+        try {
+          chrome.runtime.sendMessage({
+            action   : 'zebra_scan',
+            barcode  : barcode,
+            timestamp: now,
+            url      : location.href
+          }).catch(() => {}); // background inactive / message port closed
+        } catch (err) {
+          if (!_contextInvalidated) {
+            _contextInvalidated = true;
+            console.warn('[DataBridge] Scanner: extension context invalidated (extension was reloaded/updated). Reload this page to resume scan capture.');
+            document.removeEventListener('keydown', handleKeydown, true);
+          }
+        }
       }
       return;
     }
@@ -46,6 +60,8 @@
     if (e.key.length === 1 && !e.ctrlKey && !e.altKey && !e.metaKey) {
       _buf += e.key;
     }
-  }, true); // capture phase — works inside <input> fields too
+  }
+
+  document.addEventListener('keydown', handleKeydown, true); // capture phase — works inside <input> fields too
 
 })();
