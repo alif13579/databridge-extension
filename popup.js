@@ -2296,16 +2296,15 @@ async function loadCcBranches() {
   }
 }
 
-/** Parses the ddMMyy date embedded in a run key (e.g. "220726" from
- *  "run_220726_EMP001") into a real Date at local midnight. Assumes 20yy —
- *  fine through 2099, matches the same assumption the ddMMyy format itself
- *  already makes. Returns null if the run id doesn't match the expected
- *  shape (defensive — a malformed/legacy key shouldn't crash the export). */
-function parseRunKeyDate(ddMMyy) {
-  const m = ddMMyy.match(/^(\d{2})(\d{2})(\d{2})$/);
+/** Parses the yyyyMMdd date embedded in a run key (e.g. "20260722" from
+ *  "run_20260722_EMP001") into a real Date at local midnight. Returns null
+ *  if the run id doesn't match the expected shape (defensive — a malformed
+ *  key shouldn't crash the export). */
+function parseRunKeyDate(yyyyMMdd) {
+  const m = yyyyMMdd.match(/^(\d{4})(\d{2})(\d{2})$/);
   if (!m) return null;
-  const dd = parseInt(m[1], 10), MM = parseInt(m[2], 10), yy = parseInt(m[3], 10);
-  return new Date(2000 + yy, MM - 1, dd);
+  const yyyy = parseInt(m[1], 10), MM = parseInt(m[2], 10), dd = parseInt(m[3], 10);
+  return new Date(yyyy, MM - 1, dd);
 }
 
 async function exportCallCenterData() {
@@ -2338,13 +2337,11 @@ async function exportCallCenterData() {
 
   try {
     // Step 1 — one full runs_by_branchId fetch per branch (parallel), then
-    // filter run keys by date range CLIENT-SIDE. Run keys use a ddMMyy
-    // STRING that doesn't sort chronologically across month/year
-    // boundaries (day comes before month), so a single server-side range
-    // query can't safely span more than exactly one day — see loadData()'s
-    // own comment in CallCenterFragment.kt for the "Today" case this
-    // mirrors. A one-shot export reading a bit more than strictly needed
-    // is a fine trade for not needing N per-day queries here.
+    // filter run keys by date range CLIENT-SIDE. Run keys now use a yyyyMMdd
+    // STRING, which does sort chronologically, so a server-side range query
+    // per branch would also work — kept as a client-side filter here for
+    // simplicity (one fetch per branch either way, avoids adding per-run-type
+    // range queries on top of the per-branch fetch).
     setStatus('⏳ Branch data আনা হচ্ছে…');
     const branchResults = await Promise.all(branchesToQuery.map(async branchId => {
       const res  = await fetch(`${FIREBASE_URL}/courier/runs_by_branchId/${branchId}.json${authQuery}`);
@@ -2357,7 +2354,7 @@ async function exportCallCenterData() {
       Object.entries(data).forEach(([runType, runsOfType]) => {
         if (!runsOfType || typeof runsOfType !== 'object') return;
         Object.keys(runsOfType).forEach(runId => {
-          const m = runId.match(/^run_(\d{6})_(.+)$/);
+          const m = runId.match(/^run_(\d{8})_(.+)$/);
           if (!m) return;
           const runDate = parseRunKeyDate(m[1]);
           if (!runDate || runDate < fromDate || runDate > toDate) return;
