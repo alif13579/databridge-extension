@@ -697,7 +697,12 @@ async function loadHistory(append = false) {
             if (isStale) {
               // Fire-and-forget — don't block this popup's own load on cleaning up
               // someone else's dead entry.
-              fetch(`${FIREBASE_URL}/users/${userId}/connections/extensions/${id}.json${authQuery}`, { method: 'DELETE' }).catch(() => {});
+              // Standalone ?auth= here (not the shared &-prefixed authQuery above, which
+              // assumes a preceding ?cb=... — this call has no other query param, so it needs
+              // its own leading ?). The bare &authQuery version silently 404'd: the browser
+              // sent ".json&auth=..." with no "?", so Firebase couldn't parse a query string
+              // at all and looked for a literal path segment named "...json&auth=..." instead.
+              fetch(`${FIREBASE_URL}/users/${userId}/connections/extensions/${id}.json${idToken ? `?auth=${idToken}` : ''}`, { method: 'DELETE' }).catch(() => {});
               console.log('🧹 Pruned stale extension connection:', id, '(last seen', lastSeen ? new Date(lastSeen).toISOString() : 'never', ')');
             } else {
               sessionIds.add(id);
