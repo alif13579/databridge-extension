@@ -1582,8 +1582,20 @@ function setupConnectedInfoCopy() {
 //   container_id, createdAt, url, hostname}], loading }]
 // One item per unique barcode. entries sorted newest-first.
 // Always fetched from Firebase; local scan_log = temp queue pre-sync.
-let scanItems = [];
+let scanItems = [];          // the paginated default feed (recent-first, loads more on scroll)
 let scanSearchQuery = '';
+let scanSearchResults = [];  // separate from scanItems — search mode never overwrites the feed
+
+// ── Pagination state (Firebase side — see fetchScanPage()) ──────────────
+let scanCursor      = null;  // lastScannedAt of the oldest item in the loaded pages so far
+let scanHasMore     = true;  // false once a page comes back smaller than expected
+let scanLoadingMore = false; // guards against overlapping page fetches (scroll can fire fast)
+let scanSearchMode  = false; // true while showing prefix-search results instead of the feed
+let scanTotalCount  = null;  // from the lightweight shallow-count fetch — badge only
+let scanSearchDebounce = null;
+const SCAN_META_KEYS = new Set(['lastScannedAt', 'barcode']); // sibling fields on {safeKey},
+                                                                // not scan_{ts} entry children
+                                                                // — see scanner-module.js
 
 function scanExactTime(timestamp) {
   if (!timestamp) return '—';
@@ -1662,6 +1674,13 @@ function getHostname(url) {
 }
 
 function loadScanHistory() {
+  scanSearchMode  = false;
+  scanSearchQuery = '';
+  scanCursor      = null;
+  scanHasMore     = true;
+  scanLoadingMore = false;
+  scanTotalCount  = null;
+
   chrome.storage.local.get(['scan_log'], async (result) => {
     const log = result.scan_log || {};
     const barcodeKeys = Object.keys(log);
@@ -1683,9 +1702,14 @@ function loadScanHistory() {
         fromFirebase: false,
       })).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
 
+      // Local entries do carry the original barcode text (scanner-module.js's
+      // saveLocally()) — prefer that over safeKey so special-character barcodes display
+      // correctly even before Firebase's own `barcode` field enriches this item.
+      const localBarcodeText = Object.values(localScans).find(d => d.barcode)?.barcode;
+
       return {
         barcodeKey: safeKey,
-        barcode   : safeKey,          // uppercase key = barcode
+        barcode   : localBarcodeText || safeKey,
         entries,
         loading   : true,
       };
@@ -1694,52 +1718,16 @@ function loadScanHistory() {
     renderScanList();
     updateScanBadge();
 
-    // Fetch the FULL scanned/barcode_scans list in a single call. This both enriches
-    // barcodes already known locally AND discovers barcodes scanned elsewhere (another
-    // device/session) that never touched this browser's local storage — previously this
-    // only re-fetched per already-known local key via Promise.all, one request per key,
-    // so anything scanned on another device never appeared here at all.
+    // Firebase side is now PAGINATED (recent 20 by lastScannedAt, more on scroll — see
+    // fetchScanPage()) instead of one full-tree fetch. At 1000+ barcodes and growing, a
+    // full fetch was both why the tab could feel like it hangs on open (huge synchronous
+    // DOM build) and an ever-growing network cost; this keeps each page's cost flat
+    // regardless of total dataset size.
     try {
       const idToken = await getValidFirebaseIdToken().catch(() => null);
       if (idToken) {
-        const res = await fetch(`${FIREBASE_URL}/scanned/barcode_scans.json?cb=${Date.now()}&auth=${idToken}`);
-        if (res.ok) {
-          const allData = await res.json();
-
-          if (allData && typeof allData === 'object') {
-            Object.entries(allData).forEach(([safeKey, data]) => {
-              let item = scanItems.find(i => i.barcodeKey === safeKey);
-              if (!item) {
-                item = { barcodeKey: safeKey, barcode: safeKey, entries: [], loading: false };
-                scanItems.push(item);
-              }
-
-              if (data && typeof data === 'object') {
-                const fbEntries = Object.entries(data).map(([scanKey, val]) => ({
-                  scanKey,
-                  scanned_by  : val.scanned_by   || '—',
-                  uid         : val.uid          || '—',
-                  createdAt   : val.createdAt,
-                  url         : val.url,
-                  hostname    : getHostname(val.url),
-                  fromFirebase: true,
-                }));
-
-                // Merge: Firebase is truth, keep any local-only entries (not yet synced)
-                const fbKeys = new Set(fbEntries.map(e => e.scanKey));
-                const localOnly = (item.entries || []).filter(e => !fbKeys.has(e.scanKey));
-                item.entries = [...fbEntries, ...localOnly]
-                  .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
-              }
-            });
-          }
-        } else {
-          // A non-OK response (401 etc.) still parses as valid JSON — Firebase's REST API
-          // returns a body like {"error": "..."} — which would otherwise sail through the
-          // typeof === 'object' check below and get misread as a barcode entry keyed
-          // "error". Bail out here instead of ever reaching that parsing.
-          console.warn('Scan list fetch failed:', res.status, res.statusText);
-        }
+        await fetchScanPage(idToken);
+        fetchScanTotalCount(idToken); // lightweight — badge count only, doesn't block render
       }
       // No idToken (QR-only session, or the token fetch itself failed): skip the Firebase
       // fetch entirely rather than sending it unauthenticated and 401ing. Only this
@@ -1751,30 +1739,192 @@ function loadScanHistory() {
     }
 
     scanItems.forEach(item => { item.loading = false; });
-    scanItems.sort((a, b) => (b.entries[0]?.createdAt || 0) - (a.entries[0]?.createdAt || 0));
     renderScanList();
     updateScanBadge();
   });
 }
 
+// Fetches one page of barcodes ordered by recency (lastScannedAt) and merges them into
+// scanItems (enriching local-only items, or adding ones never seen on this device).
+// Called for the first page (loadScanHistory()) and again per scroll-triggered page —
+// each call costs the same regardless of how large the total dataset has grown.
+async function fetchScanPage(idToken) {
+  if (scanLoadingMore || !scanHasMore) return;
+  scanLoadingMore = true;
+  try {
+    const isFirstPage = scanCursor === null;
+    // +1 on later pages to cover the one-item overlap at endAt's inclusive boundary.
+    // (Rare edge case: if 2+ distinct barcodes share the exact same millisecond
+    // lastScannedAt at a page boundary, this single-field cursor could in theory skip
+    // or repeat one of them — acceptable tradeoff vs. Firebase RTDB not supporting
+    // compound-key ordering.)
+    const limit = isFirstPage ? PAGINATION_LIMIT : PAGINATION_LIMIT + 1;
+    let url = `${FIREBASE_URL}/scanned/barcode_scans.json?orderBy="lastScannedAt"&limitToLast=${limit}&cb=${Date.now()}&auth=${idToken}`;
+    if (!isFirstPage) url += `&endAt=${scanCursor}`;
+
+    const res = await fetch(url);
+    if (!res.ok) {
+      console.warn('Scan page fetch failed:', res.status, res.statusText);
+      return;
+    }
+    const pageData = await res.json();
+    if (!pageData || typeof pageData !== 'object') { scanHasMore = false; return; }
+
+    const rows = Object.entries(pageData);
+    scanHasMore = rows.length >= limit;
+
+    let smallest = scanCursor;
+    rows.forEach(([safeKey, data]) => {
+      if (!data || typeof data !== 'object') return;
+      let item = scanItems.find(i => i.barcodeKey === safeKey);
+      if (!item) {
+        item = { barcodeKey: safeKey, barcode: data.barcode || safeKey, entries: [], loading: false };
+        scanItems.push(item);
+      }
+      if (data.barcode) item.barcode = data.barcode;
+
+      const fbEntries = Object.entries(data)
+        .filter(([k]) => !SCAN_META_KEYS.has(k))
+        .map(([scanKey, val]) => ({
+          scanKey,
+          scanned_by  : val.scanned_by || '—',
+          uid         : val.uid        || '—',
+          createdAt   : val.createdAt,
+          url         : val.url,
+          hostname    : getHostname(val.url),
+          fromFirebase: true,
+        }));
+
+      // Merge: Firebase is truth, keep any local-only entries (not yet synced)
+      const fbKeys = new Set(fbEntries.map(e => e.scanKey));
+      const localOnly = (item.entries || []).filter(e => !fbKeys.has(e.scanKey));
+      item.entries = [...fbEntries, ...localOnly]
+        .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+
+      if (typeof data.lastScannedAt === 'number' && (smallest === null || data.lastScannedAt < smallest)) {
+        smallest = data.lastScannedAt;
+      }
+    });
+    scanCursor = smallest;
+    scanItems.sort((a, b) => (b.entries[0]?.createdAt || 0) - (a.entries[0]?.createdAt || 0));
+  } catch (e) {
+    console.warn('Could not fetch scan page from Firebase:', e);
+  } finally {
+    scanLoadingMore = false;
+  }
+}
+
+// Lightweight — ?shallow=true returns only top-level keys (no nested scan data), so this
+// stays cheap even at huge scale. Independent of pagination; drives only the header badge.
+async function fetchScanTotalCount(idToken) {
+  try {
+    const res = await fetch(`${FIREBASE_URL}/scanned/barcode_scans.json?shallow=true&cb=${Date.now()}&auth=${idToken}`);
+    if (!res.ok) return;
+    const data = await res.json();
+    scanTotalCount = data && typeof data === 'object' ? Object.keys(data).length : 0;
+    updateScanBadge();
+  } catch (e) {
+    console.warn('Could not fetch scan total count:', e);
+  }
+}
+
+// Prefix search over the Firebase key (= barcode text) — scales natively via an
+// orderByKey range query, no extra search infra needed. Also filters already-loaded
+// local/feed items so guest sessions (no idToken) and offline-cached entries still match.
+async function runScanPrefixSearch(rawQuery) {
+  const query = rawQuery.trim();
+  if (!query) {
+    scanSearchMode = false;
+    renderScanList();
+    updateScanBadge();
+    return;
+  }
+  scanSearchMode = true;
+  const upper  = query.toUpperCase();
+  const prefix = safeFirebaseKey(upper);
+
+  const localMatches = scanItems.filter(i =>
+    i.barcodeKey.toUpperCase().startsWith(prefix) || i.barcode.toUpperCase().startsWith(upper)
+  );
+  const results = [...localMatches];
+
+  try {
+    const idToken = await getValidFirebaseIdToken().catch(() => null);
+    if (idToken) {
+      const url = `${FIREBASE_URL}/scanned/barcode_scans.json?orderBy="$key"&startAt="${prefix}"&endAt="${prefix}\uf8ff"&limitToFirst=${PAGINATION_LIMIT * 2}&cb=${Date.now()}&auth=${idToken}`;
+      const res = await fetch(url);
+      if (res.ok) {
+        const data = await res.json();
+        if (data && typeof data === 'object') {
+          Object.entries(data).forEach(([safeKey, d]) => {
+            if (!d || typeof d !== 'object') return;
+            let item = results.find(i => i.barcodeKey === safeKey);
+            if (!item) {
+              item = { barcodeKey: safeKey, barcode: d.barcode || safeKey, entries: [], loading: false };
+              results.push(item);
+            }
+            if (d.barcode) item.barcode = d.barcode;
+
+            const fbEntries = Object.entries(d)
+              .filter(([k]) => !SCAN_META_KEYS.has(k))
+              .map(([scanKey, val]) => ({
+                scanKey,
+                scanned_by  : val.scanned_by || '—',
+                uid         : val.uid        || '—',
+                createdAt   : val.createdAt,
+                url         : val.url,
+                hostname    : getHostname(val.url),
+                fromFirebase: true,
+              }));
+            const fbKeys = new Set(fbEntries.map(e => e.scanKey));
+            const localOnly = (item.entries || []).filter(e => !fbKeys.has(e.scanKey));
+            item.entries = [...fbEntries, ...localOnly]
+              .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+          });
+        }
+      } else {
+        console.warn('Barcode prefix search failed:', res.status, res.statusText);
+      }
+    }
+  } catch (e) {
+    console.warn('Barcode prefix search failed:', e);
+  }
+
+  results.sort((a, b) => (b.entries[0]?.createdAt || 0) - (a.entries[0]?.createdAt || 0));
+  scanSearchResults = results;
+  renderScanList();
+  updateScanBadge();
+}
+
 function updateScanBadge() {
   const badge = document.getElementById('scan-count-badge');
-  if (badge) badge.textContent = `${scanItems.length} barcode${scanItems.length !== 1 ? 's' : ''}`;
+  if (!badge) return;
+  if (scanSearchMode) {
+    const n = scanSearchResults.length;
+    badge.textContent = `${n} match${n !== 1 ? 'es' : ''}`;
+  } else if (scanTotalCount !== null) {
+    badge.textContent = `${scanTotalCount} barcode${scanTotalCount !== 1 ? 's' : ''}`;
+  } else {
+    // Guest mode (no idToken → fetchScanTotalCount never runs) or count still in flight:
+    // falls back to however many are loaded so far rather than showing nothing.
+    badge.textContent = `${scanItems.length} barcode${scanItems.length !== 1 ? 's' : ''}`;
+  }
 }
 
 function renderScanList() {
   const list = document.getElementById('scan-list');
   if (!list) return;
 
-  const q = scanSearchQuery.trim().toUpperCase();
-  const filtered = q
-    ? scanItems.filter(s => s.barcode.toUpperCase().includes(q))
-    : [...scanItems];
+  // Search mode shows its own result set (never overwrites the paginated feed in
+  // scanItems); normal mode shows the feed as loaded so far.
+  const filtered = scanSearchMode ? scanSearchResults : scanItems;
 
   list.innerHTML = '';
 
   if (filtered.length === 0) {
-    list.innerHTML = '<div class="empty-state">No barcodes yet.<br>Scan something!</div>';
+    list.innerHTML = scanSearchMode
+      ? `<div class="empty-state">No barcode starting with "${escapeHtml(scanSearchQuery.trim())}".</div>`
+      : '<div class="empty-state">No barcodes yet.<br>Scan something!</div>';
     return;
   }
 
@@ -1894,6 +2044,21 @@ function renderScanList() {
     card.appendChild(body);
     list.appendChild(card);
   });
+
+  // Feed footer — only relevant in normal (non-search) mode, since search results aren't
+  // paginated (single capped fetch, see runScanPrefixSearch()).
+  if (!scanSearchMode) {
+    const footer = document.createElement('div');
+    footer.className = 'empty-state';
+    footer.style.cssText = 'padding: 10px 0; font-size: 12px;';
+    if (scanLoadingMore) {
+      footer.textContent = 'Loading more…';
+      list.appendChild(footer);
+    } else if (!scanHasMore && scanItems.length > 0) {
+      footer.textContent = '— end of list —';
+      list.appendChild(footer);
+    }
+  }
 }
 
 function deleteScanRecord(barcodeKey, scanKey) {
@@ -1911,8 +2076,29 @@ function setupScanTab() {
   const searchInput = document.getElementById('scan-search-input');
   if (searchInput) {
     searchInput.addEventListener('input', () => {
-      scanSearchQuery = searchInput.value.trim();
-      renderScanList();
+      scanSearchQuery = searchInput.value;
+      // Debounced — search is now a network call (Firebase prefix query), not an
+      // in-memory filter, so firing on every keystroke would queue up a request per
+      // character typed.
+      clearTimeout(scanSearchDebounce);
+      scanSearchDebounce = setTimeout(() => runScanPrefixSearch(scanSearchQuery), 300);
+    });
+  }
+
+  const scanList = document.getElementById('scan-list');
+  if (scanList) {
+    scanList.addEventListener('scroll', () => {
+      if (scanSearchMode || !scanHasMore || scanLoadingMore) return;
+      const nearBottom = scanList.scrollTop + scanList.clientHeight >= scanList.scrollHeight - 80;
+      if (!nearBottom) return;
+      getValidFirebaseIdToken().catch(() => null).then(idToken => {
+        if (!idToken) return; // guest session — nothing more to page through server-side
+        renderScanList(); // shows the "Loading more…" footer immediately
+        fetchScanPage(idToken).then(() => {
+          renderScanList();
+          updateScanBadge();
+        });
+      });
     });
   }
 
@@ -1922,6 +2108,13 @@ function setupScanTab() {
       if (!confirm('সব scan records delete হবে। নিশ্চিত?')) return;
       chrome.storage.local.remove(['scan_log'], () => {
         scanItems = [];
+        scanSearchResults = [];
+        scanSearchMode = false;
+        scanSearchQuery = '';
+        scanCursor = null;
+        scanHasMore = true;
+        scanTotalCount = null;
+        if (searchInput) searchInput.value = '';
         renderScanList();
         updateScanBadge();
       });
