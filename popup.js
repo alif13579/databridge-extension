@@ -1518,6 +1518,11 @@ async function init() {
     chrome.storage.local.set({ unread_count: 0 });
 
     // ✅ ২. UI সেটআপ
+    // Reads from manifest.json directly (not hardcoded) so this can never drift out of
+    // sync with the actual installed version — bump the manifest, this updates itself.
+    const versionTag = document.getElementById('version-tag');
+    if (versionTag) versionTag.textContent = `v${chrome.runtime.getManifest().version}`;
+
     const extIdDisplay = document.getElementById('extension-id-display');
     if (extIdDisplay) extIdDisplay.textContent = extension_id;
 
