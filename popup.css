@@ -54,6 +54,7 @@ body {
 }
 .dot.connected { background: #00ff88; }
 .status-name { font-size: 11px; color: #aaa; }
+.version-tag { font-size: 9px; color: #666; font-weight: normal; vertical-align: middle; }
 
 /* ── Bottom Nav ── */
 .bottom-nav {
