@@ -1,5 +1,29 @@
-importScripts('config.js');
-importScripts('scanner-module.js'); // 📷 Scanner Module — remove this line to disable
+// MV3 service workers can occasionally fail their very first importScripts()
+// call with "NetworkError: ... failed to load" (a transient file-read race
+// right after the extension installs/updates/reloads). Previously that
+// exception was uncaught, so it aborted the rest of background.js entirely —
+// no badge restore, no context menu, no message listeners. We now catch it,
+// log it, and fall back to an inline copy of the same (non-secret) config so
+// the service worker still starts correctly.
+try {
+  importScripts('config.js');
+} catch (err) {
+  console.error('[DataBridge] config.js failed to load via importScripts, using built-in fallback config:', err);
+}
+if (typeof CONFIG === 'undefined') {
+  self.CONFIG = {
+    FIREBASE_URL: "https://databridgebd-default-rtdb.asia-southeast1.firebasedatabase.app",
+    FIREBASE_WEB_API_KEY: "AIzaSyBo6zgv8mF_0d3GjaXu7Eo4HX0e0xMXQQ4",
+    PAGINATION_LIMIT: 20
+  };
+}
+
+try {
+  importScripts('scanner-module.js'); // 📷 Scanner Module — remove this line to disable
+} catch (err) {
+  console.error('[DataBridge] scanner-module.js failed to load — scan features will be unavailable this session:', err);
+}
+
 const FIREBASE_URL = CONFIG.FIREBASE_URL;
 
 // Restore badge from stored unread count whenever the service worker wakes up
