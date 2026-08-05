@@ -113,8 +113,11 @@ async function sendToFirebase(text) {
   );
   if (!extension_id) return;
 
-  const cleaned = text.replace(/[\s\-()]/g, "");
   const isPhone = isPhoneNumber(text);
+  // cleaned: for phone numbers, strip spaces/dashes/brackets so the app can dial directly.
+  // For non-phone text (names, addresses, etc.), keep the original — stripping spaces from
+  // "TANJIR RAHAMAN" produces "TANJIRRAHAMAN" which is wrong for clipboard/display use.
+  const cleaned = isPhone ? text.replace(/[\s\-()]/g, "") : text;
   const timestamp = Date.now();
   const itemId = `record_${timestamp}`;
 
