@@ -2186,6 +2186,12 @@ function setupDashboardTab() {
 
   const exportCcBtn = document.getElementById('export-cc-btn');
   if (exportCcBtn) exportCcBtn.addEventListener('click', () => exportCallCenterData());
+
+  const generateHvBtn = document.getElementById('generate-hv-btn');
+  if (generateHvBtn) generateHvBtn.addEventListener('click', () => generateHoldValidationReport());
+
+  const downloadHvBtn = document.getElementById('download-hv-btn');
+  if (downloadHvBtn) downloadHvBtn.addEventListener('click', () => downloadHvReport());
 }
 
 function renderDashboard() {
@@ -2276,6 +2282,7 @@ async function loadCcBranches() {
   if (!branchSelect) return;
   if (!currentGoogleUid) {
     branchSelect.innerHTML = '<option value="">Google দিয়ে লগইন করুন প্রথমে</option>';
+    renderHvBranchCheckboxes();
     return;
   }
 
@@ -2288,6 +2295,7 @@ async function loadCcBranches() {
 
     if (!ccBranchIds.length) {
       branchSelect.innerHTML = '<option value="">কোনো branch assigned নেই</option>';
+      renderHvBranchCheckboxes();
       return;
     }
 
@@ -2300,9 +2308,11 @@ async function loadCcBranches() {
 
     branchSelect.innerHTML = '<option value="">All My Branches</option>' +
       ccBranchIds.map(id => `<option value="${escapeHtml(id)}">${escapeHtml(ccBranchNames[id])}</option>`).join('');
+    renderHvBranchCheckboxes();
   } catch (e) {
     console.warn('[DB] loadCcBranches failed:', e);
     branchSelect.innerHTML = '<option value="">⚠ Branch list load failed</option>';
+    renderHvBranchCheckboxes();
   }
 }
 
@@ -2450,6 +2460,281 @@ async function exportCallCenterData() {
     console.error('[DB] exportCallCenterData failed:', e);
     setStatus('⚠ Export failed — console (F12) দেখো');
   }
+}
+
+
+// ══════════════════════════════════════════════════════════════════════
+// 🔒 HOLD VALIDATION (Dashboard)
+// Same branch(es) + custom From/To date range → courier/runs_by_branchId →
+// run_routes → consignments / remarks_by_consignment chain as Call Center
+// Export above, and — like that feature — a one-time report/export action,
+// not a live-reloading list, so this makes NO change to databridge-app's
+// Firebase schema either.
+//
+// Two differences from Call Center Export:
+//   1. Branch picking is CHECKBOXES, not a <select> — lets a multi-branch
+//      user pick one, several, or all; a single-branch user just sees one
+//      pre-checked box and needs zero clicks on it.
+//   2. Rows are filtered down to only "hold" ones before anything is shown,
+//      using the SAME priority the Android app's CallCenterParcelItem uses
+//      for effectiveStatus (latest remark status wins over the raw run
+//      status when a remark exists) and the SAME "hold" keyword match
+//      DashboardViewModel.bucketForStatus() uses (case-insensitive
+//      substring, not a fixed key list, since status keys are admin-
+//      configurable via config/statusMeta and a renamed one would silently
+//      fall through a fixed list).
+// ══════════════════════════════════════════════════════════════════════
+
+let hvReportRows = []; // rows currently shown in the report — cached here so Download doesn't refetch
+
+/** Case-insensitive "does this status mean on-hold" — mirrors the app's
+ *  DashboardViewModel.bucketForStatus() keyword match exactly. */
+function isHoldStatus(status) {
+  return typeof status === 'string' && /hold/i.test(status);
+}
+
+/** Renders the Hold Validation branch checkboxes from the ccBranchIds/
+ *  ccBranchNames loadCcBranches() just resolved — no extra Firebase read.
+ *  Called from every outcome inside loadCcBranches() so this always mirrors
+ *  the Call Center Export branch dropdown's data exactly. All boxes start
+ *  checked: a single-branch user gets a ready-to-run report with zero
+ *  clicks, and a multi-branch user can see at a glance that every assigned
+ *  branch is currently included (uncheck any to narrow it down). */
+function renderHvBranchCheckboxes() {
+  const listEl = document.getElementById('dash-hv-branch-list');
+  if (!listEl) return;
+
+  if (!currentGoogleUid) {
+    listEl.innerHTML = '<div class="dash-hv-branch-empty">Google দিয়ে লগইন করুন প্রথমে</div>';
+    return;
+  }
+  if (!ccBranchIds.length) {
+    listEl.innerHTML = '<div class="dash-hv-branch-empty">কোনো branch assigned নেই</div>';
+    return;
+  }
+
+  listEl.innerHTML = ccBranchIds.map(id => `
+    <label class="dash-hv-branch-item">
+      <input type="checkbox" class="dash-hv-branch-cb" value="${escapeHtml(id)}" checked>
+      <span>${escapeHtml(ccBranchNames[id] || id)}</span>
+    </label>
+  `).join('');
+}
+
+function getSelectedHvBranchIds() {
+  return [...document.querySelectorAll('.dash-hv-branch-cb:checked')].map(cb => cb.value);
+}
+
+async function generateHoldValidationReport() {
+  const statusEl    = document.getElementById('dash-hv-status');
+  const fromInput   = document.getElementById('dash-hv-from');
+  const toInput     = document.getElementById('dash-hv-to');
+  const reportEl    = document.getElementById('dash-hv-report');
+  const downloadBtn = document.getElementById('download-hv-btn');
+  const setStatus   = msg => { if (statusEl) statusEl.textContent = msg; };
+
+  downloadBtn?.classList.remove('visible');
+  hvReportRows = [];
+  if (reportEl) reportEl.innerHTML = '';
+
+  if (!fromInput.value || !toInput.value) {
+    setStatus('⚠ From এবং To — দুটো date-ই select করুন');
+    return;
+  }
+  const fromDate = new Date(fromInput.value + 'T00:00:00');
+  const toDate   = new Date(toInput.value   + 'T00:00:00');
+  if (fromDate > toDate) {
+    setStatus('⚠ From date, To date-এর পরে হতে পারবে না');
+    return;
+  }
+
+  const branchesToQuery = getSelectedHvBranchIds();
+  if (!branchesToQuery.length) {
+    setStatus('⚠ অন্তত একটা branch select করো');
+    return;
+  }
+
+  const idToken   = await getValidFirebaseIdToken().catch(() => null);
+  const authQuery = idToken ? `?auth=${idToken}` : '';
+
+  try {
+    // Step 1 — one full runs_by_branchId fetch per branch (parallel), then
+    // filter run keys by date range client-side (same approach and same
+    // caveat as exportCallCenterData() above: run keys sort chronologically
+    // as yyyyMMdd strings, so a server-side range query per branch would
+    // also work — kept client-side here to avoid adding per-run-type range
+    // queries on top of the per-branch fetch).
+    setStatus('⏳ Branch data আনা হচ্ছে…');
+    const branchResults = await Promise.all(branchesToQuery.map(async branchId => {
+      const res  = await fetch(`${FIREBASE_URL}/courier/runs_by_branchId/${branchId}.json${authQuery}`);
+      return { branchId, data: await res.json() };
+    }));
+
+    const runTuples = [];
+    branchResults.forEach(({ branchId, data }) => {
+      if (!data || typeof data !== 'object') return;
+      Object.entries(data).forEach(([runType, runsOfType]) => {
+        if (!runsOfType || typeof runsOfType !== 'object') return;
+        Object.keys(runsOfType).forEach(runId => {
+          const m = runId.match(/^run_(\d{8})_(.+)$/);
+          if (!m) return;
+          const runDate = parseRunKeyDate(m[1]);
+          if (!runDate || runDate < fromDate || runDate > toDate) return;
+          runTuples.push({ branchId, runType, runId, runDate, agentSystemId: m[2] });
+        });
+      });
+    });
+
+    if (!runTuples.length) {
+      setStatus('এই date range-এ কোনো run পাওয়া যায়নি');
+      return;
+    }
+
+    // Step 2 — each surviving run's consignments map, in parallel
+    setStatus(`⏳ ${runTuples.length}টা run থেকে consignment বের করা হচ্ছে…`);
+    const runNodeResults = await Promise.all(runTuples.map(async t => {
+      const res  = await fetch(`${FIREBASE_URL}/courier/run_routes/${t.runType}/${t.runId}.json${authQuery}`);
+      const data = await res.json();
+      return { ...t, consignments: (data && data.consignments) || {} };
+    }));
+
+    const rows = [];
+    runNodeResults.forEach(t => {
+      Object.entries(t.consignments).forEach(([cId, status]) => {
+        rows.push({ ...t, cId, runStatus: status });
+      });
+    });
+
+    if (!rows.length) {
+      setStatus('Run পাওয়া গেছে কিন্তু কোনো consignment নেই');
+      return;
+    }
+
+    // Step 3 — each UNIQUE consignment's details + latest remark, in parallel
+    setStatus(`⏳ ${rows.length}টা consignment-এর detail আনা হচ্ছে…`);
+    const uniqueCids = [...new Set(rows.map(r => r.cId))];
+    const detailMap  = {};
+    await Promise.all(uniqueCids.map(async cId => {
+      const [cons, remarks] = await Promise.all([
+        fetch(`${FIREBASE_URL}/courier/consignments/${cId}.json${authQuery}`).then(r => r.json()),
+        fetch(`${FIREBASE_URL}/courier/remarks_by_consignment/${cId}.json${authQuery}`).then(r => r.json()),
+      ]);
+      let latestRemark = null;
+      if (remarks && typeof remarks === 'object') {
+        latestRemark = Object.values(remarks).reduce((latest, r) =>
+          (!latest || (r.createdAt || 0) > (latest.createdAt || 0)) ? r : latest, null);
+      }
+      detailMap[cId] = { cons: cons || {}, remark: latestRemark };
+    }));
+
+    // Step 4 — keep only rows whose EFFECTIVE status is a "hold" status.
+    // remarkStatus wins over the raw run/consignment status when a remark
+    // exists — same priority as CallCenterParcelItem.effectiveStatus on the
+    // app side — before the isHoldStatus() keyword check is applied.
+    const heldRows = [];
+    rows.forEach(r => {
+      const d = detailMap[r.cId] || {};
+      const remarkStatus = d.remark?.status || '';
+      const eff = remarkStatus.trim() ? remarkStatus : (r.runStatus || d.cons?.status || '');
+      if (!isHoldStatus(eff)) return;
+      heldRows.push({ ...r, cons: d.cons || {}, remark: d.remark, effStatus: eff });
+    });
+
+    hvReportRows = heldRows;
+    renderHvReport();
+
+    if (!heldRows.length) {
+      setStatus('এই date range/branch-এ hold-এ কোনো parcel পাওয়া যায়নি');
+      return;
+    }
+    setStatus(`✓ ${heldRows.length}টা parcel hold-এ পাওয়া গেছে`);
+    downloadBtn?.classList.add('visible');
+  } catch (e) {
+    console.error('[DB] generateHoldValidationReport failed:', e);
+    setStatus('⚠ Report load failed — console (F12) দেখো');
+  }
+}
+
+/** Draws the on-screen report from hvReportRows. Called once generation
+ *  finishes — never re-fetches, so Download reusing hvReportRows always
+ *  matches exactly what's on screen. */
+function renderHvReport() {
+  const reportEl = document.getElementById('dash-hv-report');
+  if (!reportEl) return;
+  if (!hvReportRows.length) { reportEl.innerHTML = ''; return; }
+
+  const rowsHtml = hvReportRows.map(r => {
+    const cons = r.cons || {};
+    const dd = String(r.runDate.getDate()).padStart(2, '0');
+    const mm = String(r.runDate.getMonth() + 1).padStart(2, '0');
+    return `
+      <div class="dash-hv-row">
+        <div class="dash-hv-row-top">
+          <span class="dash-hv-row-id">${escapeHtml(r.cId)}</span>
+          <span>${dd}-${mm}-${r.runDate.getFullYear()}</span>
+        </div>
+        <div>${escapeHtml(cons.recipientName || '—')} · ${escapeHtml(cons.recipientPhone || '—')}</div>
+        <div class="dash-hv-row-meta">${escapeHtml(ccBranchNames[r.branchId] || r.branchId)} · ${escapeHtml(r.agentSystemId)} · COD ${escapeHtml(String(cons.collectableAmount ?? '—'))}</div>
+        ${r.remark?.remarks ? `<div class="dash-hv-row-remark">${escapeHtml(r.remark.remarks)}</div>` : ''}
+      </div>`;
+  }).join('');
+
+  reportEl.innerHTML = `
+    <div class="dash-hv-summary">🔒 ${hvReportRows.length}টা parcel hold-এ</div>
+    <div class="dash-hv-list">${rowsHtml}</div>
+  `;
+}
+
+/** Lowercases and dashes a branch name for use inside a filename. */
+function slugifyForFilename(str) {
+  return String(str || '').trim().toLowerCase().replace(/[^a-z0-9]+/gi, '-').replace(/^-+|-+$/g, '') || 'branch';
+}
+
+/** "databridge-hold-validation_<branch-part>_<date-part>.csv" — branch-part
+ *  names the single branch when exactly one is selected, says how many when
+ *  several (but not all) are, or "all-branches" for the full set; date-part
+ *  collapses to one day when From equals To instead of repeating it. */
+function buildHvFilename(fromVal, toVal, selectedIds) {
+  const datePart = (fromVal === toVal) ? fromVal : `${fromVal}_to_${toVal}`;
+  let branchPart;
+  if (selectedIds.length === ccBranchIds.length) {
+    branchPart = 'all-branches';
+  } else if (selectedIds.length === 1) {
+    branchPart = slugifyForFilename(ccBranchNames[selectedIds[0]] || selectedIds[0]);
+  } else {
+    branchPart = `${selectedIds.length}-branches`;
+  }
+  return `databridge-hold-validation_${branchPart}_${datePart}.csv`;
+}
+
+function downloadHvReport() {
+  if (!hvReportRows.length) return;
+  const fromInput = document.getElementById('dash-hv-from');
+  const toInput   = document.getElementById('dash-hv-to');
+
+  const csvRows = [[
+    'Date', 'Branch', 'Agent System ID', 'Consignment ID', 'Customer Name',
+    'Phone', 'Address', 'COD', 'Status', 'Latest Remark'
+  ]];
+  hvReportRows.forEach(r => {
+    const cons = r.cons || {};
+    const dd = String(r.runDate.getDate()).padStart(2, '0');
+    const mm = String(r.runDate.getMonth() + 1).padStart(2, '0');
+    csvRows.push([
+      `${dd}-${mm}-${r.runDate.getFullYear()}`,
+      ccBranchNames[r.branchId] || r.branchId,
+      r.agentSystemId,
+      r.cId,
+      cons.recipientName    || '',
+      cons.recipientPhone   || '',
+      cons.recipientAddress || '',
+      cons.collectableAmount ?? '',
+      r.effStatus || '',
+      r.remark?.remarks || ''
+    ]);
+  });
+
+  downloadCsv(buildHvFilename(fromInput.value, toInput.value, getSelectedHvBranchIds()), csvRows);
 }
 
 document.addEventListener('DOMContentLoaded', init);

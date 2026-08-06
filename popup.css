@@ -850,3 +850,46 @@ input:checked + .toggle-slider:before { transform: translateX(14px); }
 .dash-cc-date::-webkit-calendar-picker-indicator { filter: invert(1); cursor: pointer; }
 .dash-cc-export-btn { width: 100%; margin-top: 4px; }
 .dash-cc-status { font-size: 10px; color: #888; margin-top: 6px; text-align: center; min-height: 12px; }
+
+/* ── Hold Validation (Dashboard) ── */
+.dash-hv-branch-list {
+  max-height: 90px;
+  overflow-y: auto;
+  background: #0d1b2e;
+  border: 1px solid #2d5a8e;
+  border-radius: 5px;
+  padding: 4px 6px;
+  margin-bottom: 6px;
+}
+.dash-hv-branch-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 2px;
+  font-size: 11px;
+  color: #c9d8ec;
+  cursor: pointer;
+}
+.dash-hv-branch-item input { accent-color: #00d4ff; cursor: pointer; }
+.dash-hv-branch-empty { font-size: 10px; color: #888; text-align: center; padding: 6px; }
+
+.dash-hv-report:not(:empty) { margin-top: 8px; }
+.dash-hv-summary { font-size: 11px; color: #00d4ff; font-weight: 600; margin-bottom: 6px; text-align: center; }
+.dash-hv-list { max-height: 180px; overflow-y: auto; display: flex; flex-direction: column; gap: 4px; }
+.dash-hv-row {
+  background: #0d1b2e;
+  border: 1px solid #0f3460;
+  border-left: 2px solid #3b82f6;
+  border-radius: 5px;
+  padding: 6px 8px;
+  font-size: 10px;
+  color: #c9d8ec;
+  line-height: 1.5;
+}
+.dash-hv-row-top { display: flex; justify-content: space-between; font-weight: 700; color: #fff; margin-bottom: 2px; }
+.dash-hv-row-id { color: #00d4ff; }
+.dash-hv-row-meta { color: #888; }
+.dash-hv-row-remark { margin-top: 3px; color: #ffaa00; font-style: italic; }
+
+.dash-hv-download-btn { display: none; margin-top: 8px; }
+.dash-hv-download-btn.visible { display: block; }
