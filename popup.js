@@ -2487,10 +2487,66 @@ async function exportCallCenterData() {
 
 let hvReportRows = []; // rows currently shown in the report — cached here so Download doesn't refetch
 
-/** Case-insensitive "does this status mean on-hold" — mirrors the app's
- *  DashboardViewModel.bucketForStatus() keyword match exactly. */
-function isHoldStatus(status) {
-  return typeof status === 'string' && /hold/i.test(status);
+/** Mirrors StatusMetaCache.isVerifyRequestStatus() on the app side exactly:
+ *  a remark's status field, trimmed and compared case-insensitively against
+ *  "VERIFY_REQUEST" or "verify_req" — this is what a worker sets when a
+ *  parcel needs call-center to validate something before it can move on. */
+function isVerifyRequestStatus(status) {
+  const s = String(status || '').trim().toLowerCase();
+  return s === 'verify_request' || s === 'verify_req';
+}
+
+/** One consignment's FULL remarks node (every remarks_{timestamp} entry, any
+ *  author — same node CallCenterFragment/WorkerSpaceFragment read in full for
+ *  their "journey" history) narrowed to [rangeStart, rangeEnd) — the user's
+ *  selected From/To range, not a single day, per how this report should
+ *  count: once per consignment for the whole range, not once per day it was
+ *  touched, unlike the app's own per-day "today" scoping.
+ *
+ *  hadRequest   — true if ANY entry in range is a verify-request.
+ *  stillPending — same "latest entry decides" rule the app uses for
+ *                 validationRequest, just generalized from a single day to
+ *                 the whole range: pending only if the truly latest entry in
+ *                 range is STILL a verify-request status (nothing since has
+ *                 superseded it).
+ *  requestEntry — the verify-request this current state relates to: the
+ *                 latest entry itself when still pending, otherwise the most
+ *                 recent verify-request that came before whatever resolved
+ *                 it — i.e. the most recent request→resolution cycle, so a
+ *                 consignment requested/resolved more than once in range
+ *                 still reports its CURRENT state, not a stale earlier one. */
+function analyzeRangeRemarks(remarksObj, rangeStart, rangeEnd) {
+  if (!remarksObj || typeof remarksObj !== 'object') return { hadRequest: false };
+
+  const entries = Object.values(remarksObj).filter(e => {
+    const ts = e && e.createdAt;
+    return typeof ts === 'number' && ts >= rangeStart && ts < rangeEnd;
+  });
+  if (!entries.length) return { hadRequest: false };
+
+  const hadRequest = entries.some(e => isVerifyRequestStatus(e.status || ''));
+  if (!hadRequest) return { hadRequest: false };
+
+  const latestOverall = entries.reduce((latest, e) =>
+    (!latest || (e.createdAt || 0) > (latest.createdAt || 0)) ? e : latest, null);
+  const stillPending = isVerifyRequestStatus(latestOverall?.status || '');
+
+  const verifyEntries = entries.filter(e => isVerifyRequestStatus(e.status || ''));
+  const requestEntry = stillPending
+    ? latestOverall
+    : (verifyEntries.filter(e => (e.createdAt || 0) < (latestOverall.createdAt || 0))
+         .reduce((latest, e) => (!latest || (e.createdAt || 0) > (latest.createdAt || 0)) ? e : latest, null)
+       || verifyEntries.reduce((latest, e) => (!latest || (e.createdAt || 0) > (latest.createdAt || 0)) ? e : latest, null));
+
+  return {
+    hadRequest: true,
+    stillPending,
+    requestNote:      requestEntry?.remarks || requestEntry?.note || '',
+    requestAt:        requestEntry?.createdAt || 0,
+    resolutionNote:   stillPending ? '' : (latestOverall?.remarks || latestOverall?.note || ''),
+    resolutionStatus: stillPending ? '' : (latestOverall?.status || ''),
+    resolutionAt:     stillPending ? 0 : (latestOverall?.createdAt || 0)
+  };
 }
 
 /** Renders the Hold Validation branch checkboxes from the ccBranchIds/
@@ -2610,7 +2666,9 @@ async function generateHoldValidationReport() {
       return;
     }
 
-    // Step 3 — each UNIQUE consignment's details + latest remark, in parallel
+    // Step 3 — each UNIQUE consignment's details + FULL remarks history (not
+    // just the latest one), in parallel. The whole node is needed now since
+    // Step 4 below looks at every remark across the range, not one entry.
     setStatus(`⏳ ${rows.length}টা consignment-এর detail আনা হচ্ছে…`);
     const uniqueCids = [...new Set(rows.map(r => r.cId))];
     const detailMap  = {};
@@ -2619,35 +2677,53 @@ async function generateHoldValidationReport() {
         fetch(`${FIREBASE_URL}/courier/consignments/${cId}.json${authQuery}`).then(r => r.json()),
         fetch(`${FIREBASE_URL}/courier/remarks_by_consignment/${cId}.json${authQuery}`).then(r => r.json()),
       ]);
-      let latestRemark = null;
-      if (remarks && typeof remarks === 'object') {
-        latestRemark = Object.values(remarks).reduce((latest, r) =>
-          (!latest || (r.createdAt || 0) > (latest.createdAt || 0)) ? r : latest, null);
-      }
-      detailMap[cId] = { cons: cons || {}, remark: latestRemark };
+      detailMap[cId] = {
+        cons: cons || {},
+        remarksRaw: (remarks && typeof remarks === 'object') ? remarks : {}
+      };
     }));
 
-    // Step 4 — keep only rows whose EFFECTIVE status is a "hold" status.
-    // remarkStatus wins over the raw run/consignment status when a remark
-    // exists — same priority as CallCenterParcelItem.effectiveStatus on the
-    // app side — before the isHoldStatus() keyword check is applied.
-    const heldRows = [];
+    // Step 4 — one entry per CONSIGNMENT for the whole range (a re-attempted
+    // consignment can show up in `rows` more than once, once per run/day it
+    // was touched; per the user's own scoping call, Total Request/Validation
+    // count each consignment once for the whole range, not once per day) —
+    // keep whichever touching run is most recent, for the branch/agent/date
+    // shown on its row — then keep only consignments that ever had a verify-
+    // request in range (analyzeRangeRemarks() above decides pending vs
+    // validated using the SAME "latest entry decides" rule the app uses
+    // per-day, generalized to the whole range).
+    const latestRowByC = {};
     rows.forEach(r => {
-      const d = detailMap[r.cId] || {};
-      const remarkStatus = d.remark?.status || '';
-      const eff = remarkStatus.trim() ? remarkStatus : (r.runStatus || d.cons?.status || '');
-      if (!isHoldStatus(eff)) return;
-      heldRows.push({ ...r, cons: d.cons || {}, remark: d.remark, effStatus: eff });
+      const existing = latestRowByC[r.cId];
+      if (!existing || r.runDate > existing.runDate) latestRowByC[r.cId] = r;
     });
 
-    hvReportRows = heldRows;
+    const rangeStart = fromDate.getTime();
+    const rangeEnd   = toDate.getTime() + 24 * 60 * 60 * 1000; // end of the "To" day, inclusive
+    const requestRows = [];
+    Object.entries(latestRowByC).forEach(([cId, r]) => {
+      const d = detailMap[cId] || {};
+      const info = analyzeRangeRemarks(d.remarksRaw, rangeStart, rangeEnd);
+      if (!info.hadRequest) return;
+      requestRows.push({ ...r, cons: d.cons || {}, ...info });
+    });
+
+    // Most actionable first: still-pending ones on top, most recently
+    // requested within each group first.
+    requestRows.sort((a, b) => {
+      if (a.stillPending !== b.stillPending) return a.stillPending ? -1 : 1;
+      return (b.requestAt || 0) - (a.requestAt || 0);
+    });
+
+    hvReportRows = requestRows;
     renderHvReport();
 
-    if (!heldRows.length) {
-      setStatus('এই date range/branch-এ hold-এ কোনো parcel পাওয়া যায়নি');
+    if (!requestRows.length) {
+      setStatus('এই date range/branch-এ কোনো validation request পাওয়া যায়নি');
       return;
     }
-    setStatus(`✓ ${heldRows.length}টা parcel hold-এ পাওয়া গেছে`);
+    const pendingCount = requestRows.filter(r => r.stillPending).length;
+    setStatus(`✓ Total Request ${requestRows.length} · Validated ${requestRows.length - pendingCount} · Pending ${pendingCount}`);
     downloadBtn?.classList.add('visible');
   } catch (e) {
     console.error('[DB] generateHoldValidationReport failed:', e);
@@ -2657,30 +2733,54 @@ async function generateHoldValidationReport() {
 
 /** Draws the on-screen report from hvReportRows. Called once generation
  *  finishes — never re-fetches, so Download reusing hvReportRows always
- *  matches exactly what's on screen. */
+ *  matches exactly what's on screen. Shows both pending and validated
+ *  parcels together, most-actionable (pending) first — see the sort in
+ *  generateHoldValidationReport() — each tagged with a badge. */
 function renderHvReport() {
   const reportEl = document.getElementById('dash-hv-report');
   if (!reportEl) return;
   if (!hvReportRows.length) { reportEl.innerHTML = ''; return; }
 
+  const totalRequest   = hvReportRows.length;
+  const totalPending   = hvReportRows.filter(r => r.stillPending).length;
+  const totalValidated = totalRequest - totalPending;
+
   const rowsHtml = hvReportRows.map(r => {
     const cons = r.cons || {};
     const dd = String(r.runDate.getDate()).padStart(2, '0');
     const mm = String(r.runDate.getMonth() + 1).padStart(2, '0');
+    const badge = r.stillPending
+      ? '<span class="dash-hv-badge dash-hv-badge-pending">⏳ Pending</span>'
+      : '<span class="dash-hv-badge dash-hv-badge-validated">✓ Validated</span>';
     return `
-      <div class="dash-hv-row">
+      <div class="dash-hv-row ${r.stillPending ? 'dash-hv-row-pending' : 'dash-hv-row-validated'}">
         <div class="dash-hv-row-top">
           <span class="dash-hv-row-id">${escapeHtml(r.cId)}</span>
           <span>${dd}-${mm}-${r.runDate.getFullYear()}</span>
         </div>
         <div>${escapeHtml(cons.recipientName || '—')} · ${escapeHtml(cons.recipientPhone || '—')}</div>
         <div class="dash-hv-row-meta">${escapeHtml(ccBranchNames[r.branchId] || r.branchId)} · ${escapeHtml(r.agentSystemId)} · COD ${escapeHtml(String(cons.collectableAmount ?? '—'))}</div>
-        ${r.remark?.remarks ? `<div class="dash-hv-row-remark">${escapeHtml(r.remark.remarks)}</div>` : ''}
+        <div class="dash-hv-row-remark">🙋 ${escapeHtml(r.requestNote || '(no note)')}</div>
+        ${r.resolutionNote ? `<div class="dash-hv-row-resolution">↳ ${escapeHtml(r.resolutionNote)}</div>` : ''}
+        <div class="dash-hv-row-badge-line">${badge}</div>
       </div>`;
   }).join('');
 
   reportEl.innerHTML = `
-    <div class="dash-hv-summary">🔒 ${hvReportRows.length}টা parcel hold-এ</div>
+    <div class="dash-hv-summary-grid">
+      <div class="dash-hv-summary-stat">
+        <div class="dash-hv-summary-val">${totalRequest}</div>
+        <div class="dash-hv-summary-label">Total Request</div>
+      </div>
+      <div class="dash-hv-summary-stat">
+        <div class="dash-hv-summary-val validated">${totalValidated}</div>
+        <div class="dash-hv-summary-label">Total Validation</div>
+      </div>
+      <div class="dash-hv-summary-stat">
+        <div class="dash-hv-summary-val pending">${totalPending}</div>
+        <div class="dash-hv-summary-label">Pending</div>
+      </div>
+    </div>
     <div class="dash-hv-list">${rowsHtml}</div>
   `;
 }
@@ -2713,24 +2813,25 @@ function downloadHvReport() {
   const toInput   = document.getElementById('dash-hv-to');
 
   const csvRows = [[
-    'Date', 'Branch', 'Agent System ID', 'Consignment ID', 'Customer Name',
-    'Phone', 'Address', 'COD', 'Status', 'Latest Remark'
+    'Consignment ID', 'Branch', 'Agent System ID', 'Last Touched', 'Customer Name',
+    'Phone', 'Address', 'COD', 'Validation Status', 'Request Note', 'Resolution Note'
   ]];
   hvReportRows.forEach(r => {
     const cons = r.cons || {};
     const dd = String(r.runDate.getDate()).padStart(2, '0');
     const mm = String(r.runDate.getMonth() + 1).padStart(2, '0');
     csvRows.push([
-      `${dd}-${mm}-${r.runDate.getFullYear()}`,
+      r.cId,
       ccBranchNames[r.branchId] || r.branchId,
       r.agentSystemId,
-      r.cId,
+      `${dd}-${mm}-${r.runDate.getFullYear()}`,
       cons.recipientName    || '',
       cons.recipientPhone   || '',
       cons.recipientAddress || '',
       cons.collectableAmount ?? '',
-      r.effStatus || '',
-      r.remark?.remarks || ''
+      r.stillPending ? 'Pending' : 'Validated',
+      r.requestNote    || '',
+      r.resolutionNote || ''
     ]);
   });
 
