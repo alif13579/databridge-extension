@@ -2274,9 +2274,13 @@ function exportScansToCsv() {
 let ccBranchIds   = [];  // cached after first successful load
 const ccBranchNames = {}; // branchId -> resolved display name
 
-/** Populates the branch <select> from users/{uid}/company_info/branch_ids —
- *  same path RbacManager.kt reads on the Android app side. Called once, the
- *  first time the Dashboard tab is opened while Google-linked. */
+/** Populates the branch <select> from users/{uid}/profile/company_info/branch_ids
+ *  — same path RbacManager.kt, EmployeeFragment.kt, and every other branch_ids
+ *  read/write in the app uses (confirmed by grepping the whole app/src tree —
+ *  FirebasePaths.kt's userCompanyInfo() helper builds the OTHER, unused
+ *  users/{uid}/company_info path with no /profile/ segment; nothing in the app
+ *  actually calls it). Called once, the first time the Dashboard tab is opened
+ *  while Google-linked. */
 async function loadCcBranches() {
   const branchSelect = document.getElementById('dash-cc-branch');
   if (!branchSelect) return;
@@ -2289,7 +2293,7 @@ async function loadCcBranches() {
   try {
     const idToken = await getValidFirebaseIdToken().catch(() => null);
     const authQuery = idToken ? `?auth=${idToken}` : '';
-    const res  = await fetch(`${FIREBASE_URL}/users/${currentGoogleUid}/company_info/branch_ids.json${authQuery}`);
+    const res  = await fetch(`${FIREBASE_URL}/users/${currentGoogleUid}/profile/company_info/branch_ids.json${authQuery}`);
     const data = await res.json();
     ccBranchIds = Array.isArray(data) ? data.filter(Boolean) : Object.values(data || {});
 
