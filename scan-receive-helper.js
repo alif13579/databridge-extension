@@ -88,21 +88,27 @@
     try { localStorage.setItem(STORAGE_KEY, JSON.stringify(s)); } catch {}
   }
 
-  function initState(holdExpected, returnExpected) {
+  function initState(holdExpected, returnExpected, totalRowsFound) {
     const existing = loadState();
     if (existing) {
-      // If the cached expected sets are empty but a fresh page read finds real
-      // candidates, the cache was almost certainly written while the DOM selectors
-      // didn't match yet (or before the parcel list had finished loading) — rebuild
-      // the expected sets from the current, correctly-parsed page instead of staying
-      // stuck on a stale empty cache for up to 72h. holdReceived/returnReceived (any
-      // real save progress) are left untouched either way.
-      const cacheLooksStale =
-        !existing.holdExpected.length && !existing.returnExpected.length &&
-        (holdExpected.length || returnExpected.length);
-      if (cacheLooksStale) {
-        console.log('[DataBridge] Cached expected sets were empty, rebuilding from live page:',
-          holdExpected.length, 'hold /', returnExpected.length, 'return');
+      // A fresh read that actually found parcel rows is always authoritative —
+      // sync the cached expected sets to it on EVERY visit, not just when the
+      // old cache happened to be empty. Otherwise hold/return IDs that changed
+      // since the last visit (resolved, newly placed on hold, reassigned, etc.)
+      // stay stuck on the first-visit snapshot for up to 72h — the run's actual
+      // current hold/return list silently drifts from what the panel/borders
+      // show. holdReceived/returnReceived (real scan/save progress) are left
+      // untouched here; reconcileWithPageState() prunes those independently
+      // based on each ID's live status.
+      //
+      // Only skip the sync when the fresh read found ZERO parcel rows at all —
+      // that means Hermes' Vue SPA hadn't rendered the list yet when init() ran,
+      // so the read itself isn't trustworthy (the [1500ms/3500ms] retries and
+      // the MutationObserver rebuild the sets once rows do appear).
+      if (totalRowsFound > 0) {
+        console.log('[DataBridge] Syncing expected sets from live page:',
+          holdExpected.length, 'hold /', returnExpected.length, 'return',
+          '(was', existing.holdExpected.length, '/', existing.returnExpected.length, ')');
         existing.holdExpected = holdExpected;
         existing.returnExpected = returnExpected;
         persistState(existing);
@@ -1093,7 +1099,7 @@
     // ────────────────────────────────────────────
 
     const { holdExpected, returnExpected } = buildExpected();
-    appState = initState(holdExpected, returnExpected);
+    appState = initState(holdExpected, returnExpected, allRows.length);
     console.log('[DB] State loaded from storage?', !!(loadState()));
     console.log('[DB] appState.holdExpected:', appState.holdExpected);
     console.log('[DB] appState.returnExpected:', appState.returnExpected);
