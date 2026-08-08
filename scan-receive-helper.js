@@ -374,12 +374,18 @@
       }
       .db-memory-popover button:hover { background: #2563eb; }
       .db-memory-list {
-        display: flex; flex-wrap: wrap; gap: 4px; max-height: 90px; overflow-y: auto;
+        display: flex; flex-wrap: wrap; gap: 4px; max-height: 220px; overflow-y: auto;
       }
-      .db-memory-list .db-id { cursor: default; }
+      .db-memory-list .db-id {
+        cursor: default; display: inline-flex; align-items: center; gap: 4px;
+      }
       .db-memory-list .db-id:hover {
         background: #f8fafc !important; border-color: #e2e8f0 !important; color: #334155 !important;
       }
+      .db-mem-del {
+        cursor: pointer; opacity: 0.5; font-size: 10px; line-height: 1; color: #ef4444;
+      }
+      .db-mem-del:hover { opacity: 1; }
       /* Row layout: Run Summary (left) + Pending Scan (right) side-by-side instead
          of stacked. .db-body itself no longer scrolls — each .db-sec column scrolls
          independently, since the summary table (fixed row count) and the pending-ID
@@ -609,8 +615,30 @@
     const listEl = document.getElementById('db-memory-list');
     if (!listEl) return;
     listEl.innerHTML = (ids || []).length
-      ? [...ids].reverse().map(id => `<span class="db-id">${id}</span>`).join('')
+      ? [...ids].reverse().map(id =>
+          `<span class="db-id">${id}<span class="db-mem-del" data-remove-id="${id}" title="Remove from memory">🗑</span></span>`
+        ).join('')
       : '';
+    listEl.querySelectorAll('[data-remove-id]').forEach(el => {
+      el.addEventListener('click', () => removeIdFromMemory(el.dataset.removeId));
+    });
+  }
+
+  /** Removes a single ID from this run's memory (chrome.storage.local), then
+   *  refreshes the panel so the chip disappears and the count updates. */
+  async function removeIdFromMemory(id) {
+    const memKey = `db-memory-${getRunId()}`;
+    try {
+      const result = await chrome.storage.local.get([memKey]);
+      const mem = result[memKey];
+      if (!mem) return;
+      mem.ids = mem.ids.filter(x => x !== id);
+      await chrome.storage.local.set({ [memKey]: mem });
+      refreshPanel(appState);
+    } catch (e) {
+      console.warn('[DB] removeIdFromMemory failed:', e);
+      showToast('Memory', 'Remove failed — see console', true);
+    }
   }
 
   // Tracks which pending-scan groups (by label) the user has expanded to show
