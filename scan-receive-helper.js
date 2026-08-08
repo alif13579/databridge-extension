@@ -386,6 +386,32 @@
         cursor: pointer; opacity: 0.5; font-size: 10px; line-height: 1; color: #ef4444;
       }
       .db-mem-del:hover { opacity: 1; }
+      .db-field-picker {
+        background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 5px;
+        padding: 6px 8px; margin-bottom: 6px;
+      }
+      .db-field-picker-hdr {
+        display: flex; justify-content: space-between; align-items: center;
+        font-size: 10px; font-weight: 700; color: #64748b; text-transform: uppercase;
+        letter-spacing: .5px; margin-bottom: 5px;
+      }
+      .db-field-rescan { cursor: pointer; opacity: 0.6; }
+      .db-field-rescan:hover { opacity: 1; }
+      .db-field-list { display: flex; flex-direction: column; gap: 3px; max-height: 100px; overflow-y: auto; }
+      .db-field-row {
+        padding: 4px 6px; font-size: 10px; background: #fff; border: 1px solid #e2e8f0;
+        border-radius: 4px; cursor: pointer; color: #334155;
+      }
+      .db-field-row:hover { border-color: #93c5fd; }
+      .db-field-row.selected { background: #dbeafe; border-color: #3b82f6; color: #1e40af; font-weight: 600; }
+      .db-field-empty { font-size: 10px; color: #94a3b8; padding: 4px; }
+      /* Applied directly to the real page <input> the user picks as auto-fill
+         target (not scoped under #db-panel — the target lives on the host page). */
+      .db-field-glow {
+        outline: 3px solid #f59e0b !important;
+        outline-offset: 1px !important;
+        box-shadow: 0 0 0 4px rgba(245, 158, 11, .3) !important;
+      }
       /* Row layout: Run Summary (left) + Pending Scan (right) side-by-side instead
          of stacked. .db-body itself no longer scrolls — each .db-sec column scrolls
          independently, since the summary table (fixed row count) and the pending-ID
@@ -481,6 +507,7 @@
   // ── FLOATING PANEL ───────────────────────────────────────────────────────
   let panel = null;
   let minimized = false;
+  let selectedFieldEl = null; // manually-picked auto-fill target (see detectPageInputs/selectField)
 
   function createPanel() {
     panel = document.createElement('div');
@@ -766,6 +793,12 @@
 
     if (memCount > 0) {
       pendHTML += `<div style="margin-top:8px">
+        <div class="db-field-picker">
+          <div class="db-field-picker-hdr">
+            🎯 Target field <span class="db-field-rescan" id="db-field-rescan" title="Re-scan page for input fields">🔄</span>
+          </div>
+          <div class="db-field-list" id="db-field-list"></div>
+        </div>
         <button id="db-memory-fill-btn" style="
           width:100%;padding:5px 0;background:#1e3a5f;border:1px solid #3b82f6;
           border-radius:5px;color:#7ab3e0;font-size:10px;font-weight:700;cursor:pointer">
@@ -782,6 +815,13 @@
     // Attach memory fill button
     const fillBtn = document.getElementById('db-memory-fill-btn');
     if (fillBtn) fillBtn.addEventListener('click', () => fillFromMemory());
+
+    // Target-field picker — re-detects page inputs on every render (cheap for
+    // the handful of fields a page typically has); rescan icon forces a redo
+    // on demand (e.g. after a Hermes SPA re-render adds/removes fields).
+    renderFieldList();
+    const rescanBtn = document.getElementById('db-field-rescan');
+    if (rescanBtn) rescanBtn.addEventListener('click', e => { e.stopPropagation(); renderFieldList(); });
 
     // Attach scroll-on-click to every ID badge
     document.getElementById('db-pending').querySelectorAll('[data-scroll-id]').forEach(el => {
@@ -1050,9 +1090,56 @@
   }
 
 
+  // ── TARGET FIELD PICKER ──────────────────────────────────────────────────
+  /** Finds visible text-type <input> elements on the page (excluding the
+   *  extension's own panel) so the user can pick a manual auto-fill target
+   *  instead of relying on the automatic hold/return status routing. */
+  function detectPageInputs() {
+    return Array.from(document.querySelectorAll('input'))
+      .filter(el => el.type === 'text' && el.offsetParent !== null && !el.closest('#db-panel'))
+      .map((el, i) => ({
+        el,
+        label: el.labels?.[0]?.textContent?.trim()
+            || el.getAttribute('aria-label')
+            || el.placeholder
+            || el.name
+            || el.id
+            || `Field ${i + 1}`
+      }));
+  }
+
+  function renderFieldList() {
+    const listEl = document.getElementById('db-field-list');
+    if (!listEl) return;
+    const fields = detectPageInputs();
+    listEl.innerHTML = fields.length
+      ? fields.map((f, i) =>
+          `<div class="db-field-row${f.el === selectedFieldEl ? ' selected' : ''}" data-field-idx="${i}">${f.label}</div>`
+        ).join('')
+      : '<div class="db-field-empty">No input fields found</div>';
+    listEl.querySelectorAll('[data-field-idx]').forEach((el, i) => {
+      el.addEventListener('click', () => selectField(fields[i].el));
+    });
+  }
+
+  /** Sets the manual auto-fill target: clears any previous glow, glows the
+   *  newly-picked field on the real page, and re-renders the list so its
+   *  highlight matches. fillFromMemory() checks selectedFieldEl first and
+   *  falls back to automatic hold/return routing when nothing is selected
+   *  (or the selected element was removed by a page re-render). */
+  function selectField(el) {
+    if (selectedFieldEl) selectedFieldEl.classList.remove('db-field-glow');
+    selectedFieldEl = el;
+    el.classList.add('db-field-glow');
+    el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    renderFieldList();
+  }
+
   // ── FILL FROM MEMORY ─────────────────────────────────────────────────────
   // Iterates saved memory IDs into correct Hermes scan fields.
-  // On Hold status → #onHoldConsId, everything else → #returnConsId.
+  // Manual target (selectedFieldEl, via the field picker) wins if set and
+  // still attached to the page; otherwise falls back to the automatic
+  // routing: On Hold status → #onHoldConsId, everything else → #returnConsId.
   // Each ID is removed from memory after being input.
   // Called from popup via chrome.runtime.onMessage.
   async function fillFromMemory() {
@@ -1070,10 +1157,15 @@
     showToast('Memory', `Auto-filling ${ids.length} ID(s)…`, false);
 
     for (const id of ids) {
-      const row    = findRowById(id);
-      const status = (row ? rowStatus(row) || '' : '').toLowerCase();
-      const inputId = HOLD_VALID.has(status) ? HOLD_INPUT_ID : RETURN_INPUT_ID;
-      const input   = document.getElementById(inputId);
+      let input;
+      if (selectedFieldEl && document.body.contains(selectedFieldEl)) {
+        input = selectedFieldEl;
+      } else {
+        const row    = findRowById(id);
+        const status = (row ? rowStatus(row) || '' : '').toLowerCase();
+        const inputId = HOLD_VALID.has(status) ? HOLD_INPUT_ID : RETURN_INPUT_ID;
+        input = document.getElementById(inputId);
+      }
 
       if (input) {
         input.focus();
