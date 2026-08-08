@@ -367,6 +367,13 @@
         color: #fff; font-size: 11px; font-weight: 700; cursor: pointer;
       }
       .db-memory-popover button:hover { background: #2563eb; }
+      .db-memory-list {
+        display: flex; flex-wrap: wrap; gap: 4px; max-height: 90px; overflow-y: auto;
+      }
+      .db-memory-list .db-id { cursor: default; }
+      .db-memory-list .db-id:hover {
+        background: #f8fafc !important; border-color: #e2e8f0 !important; color: #334155 !important;
+      }
       /* Row layout: Run Summary (left) + Pending Scan (right) side-by-side instead
          of stacked. .db-body itself no longer scrolls — each .db-sec column scrolls
          independently, since the summary table (fixed row count) and the pending-ID
@@ -475,8 +482,9 @@
         </div>
       </div>
       <div class="db-memory-popover hidden" id="db-memory-popover">
-        <input id="db-memory-save-input" type="text" placeholder="Scan or type ID + Enter">
+        <input id="db-memory-save-input" type="text" placeholder="Scan, type, or paste multiple (1 per line) + Enter">
         <button id="db-memory-save-btn">💾 Save</button>
+        <div class="db-memory-list" id="db-memory-list"></div>
       </div>
       <div class="db-body" id="db-body">
         <div class="db-sec" id="db-summary"></div>
@@ -511,6 +519,27 @@
     if (memBtn)   memBtn.addEventListener('click', trySave);
     if (memInput) memInput.addEventListener('keydown', e => { if (e.key === 'Enter') trySave(); });
 
+    // Multi-ID paste — if the clipboard has 2+ non-empty lines, treat each line as
+    // its own ID (same trim/pipe-strip/ID_REGEX cleanup as a single scan, via
+    // saveIdToMemory) instead of dumping the whole blob into the single-line input.
+    // A single-line paste falls through to normal input behavior (still needs Enter/Save).
+    if (memInput) memInput.addEventListener('paste', async e => {
+      const text = (e.clipboardData || window.clipboardData).getData('text');
+      const lines = text.split(/\r\n|\r|\n/).map(l => l.trim()).filter(Boolean);
+      if (lines.length < 2) return;
+      e.preventDefault();
+      let saved = 0, skipped = 0;
+      for (const line of lines) {
+        const status = await saveIdToMemory(line, { silent: true });
+        if (status === 'saved') saved++;
+        else if (status !== 'empty') skipped++;
+      }
+      memInput.value = '';
+      memInput.focus();
+      showToast('Memory', `${saved} saved${skipped ? `, ${skipped} skipped` : ''}`, skipped > 0 && saved === 0);
+      refreshPanel(appState);
+    });
+
     // Draggable
     const hdr = panel.querySelector('.db-hdr');
     let ox, oy, ol, ot;
@@ -528,15 +557,19 @@
 
   /** Parses/validates raw scanner or typed input (same cleanup as the Hermes
    *  scan-input listener below: strip pipe suffix, uppercase, ID_REGEX check),
-   *  then adds it to this run's memory in chrome.storage.local. */
-  async function saveIdToMemory(raw) {
+   *  then adds it to this run's memory in chrome.storage.local.
+   *  opts.silent suppresses the per-call toast + refreshPanel (used for bulk
+   *  paste, where the caller shows one summary toast and refreshes once after
+   *  the whole batch). Returns 'saved' | 'duplicate' | 'invalid' | 'empty' | 'error'. */
+  async function saveIdToMemory(raw, opts = {}) {
+    const silent = !!opts.silent;
     const trimmed = (raw || '').trim().toUpperCase();
-    if (!trimmed) return;
+    if (!trimmed) return 'empty';
     const pipeIdx = trimmed.lastIndexOf('|');
     const id = pipeIdx !== -1 ? trimmed.substring(0, pipeIdx) : trimmed;
     if (!ID_REGEX.test(id)) {
-      showToast('Memory', `Invalid ID: ${id}`, true);
-      return;
+      if (!silent) showToast('Memory', `Invalid ID: ${id}`, true);
+      return 'invalid';
     }
 
     const memKey = `db-memory-${getRunId()}`;
@@ -544,18 +577,34 @@
       const result = await chrome.storage.local.get([memKey]);
       const mem = result[memKey] || { runId: getRunId(), ids: [], savedAt: null };
       if (mem.ids.includes(id)) {
-        showToast('Memory', `${id} already saved`, false);
-        return;
+        if (!silent) showToast('Memory', `${id} already saved`, false);
+        return 'duplicate';
       }
       mem.ids.push(id);
       mem.savedAt = Date.now();
       await chrome.storage.local.set({ [memKey]: mem });
-      showToast('Memory', `Saved ${id} (${mem.ids.length} total)`, false);
-      refreshPanel(appState); // updates the Auto-fill button's count immediately
+      if (!silent) {
+        showToast('Memory', `Saved ${id} (${mem.ids.length} total)`, false);
+        refreshPanel(appState); // updates the Auto-fill button's count immediately
+      }
+      return 'saved';
     } catch (e) {
       console.warn('[DB] saveIdToMemory failed:', e);
-      showToast('Memory', 'Save failed — see console', true);
+      if (!silent) showToast('Memory', 'Save failed — see console', true);
+      return 'error';
     }
+  }
+
+  /** Renders the list of IDs saved to this run's memory inside the popover,
+   *  most-recently-added first. mem.ids is stored oldest→newest (push-only);
+   *  reversed only for display, so storage order stays untouched for
+   *  fillFromMemory() etc. */
+  function renderMemoryList(ids) {
+    const listEl = document.getElementById('db-memory-list');
+    if (!listEl) return;
+    listEl.innerHTML = (ids || []).length
+      ? [...ids].reverse().map(id => `<span class="db-id">${id}</span>`).join('')
+      : '';
   }
 
   // Tracks which pending-scan groups (by label) the user has expanded to show
@@ -676,7 +725,9 @@
     let   memCount = 0;
     try {
       const result = await chrome.storage.local.get([memKey]);
-      memCount = (result[memKey]?.ids || []).length;
+      const memIds = result[memKey]?.ids || [];
+      memCount = memIds.length;
+      renderMemoryList(memIds);
     } catch {}
 
     if (memCount > 0) {
