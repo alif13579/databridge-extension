@@ -1448,6 +1448,57 @@ function setupSettings() {
       setTimeout(() => { clearBtn.textContent = 'Clear'; clearBtn.disabled = false; }, 2000);
     }
   });
+
+  setupAutofillUrls();
+}
+
+// Manages the "Auto-fill Pages" list (chrome.storage.local key:
+// autofill_page_urls) that scan-receive-helper.js's initIfAllowed() reads to
+// decide which pages it should activate on. Absent key -> DEFAULT_URLS
+// (matches the original hardcoded hermes.pathaointernal.com/run-routes
+// behavior); an explicitly-saved empty array is respected as-is, even
+// though empty — Array.isArray is what draws that line on both sides.
+async function setupAutofillUrls() {
+  const input  = document.getElementById('autofill-url-input');
+  const addBtn = document.getElementById('autofill-url-add-btn');
+  const listEl = document.getElementById('autofill-url-list');
+  if (!input || !addBtn || !listEl) return;
+
+  const DEFAULT_URLS = ['hermes.pathaointernal.com/run-routes'];
+
+  async function loadUrls() {
+    const result = await chrome.storage.local.get(['autofill_page_urls']);
+    return Array.isArray(result.autofill_page_urls) ? result.autofill_page_urls : DEFAULT_URLS;
+  }
+  async function saveUrls(urls) {
+    await chrome.storage.local.set({ autofill_page_urls: urls });
+  }
+  async function render() {
+    const urls = await loadUrls();
+    listEl.innerHTML = urls.length
+      ? urls.map(u => `<div class="autofill-url-chip"><span>${u}</span><span class="url-remove" data-url="${u}">✕</span></div>`).join('')
+      : '<div class="settings-hint">No pages configured — panel won\'t auto-appear anywhere.</div>';
+    listEl.querySelectorAll('[data-url]').forEach(el => {
+      el.addEventListener('click', async () => {
+        await saveUrls((await loadUrls()).filter(u => u !== el.dataset.url));
+        render();
+      });
+    });
+  }
+
+  addBtn.addEventListener('click', async () => {
+    const val = input.value.trim();
+    if (!val) return;
+    const urls = await loadUrls();
+    if (urls.includes(val)) { input.value = ''; return; }
+    urls.push(val);
+    await saveUrls(urls);
+    input.value = '';
+    render();
+  });
+  input.addEventListener('keydown', e => { if (e.key === 'Enter') addBtn.click(); });
+
+  render();
 }
 
 function setupLoadMore() {

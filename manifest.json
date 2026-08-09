@@ -39,7 +39,7 @@
       "run_at": "document_idle"
     },
     {
-      "matches": ["https://hermes.pathaointernal.com/run-routes/*"],
+      "matches": ["<all_urls>"],
       "js": ["scan-receive-helper.js"]
     }
   ],

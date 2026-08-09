@@ -1326,9 +1326,27 @@
     }).observe(document.body, { childList: true, subtree: true, characterData: true });
   }
 
+  // Now that manifest.json matches <all_urls> (was previously scoped to
+  // hermes.pathaointernal.com/run-routes/*), this script runs on every page
+  // and self-gates here using a URL allowlist set from the extension popup's
+  // Settings tab (chrome.storage.local key: autofill_page_urls — see
+  // popup.js). Falls back to the original hardcoded page when nothing has
+  // been configured yet, so existing behavior is unchanged by default.
+  const DEFAULT_AUTOFILL_URLS = ['hermes.pathaointernal.com/run-routes'];
+  async function initIfAllowed() {
+    let urls = DEFAULT_AUTOFILL_URLS;
+    try {
+      const result = await chrome.storage.local.get(['autofill_page_urls']);
+      if (Array.isArray(result.autofill_page_urls)) urls = result.autofill_page_urls;
+    } catch (e) {
+      console.warn('[DB] Could not read autofill_page_urls, using default:', e);
+    }
+    if (urls.some(u => u && window.location.href.includes(u))) init();
+  }
+
   if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', init);
+    document.addEventListener('DOMContentLoaded', initIfAllowed);
   } else {
-    init();
+    initIfAllowed();
   }
 })();

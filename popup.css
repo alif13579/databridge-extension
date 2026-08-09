@@ -460,6 +460,26 @@ input:checked + .toggle-slider:before { transform: translateX(14px); }
   cursor: pointer;
 }
 .danger-btn:hover { background: #ff444422; }
+.settings-hint { font-size: 10px; color: #666; line-height: 1.4; margin-bottom: 8px; }
+.autofill-url-row { display: flex; gap: 6px; margin-bottom: 6px; }
+.autofill-url-row input {
+  flex: 1; background: #16213e; border: 1px solid #2a3a5c; border-radius: 6px;
+  color: #ccc; font-size: 11px; padding: 6px 8px;
+}
+.autofill-url-row input:focus { outline: none; border-color: #00d4ff; }
+.autofill-url-row button {
+  background: #00d4ff22; border: 1px solid #00d4ff; color: #00d4ff;
+  border-radius: 6px; padding: 4px 10px; font-size: 11px; cursor: pointer;
+}
+.autofill-url-row button:hover { background: #00d4ff33; }
+.autofill-url-list { display: flex; flex-direction: column; gap: 4px; }
+.autofill-url-chip {
+  background: #16213e; border-radius: 6px; padding: 6px 10px;
+  display: flex; align-items: center; justify-content: space-between;
+  font-size: 11px; color: #ccc;
+}
+.autofill-url-chip .url-remove { color: #ff4444; cursor: pointer; opacity: .7; font-size: 10px; margin-left: 8px; }
+.autofill-url-chip .url-remove:hover { opacity: 1; }
 
 /* ── Remarks Overlay ── */
 .remarks-overlay {
