@@ -62,6 +62,26 @@
   };
   const DEFAULT_COLOR = '#6b7280';
 
+  // Maps every raw Hermes status to exactly one of 3 buckets for the
+  // "Copy for Sheet" export (see buildSheetBuckets() below). Deliberately
+  // separate from HOLD_VALID/RETURN_VALID above — those decide which
+  // physical scan field an id auto-fills into, a different concern with a
+  // different grouping (e.g. exchange/partial delivery/paid return route to
+  // the Return scan field there, but count as Delivered here).
+  const SHEET_STATUS_BUCKET = {
+    'delivered':          'delivered',
+    'partial delivery':   'delivered',
+    'partial':            'delivered',
+    'exchange':           'delivered',
+    'paid return':        'delivered',
+    'return':              'return',
+    'return request':      'return',
+    'return requested':    'return',
+    'reattempt request':   'return',
+    'reattempt requested': 'return',
+    'on hold':              'hold',
+  };
+
   function statusColor(s) {
     return STATUS_COLOR[(s || '').toLowerCase()] || DEFAULT_COLOR;
   }
@@ -232,6 +252,67 @@
       map[st].collected += rowCollected(row);
     });
     return map;
+  }
+
+  // Groups every row's ID into the 3 SHEET_STATUS_BUCKET buckets for the
+  // "Copy for Sheet" export. Rows whose status doesn't match any bucket are
+  // counted in `unmatched` rather than silently dropped, so the caller can
+  // tell the user something was skipped instead of losing IDs quietly.
+  function buildSheetBuckets() {
+    const buckets = { delivered: [], hold: [], return: [] };
+    let unmatched = 0;
+    parcelRows().forEach(row => {
+      const id = rowId(row);
+      if (!id) return;
+      const bucket = SHEET_STATUS_BUCKET[(rowStatus(row) || '').trim().toLowerCase()];
+      if (bucket) buckets[bucket].push(id);
+      else unmatched++;
+    });
+    return { buckets, unmatched };
+  }
+
+  // Tab-separated, column order Delivered / Hold / Return (matches the A/B/C
+  // sheet layout) — shorter columns pad with empty cells so every row has
+  // exactly 3 fields and pastes as a clean rectangular block.
+  function buildSheetTsv({ delivered, hold, return: ret }) {
+    const maxLen = Math.max(delivered.length, hold.length, ret.length);
+    const rows = [];
+    for (let i = 0; i < maxLen; i++) {
+      rows.push([delivered[i] || '', hold[i] || '', ret[i] || ''].join('\t'));
+    }
+    return rows.join('\n');
+  }
+
+  // navigator.clipboard.writeText() can silently reject from an injected
+  // content-script panel (document focus / Permissions Policy quirks) — the
+  // execCommand fallback works via direct DOM selection instead, which
+  // doesn't depend on the async Clipboard API's stricter user-activation
+  // checks. Shared by the Run Summary amount-copy button and the Copy for
+  // Sheet header button.
+  function copyToClipboard(text) {
+    function legacyCopy() {
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.focus();
+      ta.select();
+      let ok = false;
+      try { ok = document.execCommand('copy'); }
+      catch (err) { console.error('[DataBridge] legacy copy failed:', err); }
+      document.body.removeChild(ta);
+      return ok;
+    }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      return navigator.clipboard.writeText(text)
+        .then(() => true)
+        .catch((err) => {
+          console.error('[DataBridge] clipboard.writeText failed, falling back:', err);
+          return legacyCopy();
+        });
+    }
+    return Promise.resolve(legacyCopy());
   }
 
   // IDs currently visible in a scan panel (not yet saved — just in DOM)
@@ -528,6 +609,7 @@
       <div class="db-hdr">
         <span>📦 DataBridge Reconcile</span>
         <div class="db-hdr-actions">
+          <button id="db-sheet-copy-btn" title="Copy Delivered/Hold/Return IDs for pasting into a sheet">📋</button>
           <button id="db-memory-toggle" title="Save to Memory">🧠</button>
           <button id="db-min">−</button>
         </div>
@@ -649,6 +731,23 @@
     if (rescanBtn) rescanBtn.addEventListener('click', e => { e.stopPropagation(); renderFieldList(); });
     const clearAllBtn = document.getElementById('db-mem-clear-all');
     if (clearAllBtn) clearAllBtn.addEventListener('click', e => { e.stopPropagation(); clearAllMemory(); });
+
+    // Copy for Sheet — header icon, left of 🧠. Builds the 3 status buckets
+    // fresh from the current DOM on click (not cached), so it always
+    // reflects whatever's on the page right now.
+    const sheetCopyBtn = document.getElementById('db-sheet-copy-btn');
+    if (sheetCopyBtn) sheetCopyBtn.addEventListener('click', async e => {
+      e.stopPropagation();
+      const { buckets, unmatched } = buildSheetBuckets();
+      const tsv = buildSheetTsv(buckets);
+      const ok = await copyToClipboard(tsv);
+      const orig = sheetCopyBtn.textContent;
+      sheetCopyBtn.textContent = ok ? '✓' : '✗';
+      setTimeout(() => { sheetCopyBtn.textContent = orig; }, 1200);
+      if (ok && unmatched > 0) {
+        showToast('Copy for Sheet', `Copied — ${unmatched} ID(s) had an unrecognized status and were skipped`, true);
+      }
+    });
 
     // Draggable
     const hdr = panel.querySelector('.db-hdr');
@@ -822,42 +921,11 @@
         e.stopPropagation();
         const val = btn.dataset.copy;
         if (!val) return;
-
-        const showResult = (ok) => {
+        copyToClipboard(val).then(ok => {
           const orig = btn.textContent;
           btn.textContent = ok ? '✓' : '✗';
           setTimeout(() => { btn.textContent = orig; }, 1200);
-        };
-
-        // navigator.clipboard.writeText() can silently reject from an injected
-        // content-script panel (document focus / Permissions Policy quirks) — this
-        // execCommand fallback works via direct DOM selection instead, which doesn't
-        // depend on the async Clipboard API's stricter user-activation checks.
-        function legacyCopy(text) {
-          const ta = document.createElement('textarea');
-          ta.value = text;
-          ta.style.position = 'fixed';
-          ta.style.opacity = '0';
-          document.body.appendChild(ta);
-          ta.focus();
-          ta.select();
-          let ok = false;
-          try { ok = document.execCommand('copy'); }
-          catch (err) { console.error('[DataBridge] legacy copy failed:', err); }
-          document.body.removeChild(ta);
-          return ok;
-        }
-
-        if (navigator.clipboard && navigator.clipboard.writeText) {
-          navigator.clipboard.writeText(val)
-            .then(() => showResult(true))
-            .catch((err) => {
-              console.error('[DataBridge] clipboard.writeText failed, falling back:', err);
-              showResult(legacyCopy(val));
-            });
-        } else {
-          showResult(legacyCopy(val));
-        }
+        });
       });
     });
 
