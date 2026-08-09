@@ -397,6 +397,9 @@
         cursor: pointer; opacity: 0.5; font-size: 10px; line-height: 1; color: #ef4444;
       }
       .db-mem-del:hover { opacity: 1; }
+      .db-mem-clear-all { cursor: pointer; opacity: 0.6; color: #ef4444; }
+      .db-mem-clear-all:hover { opacity: 1; }
+      .db-mem-clear-all.hidden { display: none; }
       .db-memory-cols { display: flex; gap: 8px; }
       .db-memory-col { flex: 1; min-width: 0; }
       .db-memory-col-hdr {
@@ -533,7 +536,7 @@
         <input id="db-memory-save-input" type="text" placeholder="Scan, type, or paste multiple (1 per line) + Enter">
         <div class="db-memory-cols">
           <div class="db-memory-col">
-            <div class="db-memory-col-hdr">Saved IDs</div>
+            <div class="db-memory-col-hdr">Saved IDs <span class="db-mem-clear-all hidden" id="db-mem-clear-all" title="Clear all saved IDs">Clear all</span></div>
             <div class="db-memory-list" id="db-memory-list"></div>
           </div>
           <div class="db-memory-col">
@@ -626,6 +629,8 @@
     if (fillBtn) fillBtn.addEventListener('click', () => fillFromMemory());
     const rescanBtn = document.getElementById('db-field-rescan');
     if (rescanBtn) rescanBtn.addEventListener('click', e => { e.stopPropagation(); renderFieldList(); });
+    const clearAllBtn = document.getElementById('db-mem-clear-all');
+    if (clearAllBtn) clearAllBtn.addEventListener('click', e => { e.stopPropagation(); clearAllMemory(); });
 
     // Draggable
     const hdr = panel.querySelector('.db-hdr');
@@ -732,6 +737,25 @@
     } catch (e) {
       console.warn('[DB] removeIdFromMemory failed:', e);
       showToast('Memory', 'Remove failed — see console', true);
+    }
+  }
+
+  /** Wipes every ID from this run's memory in one go (chrome.storage.local),
+   *  confirming first since — unlike the per-row 🗑, which only ever loses one
+   *  scan — this can erase a run's worth of saved IDs in a single click. */
+  async function clearAllMemory() {
+    const memKey = `db-memory-${getRunId()}`;
+    try {
+      const result = await chrome.storage.local.get([memKey]);
+      const mem = result[memKey];
+      if (!mem || !mem.ids.length) return;
+      if (!confirm('সব saved ID delete হবে। নিশ্চিত?')) return;
+      mem.ids = [];
+      await chrome.storage.local.set({ [memKey]: mem });
+      refreshPanel(appState);
+    } catch (e) {
+      console.warn('[DB] clearAllMemory failed:', e);
+      showToast('Memory', 'Clear failed — see console', true);
     }
   }
 
@@ -863,6 +887,8 @@
       fillBtn.textContent = `🧠 Auto-fill from Memory (${memCount})`;
       fillBtn.style.display = memCount > 0 ? '' : 'none';
     }
+    const clearAllBtn = document.getElementById('db-mem-clear-all');
+    if (clearAllBtn) clearAllBtn.classList.toggle('hidden', memCount === 0);
 
     if (!holdPending.length && !returnPending.length) {
       pendHTML += '<div class="db-done">✅ All parcels received!</div>';
