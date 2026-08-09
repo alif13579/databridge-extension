@@ -341,9 +341,20 @@
         position: fixed; top: 0px; right: 375px; z-index: 2147483646;
         background: #fff; border: 1px solid #e2e8f0; border-radius: 12px;
         box-shadow: 0 4px 24px rgba(0,0,0,.13); width: 415px; max-height: 300px;
+        min-width: 320px; min-height: 160px; max-width: 700px;
         font: 13px/1.5 -apple-system, Segoe UI, sans-serif; overflow: hidden;
         display: flex; flex-direction: column;
       }
+      /* Bottom-right drag-to-resize grip. max-height stays at the CSS default
+         (300px, shrink-to-content) until the user actually drags this —
+         createPanel()'s resize handler lifts it to 85vh at that point, so a
+         panel nobody resizes keeps today's look unchanged. */
+      .db-resize-handle {
+        position: absolute; right: 0; bottom: 0; width: 16px; height: 16px;
+        cursor: nwse-resize; border-bottom-right-radius: 12px;
+        background: repeating-linear-gradient(135deg, #cbd5e1 0, #cbd5e1 1.5px, transparent 1.5px, transparent 4px);
+      }
+      .db-resize-handle:hover { background-color: rgba(59,130,246,.08); }
       .db-hdr {
         background: #1e293b; color: #fff; padding: 7px 10px;
         display: flex; justify-content: space-between; align-items: center;
@@ -541,6 +552,7 @@
         <div class="db-vdivider"></div>
         <div class="db-sec" id="db-pending"></div>
       </div>
+      <div class="db-resize-handle" title="Drag to resize"></div>
     `;
     document.body.appendChild(panel);
 
@@ -548,6 +560,18 @@
       minimized = !minimized;
       document.getElementById('db-body').style.display = minimized ? 'none' : '';
       document.getElementById('db-min').textContent = minimized ? '+' : '−';
+      // A manually-resized height would otherwise leave empty space below the
+      // header while minimized (db-body is hidden but the panel's own height
+      // isn't) — stash it and collapse to content, then restore on expand.
+      const resizeHandle = panel.querySelector('.db-resize-handle');
+      if (minimized) {
+        panel.dataset.expandedHeight = panel.style.height || '';
+        panel.style.height = 'auto';
+        if (resizeHandle) resizeHandle.style.display = 'none';
+      } else {
+        panel.style.height = panel.dataset.expandedHeight || '';
+        if (resizeHandle) resizeHandle.style.display = '';
+      }
     });
 
     // Save-to-Memory — 🧠 icon in the header toggles a popover (scan/type/paste
@@ -615,6 +639,25 @@
       };
       document.addEventListener('mousemove', move);
       document.addEventListener('mouseup', () => document.removeEventListener('mousemove', move), { once: true });
+    });
+
+    // Resizable — bottom-right grip drag adjusts width + height together.
+    // Lifts the CSS max-height cap (300px, meant for the default
+    // shrink-to-content look) to 85vh the first time it's used, so a
+    // deliberately-enlarged panel isn't silently clamped back down.
+    const resizeHandle = panel.querySelector('.db-resize-handle');
+    const MIN_W = 320, MIN_H = 160, MAX_W = 700;
+    resizeHandle.addEventListener('mousedown', e => {
+      e.preventDefault();
+      const startX = e.clientX, startY = e.clientY;
+      const startW = panel.offsetWidth, startH = panel.offsetHeight;
+      panel.style.maxHeight = '85vh';
+      const resize = ev => {
+        panel.style.width  = Math.min(MAX_W, Math.max(MIN_W, startW + ev.clientX - startX)) + 'px';
+        panel.style.height = Math.max(MIN_H, startH + ev.clientY - startY) + 'px';
+      };
+      document.addEventListener('mousemove', resize);
+      document.addEventListener('mouseup', () => document.removeEventListener('mousemove', resize), { once: true });
     });
   }
 
