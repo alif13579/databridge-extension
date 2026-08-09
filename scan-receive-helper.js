@@ -563,6 +563,24 @@
       minimized = !minimized;
       document.getElementById('db-body').style.display = minimized ? 'none' : '';
       document.getElementById('db-min').textContent = minimized ? '+' : '−';
+
+      // Bug: the memory popover is a sibling of #db-body, not inside it, so
+      // hiding #db-body alone left it fully visible (input + both columns +
+      // Auto-fill button) when minimizing while it was open — the panel
+      // never actually collapsed to just the header. Force it closed here,
+      // the same way the 🧠 toggle's closing branch does (restore Run
+      // Summary + divider too, since opening the popover hides those).
+      // It stays closed on restore — reopen via 🧠 if wanted.
+      if (minimized) {
+        const memPop = document.getElementById('db-memory-popover');
+        if (memPop && !memPop.classList.contains('hidden')) {
+          memPop.classList.add('hidden');
+          document.getElementById('db-summary').style.display = '';
+          const vdiv = document.querySelector('.db-vdivider');
+          if (vdiv) vdiv.style.display = '';
+        }
+      }
+
       // A manually-resized height would otherwise leave empty space below the
       // header while minimized (db-body is hidden but the panel's own height
       // isn't) — stash it and collapse to content, then restore on expand.
