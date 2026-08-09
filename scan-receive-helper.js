@@ -374,10 +374,10 @@
       }
       .db-memory-popover button:hover { background: #2563eb; }
       .db-memory-list {
-        display: flex; flex-wrap: wrap; gap: 4px; max-height: 220px; overflow-y: auto;
+        display: flex; flex-direction: column; gap: 3px; max-height: 220px; overflow-y: auto;
       }
       .db-memory-list .db-id {
-        cursor: default; display: inline-flex; align-items: center; gap: 4px;
+        cursor: default; display: flex; align-items: center; justify-content: space-between; gap: 4px;
       }
       .db-memory-list .db-id:hover {
         background: #f8fafc !important; border-color: #e2e8f0 !important; color: #334155 !important;
@@ -386,18 +386,16 @@
         cursor: pointer; opacity: 0.5; font-size: 10px; line-height: 1; color: #ef4444;
       }
       .db-mem-del:hover { opacity: 1; }
-      .db-field-picker {
-        background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 5px;
-        padding: 6px 8px; margin-bottom: 6px;
-      }
-      .db-field-picker-hdr {
+      .db-memory-cols { display: flex; gap: 8px; }
+      .db-memory-col { flex: 1; min-width: 0; }
+      .db-memory-col-hdr {
         display: flex; justify-content: space-between; align-items: center;
         font-size: 10px; font-weight: 700; color: #64748b; text-transform: uppercase;
         letter-spacing: .5px; margin-bottom: 5px;
       }
       .db-field-rescan { cursor: pointer; opacity: 0.6; }
       .db-field-rescan:hover { opacity: 1; }
-      .db-field-list { display: flex; flex-direction: column; gap: 3px; max-height: 100px; overflow-y: auto; }
+      .db-field-list { display: flex; flex-direction: column; gap: 3px; max-height: 220px; overflow-y: auto; }
       .db-field-row {
         padding: 4px 6px; font-size: 10px; background: #fff; border: 1px solid #e2e8f0;
         border-radius: 4px; cursor: pointer; color: #334155;
@@ -522,8 +520,21 @@
       </div>
       <div class="db-memory-popover hidden" id="db-memory-popover">
         <input id="db-memory-save-input" type="text" placeholder="Scan, type, or paste multiple (1 per line) + Enter">
-        <button id="db-memory-save-btn">💾 Save</button>
-        <div class="db-memory-list" id="db-memory-list"></div>
+        <div class="db-memory-cols">
+          <div class="db-memory-col">
+            <div class="db-memory-col-hdr">Saved IDs</div>
+            <div class="db-memory-list" id="db-memory-list"></div>
+          </div>
+          <div class="db-memory-col">
+            <div class="db-memory-col-hdr">🎯 Target field <span class="db-field-rescan" id="db-field-rescan" title="Re-scan page for input fields">🔄</span></div>
+            <div class="db-field-list" id="db-field-list"></div>
+          </div>
+        </div>
+        <button id="db-memory-fill-btn" style="
+          width:100%;padding:6px 0;background:#1e3a5f;border:1px solid #3b82f6;
+          border-radius:5px;color:#7ab3e0;font-size:11px;font-weight:700;cursor:pointer;display:none">
+          🧠 Auto-fill from Memory
+        </button>
       </div>
       <div class="db-body" id="db-body">
         <div class="db-sec" id="db-summary"></div>
@@ -539,23 +550,27 @@
       document.getElementById('db-min').textContent = minimized ? '+' : '−';
     });
 
-    // Save-to-Memory — 🧠 icon in the header toggles a small popover (input on top,
-    // Save button below) so an agent can add an ID straight from this page (scan-gun
-    // input ending in Enter, or the button) instead of needing to open the extension
-    // popup. Same chrome.storage.local key/shape applyMemoryToState()/fillFromMemory()
-    // below already use, so whatever gets saved here is immediately visible/usable
-    // in the Auto-fill flow too.
+    // Save-to-Memory — 🧠 icon in the header toggles a popover (scan/type/paste
+    // input, saved-IDs column, target-field column, Auto-fill button) so an
+    // agent can manage memory and pick a fill target straight from this page
+    // instead of needing the extension popup. Same chrome.storage.local
+    // key/shape applyMemoryToState()/fillFromMemory() below already use, so
+    // whatever gets saved here is immediately visible/usable in Auto-fill too.
+    // Opening the popover hides Run Summary (frees up vertical space for the
+    // two columns); closing it restores Run Summary.
     const memToggle = document.getElementById('db-memory-toggle');
     const memPopover = document.getElementById('db-memory-popover');
     const memInput   = document.getElementById('db-memory-save-input');
-    const memBtn     = document.getElementById('db-memory-save-btn');
     if (memToggle) memToggle.addEventListener('click', e => {
       e.stopPropagation(); // don't let the header's drag handler below see this click
+      const opening = memPopover.classList.contains('hidden');
       memPopover.classList.toggle('hidden');
-      if (!memPopover.classList.contains('hidden')) memInput.focus();
+      document.getElementById('db-summary').style.display = opening ? 'none' : '';
+      const vdiv = document.querySelector('.db-vdivider');
+      if (vdiv) vdiv.style.display = opening ? 'none' : '';
+      if (opening) { memInput.focus(); renderFieldList(); }
     });
     const trySave = () => { saveIdToMemory(memInput.value); memInput.value = ''; memInput.focus(); };
-    if (memBtn)   memBtn.addEventListener('click', trySave);
     if (memInput) memInput.addEventListener('keydown', e => { if (e.key === 'Enter') trySave(); });
 
     // Multi-ID paste — if the clipboard has 2+ non-empty lines, treat each line as
@@ -578,6 +593,15 @@
       showToast('Memory', `${saved} saved${skipped ? `, ${skipped} skipped` : ''}`, skipped > 0 && saved === 0);
       refreshPanel(appState);
     });
+
+    // Auto-fill + target-field rescan — static now (live inside the memory
+    // popover instead of being recreated in #db-pending every refreshPanel
+    // call), so listeners are attached once here rather than re-attached
+    // on every render.
+    const fillBtn = document.getElementById('db-memory-fill-btn');
+    if (fillBtn) fillBtn.addEventListener('click', () => fillFromMemory());
+    const rescanBtn = document.getElementById('db-field-rescan');
+    if (rescanBtn) rescanBtn.addEventListener('click', e => { e.stopPropagation(); renderFieldList(); });
 
     // Draggable
     const hdr = panel.querySelector('.db-hdr');
@@ -790,20 +814,11 @@
       memCount = memIds.length;
       renderMemoryList(memIds);
     } catch {}
-
-    if (memCount > 0) {
-      pendHTML += `<div style="margin-top:8px">
-        <div class="db-field-picker">
-          <div class="db-field-picker-hdr">
-            🎯 Target field <span class="db-field-rescan" id="db-field-rescan" title="Re-scan page for input fields">🔄</span>
-          </div>
-          <div class="db-field-list" id="db-field-list"></div>
-        </div>
-        <button id="db-memory-fill-btn" style="
-          width:100%;padding:5px 0;background:#1e3a5f;border:1px solid #3b82f6;
-          border-radius:5px;color:#7ab3e0;font-size:10px;font-weight:700;cursor:pointer">
-          🧠 Auto-fill from Memory (${memCount})
-        </button></div>`;
+    renderFieldList();
+    const fillBtn = document.getElementById('db-memory-fill-btn');
+    if (fillBtn) {
+      fillBtn.textContent = `🧠 Auto-fill from Memory (${memCount})`;
+      fillBtn.style.display = memCount > 0 ? '' : 'none';
     }
 
     if (!holdPending.length && !returnPending.length) {
@@ -811,17 +826,6 @@
     }
 
     document.getElementById('db-pending').innerHTML = pendHTML;
-
-    // Attach memory fill button
-    const fillBtn = document.getElementById('db-memory-fill-btn');
-    if (fillBtn) fillBtn.addEventListener('click', () => fillFromMemory());
-
-    // Target-field picker — re-detects page inputs on every render (cheap for
-    // the handful of fields a page typically has); rescan icon forces a redo
-    // on demand (e.g. after a Hermes SPA re-render adds/removes fields).
-    renderFieldList();
-    const rescanBtn = document.getElementById('db-field-rescan');
-    if (rescanBtn) rescanBtn.addEventListener('click', e => { e.stopPropagation(); renderFieldList(); });
 
     // Attach scroll-on-click to every ID badge
     document.getElementById('db-pending').querySelectorAll('[data-scroll-id]').forEach(el => {
