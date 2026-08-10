@@ -1347,21 +1347,29 @@
     refreshPanel(appState);
   }
 
-  // Listen for message from popup
-  chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-    if (message.action === 'db_memory_fill' && message.runId === getRunId()) {
-      fillFromMemory();
-      sendResponse({ ok: true });
-    }
-    return false;
-  });
-
+  // Listen for message from popup — moved inside init() (see below); this
+  // used to sit here at top level, which was harmless when the script was
+  // scoped to hermes.pathaointernal.com/run-routes/* but started firing on
+  // every page once manifest.json broadened matches to <all_urls>, competing
+  // with content.js's own onMessage listener on pages like Google Sheets.
 
   // ── INIT ─────────────────────────────────────────────────────────────────
   let appState = null;
 
   function init() {
     injectStyle();
+
+    // Listen for message from popup — only registered here (inside init(),
+    // i.e. only on pages that passed the initIfAllowed() URL gate) so it
+    // doesn't exist on every <all_urls> page and compete with other
+    // extension content scripts' own onMessage listeners elsewhere.
+    chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+      if (message.action === 'db_memory_fill' && message.runId === getRunId()) {
+        fillFromMemory();
+        sendResponse({ ok: true });
+      }
+      return false;
+    });
 
     // ── PARCEL LIST SNAPSHOT (for debugging) ──
     const allRows = parcelRows();
