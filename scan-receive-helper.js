@@ -663,16 +663,21 @@
         }
       }
 
-      // A manually-resized height would otherwise leave empty space below the
-      // header while minimized (db-body is hidden but the panel's own height
-      // isn't) — stash it and collapse to content, then restore on expand.
+      // A manually-resized height (and/or width, from the resize grip) would
+      // otherwise leave the collapsed header at an enlarged size — db-body is
+      // hidden but the panel's own dimensions aren't — so this wasn't a true
+      // "minimize" if the panel had ever been dragged wider/taller. Stash
+      // both and collapse to content/default, then restore both on expand.
       const resizeHandle = panel.querySelector('.db-resize-handle');
       if (minimized) {
         panel.dataset.expandedHeight = panel.style.height || '';
+        panel.dataset.expandedWidth  = panel.style.width  || '';
         panel.style.height = 'auto';
+        panel.style.width  = '';
         if (resizeHandle) resizeHandle.style.display = 'none';
       } else {
         panel.style.height = panel.dataset.expandedHeight || '';
+        panel.style.width  = panel.dataset.expandedWidth  || '';
         if (resizeHandle) resizeHandle.style.display = '';
       }
     });
