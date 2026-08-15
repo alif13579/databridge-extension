@@ -668,16 +668,22 @@
       // hidden but the panel's own dimensions aren't — so this wasn't a true
       // "minimize" if the panel had ever been dragged wider/taller. Stash
       // both and collapse to content/default, then restore both on expand.
+      // min-height is separate from height and needed its own override: the
+      // base CSS's unconditional min-height:160px (line 425) still clamps
+      // height:auto up to 160px regardless, leaving blank panel background
+      // below the collapsed header — the "white layer" that stayed visible.
       const resizeHandle = panel.querySelector('.db-resize-handle');
       if (minimized) {
         panel.dataset.expandedHeight = panel.style.height || '';
         panel.dataset.expandedWidth  = panel.style.width  || '';
         panel.style.height = 'auto';
         panel.style.width  = '';
+        panel.style.minHeight = '0';
         if (resizeHandle) resizeHandle.style.display = 'none';
       } else {
         panel.style.height = panel.dataset.expandedHeight || '';
         panel.style.width  = panel.dataset.expandedWidth  || '';
+        panel.style.minHeight = '';
         if (resizeHandle) resizeHandle.style.display = '';
       }
     });
