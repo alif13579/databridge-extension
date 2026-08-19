@@ -106,12 +106,18 @@ function normalizePhoneKey(text) {
 }
 
 async function sendToFirebase(text) {
-  if (!text) return;
+  if (!text) { console.warn('[DB] sendToFirebase: called with empty text — aborting'); return; }
 
   const { extension_id, container_id } = await new Promise(resolve =>
     chrome.storage.local.get(['extension_id', 'container_id'], resolve)
   );
-  if (!extension_id) return;
+  console.log('[DB] sendToFirebase: extension_id =', extension_id || '(none)', 'container_id =', container_id || '(none)');
+  if (!extension_id) {
+    console.warn('[DB] sendToFirebase: no extension_id in storage — aborting silently before this log existed. ' +
+      'Likely cause: Disconnect (🔌) clears extension_id and a fresh one is only generated when the popup ' +
+      'next opens — open the popup once to regenerate it, then retry.');
+    return;
+  }
 
   const isPhone = isPhoneNumber(text);
   // cleaned: for phone numbers, strip spaces/dashes/brackets so the app can dial directly.
@@ -165,6 +171,9 @@ async function sendToFirebase(text) {
 
     // ✅ 5. Bump unread badge count
     incrementUnreadBadge();
+
+    console.log('[DB] sendToFirebase: done — wrote to sessions/' + extension_id + '/records/' + itemId +
+      (container_id ? ' and container/' + container_id + '/records/' + itemId : ' (no container_id, skipped container write)'));
 
   } catch (error) {
     console.error("❌ DataBridge Error:", error);
