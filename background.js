@@ -42,6 +42,24 @@ function restoreBadge() {
 restoreBadge();
 chrome.runtime.onStartup.addListener(restoreBadge);
 
+// App → Extension (auto-copy to clipboard): the service worker has no way to hold
+// a persistent connection (EventSource dies once Chrome suspends the worker after
+// ~30s idle), so we poll on a chrome.alarms interval instead — the standard MV3
+// pattern for "background needs to notice server-side changes periodically".
+// This runs whether or not the popup is open; popup.js's own SSE listener
+// (sessions/{id} in startSessionListener) still gives instant updates while the
+// popup IS open — this alarm exists specifically for the popup-closed case.
+const COMMANDS_ALARM = 'databridge-poll-commands';
+chrome.alarms.create(COMMANDS_ALARM, { periodInMinutes: 0.5 }); // 30s — alarms API minimum
+chrome.runtime.onStartup.addListener(() => chrome.alarms.create(COMMANDS_ALARM, { periodInMinutes: 0.5 }));
+chrome.alarms.onAlarm.addListener((alarm) => {
+  if (alarm.name === COMMANDS_ALARM) pollIncomingCommands();
+});
+// A repeating alarm's first tick doesn't fire until periodInMinutes has elapsed —
+// poll once immediately too, so a command sent right before the browser reopens
+// isn't sitting there for up to 30s longer than it needs to be.
+pollIncomingCommands();
+
 // Context menu setup
 chrome.runtime.onInstalled.addListener(() => {
   chrome.contextMenus.create({
@@ -189,4 +207,96 @@ function incrementUnreadBadge() {
       chrome.action.setBadgeTextColor?.({ color: '#FFFFFF' });
     });
   });
+}
+
+// ── App → Extension: incoming commands (e.g. "send this parcel card's info
+// to desktop") ─────────────────────────────────────────────────────────────
+// Written by the Android app to sessions/{extension_id}/commands/{cmd_id} —
+// same session node the extension already writes records/ and meta/ under,
+// so no new Firebase path or security rule is needed on either side.
+// Shape: { text, created_at, status: "pending" | "done" }
+const PROCESSED_COMMANDS_CAP = 200; // bound the locally-stored id list so it can't grow forever
+
+async function pollIncomingCommands() {
+  const { extension_id, auto_copy_incoming, processed_command_ids } = await new Promise(resolve =>
+    chrome.storage.local.get(['extension_id', 'auto_copy_incoming', 'processed_command_ids'], resolve)
+  );
+  if (!extension_id) return; // same "not paired yet" case sendToFirebase() already guards against
+
+  let commands;
+  try {
+    const res = await fetch(`${FIREBASE_URL}/sessions/${extension_id}/commands.json?orderBy="status"&equalTo="pending"`);
+    commands = await res.json();
+  } catch (err) {
+    console.error('[DB] pollIncomingCommands: fetch failed:', err);
+    return;
+  }
+  if (!commands) return; // node empty/absent — nothing pending
+
+  const processed = new Set(processed_command_ids || []);
+  const entries = Object.entries(commands).filter(([id]) => !processed.has(id));
+  if (entries.length === 0) return;
+
+  // Oldest first, so if several piled up while the machine was asleep, the clipboard
+  // ends up holding the most recent one after the loop (last write wins, same as
+  // if they'd arrived one at a time).
+  entries.sort((a, b) => (a[1]?.created_at || 0) - (b[1]?.created_at || 0));
+
+  for (const [cmdId, cmd] of entries) {
+    const text = cmd?.text;
+    if (text) {
+      if (auto_copy_incoming) {
+        const copied = await writeToClipboardViaOffscreen(text);
+        if (copied) {
+          chrome.notifications.create(`notif_incoming_${cmdId}`, {
+            type: 'basic',
+            iconUrl: 'icons/icon48.png',
+            title: 'DataBridge',
+            message: `📋 Copied: ${text.substring(0, 50)}`
+          });
+        } else {
+          console.warn('[DB] pollIncomingCommands: clipboard write failed for', cmdId);
+        }
+      }
+      incrementUnreadBadge();
+    }
+    processed.add(cmdId);
+    // Best-effort — mirrors sendToFirebase()'s fire-and-forget-on-failure style;
+    // a failed PATCH here just means this command gets re-fetched (but not
+    // re-copied, since it's already in `processed`) next poll.
+    fetch(`${FIREBASE_URL}/sessions/${extension_id}/commands/${cmdId}.json`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status: 'done' })
+    }).catch(err => console.warn('[DB] pollIncomingCommands: mark-done PATCH failed for', cmdId, err));
+  }
+
+  // Trim from the front (oldest) once over the cap.
+  const trimmed = [...processed].slice(-PROCESSED_COMMANDS_CAP);
+  chrome.storage.local.set({ processed_command_ids: trimmed });
+}
+
+// Service workers have no clipboard/DOM access, so this hands the actual write off
+// to a short-lived offscreen document (see offscreen.html/js) via chrome.runtime
+// messaging — the only API surface offscreen documents support.
+async function writeToClipboardViaOffscreen(text) {
+  try {
+    const offscreenUrl = chrome.runtime.getURL('offscreen.html');
+    const existing = await chrome.runtime.getContexts({
+      contextTypes: ['OFFSCREEN_DOCUMENT'],
+      documentUrls: [offscreenUrl]
+    });
+    if (existing.length === 0) {
+      await chrome.offscreen.createDocument({
+        url: 'offscreen.html',
+        reasons: ['CLIPBOARD'],
+        justification: 'Write incoming data from the Android app to the system clipboard'
+      });
+    }
+    const response = await chrome.runtime.sendMessage({ target: 'offscreen-clipboard-write', text });
+    return !!response?.ok;
+  } catch (err) {
+    console.error('[DB] writeToClipboardViaOffscreen failed:', err);
+    return false;
+  }
 }

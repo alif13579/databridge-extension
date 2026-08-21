@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "DataBridge",
-  "version": "2.50",
+  "version": "2.51",
   "author": "Alif Hossain",
   "description": "Seamless data transfer between platforms.",
   "permissions": [
@@ -10,7 +10,9 @@
     "scripting",
     "storage",
     "notifications",
-    "identity"
+    "identity",
+    "alarms",
+    "offscreen"
   ],
   "host_permissions": [
     "https://databridgebd-default-rtdb.asia-southeast1.firebasedatabase.app/*",

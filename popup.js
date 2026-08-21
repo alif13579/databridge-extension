@@ -1450,6 +1450,21 @@ function setupSettings() {
   });
 
   setupAutofillUrls();
+  setupAutoCopyToggle();
+}
+
+// "Auto-copy incoming data" (Settings → App → Desktop). Read by background.js's
+// pollIncomingCommands() as auto_copy_incoming — default is off (checkbox
+// unchecked) until the user opts in, since silently overwriting someone's
+// clipboard is the kind of thing that should be an explicit choice.
+async function setupAutoCopyToggle() {
+  const toggle = document.getElementById('auto-copy-incoming-toggle');
+  if (!toggle) return;
+  const { auto_copy_incoming } = await chrome.storage.local.get(['auto_copy_incoming']);
+  toggle.checked = !!auto_copy_incoming;
+  toggle.addEventListener('change', () => {
+    chrome.storage.local.set({ auto_copy_incoming: toggle.checked });
+  });
 }
 
 // Manages the "Auto-fill Pages" list (chrome.storage.local key:
