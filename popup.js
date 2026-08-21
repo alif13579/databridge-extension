@@ -4,6 +4,8 @@
 const FIREBASE_URL = CONFIG.FIREBASE_URL;
 const FIREBASE_WEB_API_KEY = CONFIG.FIREBASE_WEB_API_KEY;
 const PAGINATION_LIMIT = CONFIG.PAGINATION_LIMIT || 20;
+const SUPABASE_URL = CONFIG.SUPABASE_URL;
+const SUPABASE_ANON_KEY = CONFIG.SUPABASE_ANON_KEY;
 // users/{uid}/connections/extensions/{id} is meant to hold only CURRENTLY ACTIVE
 // extensions (so the Android app knows how many/which are live right now). Nothing
 // previously re-confirmed presence after initial Google-login, so an entry from a
@@ -2530,6 +2532,61 @@ async function exportCallCenterData() {
     console.error('[DB] exportCallCenterData failed:', e);
     setStatus('⚠ Export failed — console (F12) দেখো');
   }
+}
+
+
+// ══════════════════════════════════════════════════════════════════════
+// 🗄️ SUPABASE CLIENT — validation data now lives here instead of Firebase.
+// Powers Hold Validation Export below once the table is wired up.
+//
+// STILL NEEDED before generateHoldValidationReport() below can actually
+// switch over (it still reads Firebase for now, so this remains a working
+// feature in the meantime):
+//   1. CONFIG.SUPABASE_URL / CONFIG.SUPABASE_ANON_KEY filled in (config.js)
+//   2. Table name + column mapping for validation data (branch id,
+//      consignment id, date, request note, resolution note, status)
+//   3. Whether the table needs RLS/a user JWT, or the anon key alone can
+//      read it (affects the Authorization header below)
+// ══════════════════════════════════════════════════════════════════════
+
+const SUPABASE_PAGE_SIZE = 1000; // PostgREST/Supabase default max rows per request
+
+/** Fetches EVERY row matching queryParams from a Supabase table, paging
+ *  past the default 1000-row-per-request cap via Range-header pagination
+ *  (same idea as a per-branch Firebase fetch above, but server-side
+ *  filtered instead of pulled-then-filtered client-side).
+ *
+ *  table       — table name, e.g. "validation_requests"
+ *  queryParams — already-built PostgREST query string: filters + select,
+ *                e.g. "branch_id=eq.aab&date=gte.2026-08-01&date=lte.2026-08-21&select=id,branch_id,date,status"
+ *                (pass only the columns actually needed — avoid select=*
+ *                to keep egress down, since free-tier bandwidth is the
+ *                real constraint here, not request count)
+ *
+ *  Stops when a page returns fewer rows than SUPABASE_PAGE_SIZE. Throws
+ *  on a non-OK response so callers see a failed branch instead of
+ *  silently returning partial data. */
+async function fetchAllSupabaseRows(table, queryParams) {
+  const rows = [];
+  let from = 0;
+  while (true) {
+    const to = from + SUPABASE_PAGE_SIZE - 1;
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/${table}?${queryParams}`, {
+      headers: {
+        apikey: SUPABASE_ANON_KEY,
+        Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
+        Range: `${from}-${to}`
+      }
+    });
+    if (!res.ok) {
+      throw new Error(`Supabase fetch failed (${res.status}) for table "${table}"`);
+    }
+    const page = await res.json();
+    rows.push(...page);
+    if (page.length < SUPABASE_PAGE_SIZE) break;
+    from += SUPABASE_PAGE_SIZE;
+  }
+  return rows;
 }
 
 
