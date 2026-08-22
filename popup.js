@@ -2536,55 +2536,54 @@ async function exportCallCenterData() {
 
 
 // ══════════════════════════════════════════════════════════════════════
-// 🗄️ SUPABASE CLIENT — validation data now lives here instead of Firebase.
-// Powers Hold Validation Export below once the table is wired up.
-//
-// STILL NEEDED before generateHoldValidationReport() below can actually
-// switch over (it still reads Firebase for now, so this remains a working
-// feature in the meantime):
-//   1. CONFIG.SUPABASE_URL / CONFIG.SUPABASE_ANON_KEY filled in (config.js)
-//   2. Table name + column mapping for validation data (branch id,
-//      consignment id, date, request note, resolution note, status)
-//   3. Whether the table needs RLS/a user JWT, or the anon key alone can
-//      read it (affects the Authorization header below)
+// 🗄️ SUPABASE — validation data lives here (Edge Function report action).
+// Auth: Firebase ID token (existing getValidFirebaseIdToken()) — no
+// separate Supabase login needed; the Edge Function accepts it directly.
 // ══════════════════════════════════════════════════════════════════════
 
-const SUPABASE_PAGE_SIZE = 1000; // PostgREST/Supabase default max rows per request
+const SUPABASE_REPORT_PAGE_SIZE = 100; // Edge Function report action max page_size
 
-/** Fetches EVERY row matching queryParams from a Supabase table, paging
- *  past the default 1000-row-per-request cap via Range-header pagination
- *  (same idea as a per-branch Firebase fetch above, but server-side
- *  filtered instead of pulled-then-filtered client-side).
+/** Fetches ALL validation rows for one branch + date range from the
+ *  remark-validations Edge Function's `report` action, paging through
+ *  all results (page_size 100, the Edge Function's maximum).
  *
- *  table       — table name, e.g. "validation_requests"
- *  queryParams — already-built PostgREST query string: filters + select,
- *                e.g. "branch_id=eq.aab&date=gte.2026-08-01&date=lte.2026-08-21&select=id,branch_id,date,status"
- *                (pass only the columns actually needed — avoid select=*
- *                to keep egress down, since free-tier bandwidth is the
- *                real constraint here, not request count)
+ *  branchId  — e.g. "aab"
+ *  startIso  — ISO 8601 start of range (inclusive), e.g. "2026-08-01T00:00:00.000Z"
+ *  endIso    — ISO 8601 exclusive end,              e.g. "2026-08-22T00:00:00.000Z"
+ *  idToken   — Firebase ID token from getValidFirebaseIdToken()
  *
- *  Stops when a page returns fewer rows than SUPABASE_PAGE_SIZE. Throws
- *  on a non-OK response so callers see a failed branch instead of
- *  silently returning partial data. */
-async function fetchAllSupabaseRows(table, queryParams) {
+ *  Returns flat array of row objects in the same shape as the Edge
+ *  Function returns: { consignment, branch_id, assigned_to_system_id,
+ *  author_system_id, source, remarks_status, remarks, note,
+ *  customer_phone, created_at, ... }.
+ *  Throws on a non-OK HTTP response. */
+async function fetchSupabaseReportRows(branchId, startIso, endIso, idToken) {
   const rows = [];
-  let from = 0;
+  let page = 0;
   while (true) {
-    const to = from + SUPABASE_PAGE_SIZE - 1;
-    const res = await fetch(`${SUPABASE_URL}/rest/v1/${table}?${queryParams}`, {
+    const res = await fetch(`${SUPABASE_URL}/functions/v1/remark-validations`, {
+      method: 'POST',
       headers: {
-        apikey: SUPABASE_ANON_KEY,
-        Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
-        Range: `${from}-${to}`
-      }
+        'Content-Type': 'application/json',
+        'apikey': SUPABASE_ANON_KEY,
+        'Authorization': `Bearer ${idToken}`,
+      },
+      body: JSON.stringify({
+        action:     'report',
+        branch_id:  branchId,
+        start_iso:  startIso,
+        end_iso:    endIso,
+        page,
+        page_size:  SUPABASE_REPORT_PAGE_SIZE,
+      }),
     });
     if (!res.ok) {
-      throw new Error(`Supabase fetch failed (${res.status}) for table "${table}"`);
+      throw new Error(`Supabase report fetch failed (${res.status}) for branch "${branchId}"`);
     }
-    const page = await res.json();
-    rows.push(...page);
-    if (page.length < SUPABASE_PAGE_SIZE) break;
-    from += SUPABASE_PAGE_SIZE;
+    const pageRows = await res.json();
+    rows.push(...pageRows);
+    if (pageRows.length < SUPABASE_REPORT_PAGE_SIZE) break;
+    page++;
   }
   return rows;
 }
@@ -2737,106 +2736,97 @@ async function generateHoldValidationReport() {
     return;
   }
 
-  const idToken   = await getValidFirebaseIdToken().catch(() => null);
-  const authQuery = idToken ? `?auth=${idToken}` : '';
+  const idToken = await getValidFirebaseIdToken().catch(() => null);
+  if (!idToken) {
+    setStatus('⚠ Login করুন প্রথমে');
+    return;
+  }
+
+  // Date range as ISO strings for the Edge Function (half-open: [startIso, endIso)).
+  // new Date('YYYY-MM-DDT00:00:00') uses the browser's local timezone — correct
+  // for Bangladesh (UTC+6) devices; endIso adds one full day to include the "To" date.
+  const startIso = fromDate.toISOString();
+  const endIso   = new Date(toDate.getTime() + 24 * 60 * 60 * 1000).toISOString();
+  const authQuery = `?auth=${idToken}`;
 
   try {
-    // Step 1 — one full runs_by_branchId fetch per branch (parallel), then
-    // filter run keys by date range client-side (same approach and same
-    // caveat as exportCallCenterData() above: run keys sort chronologically
-    // as yyyyMMdd strings, so a server-side range query per branch would
-    // also work — kept client-side here to avoid adding per-run-type range
-    // queries on top of the per-branch fetch).
-    setStatus('⏳ Branch data আনা হচ্ছে…');
-    const branchResults = await Promise.all(branchesToQuery.map(async branchId => {
-      const res  = await fetch(`${FIREBASE_URL}/courier/runs_by_branchId/${branchId}.json${authQuery}`);
-      return { branchId, data: await res.json() };
+    // Step 1 — fetch all validation rows from Supabase per branch (parallel,
+    // paginated via Edge Function report action). Replaces the old
+    // runs_by_branchId → run_routes → remarks_by_consignment chain.
+    // source='WORKER' = validation request; source='CC' = CC resolution.
+    setStatus('⏳ Supabase থেকে validation data আনা হচ্ছে…');
+    const allRows = [];
+    await Promise.all(branchesToQuery.map(async branchId => {
+      const rows = await fetchSupabaseReportRows(branchId, startIso, endIso, idToken);
+      allRows.push(...rows);
     }));
 
-    const runTuples = [];
-    branchResults.forEach(({ branchId, data }) => {
-      if (!data || typeof data !== 'object') return;
-      Object.entries(data).forEach(([runType, runsOfType]) => {
-        if (!runsOfType || typeof runsOfType !== 'object') return;
-        Object.keys(runsOfType).forEach(runId => {
-          const m = runId.match(/^run_(\d{8})_(.+)$/);
-          if (!m) return;
-          const runDate = parseRunKeyDate(m[1]);
-          if (!runDate || runDate < fromDate || runDate > toDate) return;
-          runTuples.push({ branchId, runType, runId, runDate, agentSystemId: m[2] });
-        });
-      });
-    });
-
-    if (!runTuples.length) {
-      setStatus('এই date range-এ কোনো run পাওয়া যায়নি');
+    if (!allRows.length) {
+      setStatus('এই date range/branch-এ কোনো validation data পাওয়া যায়নি');
       return;
     }
 
-    // Step 2 — each surviving run's consignments map, in parallel
-    setStatus(`⏳ ${runTuples.length}টা run থেকে consignment বের করা হচ্ছে…`);
-    const runNodeResults = await Promise.all(runTuples.map(async t => {
-      const res  = await fetch(`${FIREBASE_URL}/courier/run_routes/${t.runType}/${t.runId}.json${authQuery}`);
-      const data = await res.json();
-      return { ...t, consignments: (data && data.consignments) || {} };
-    }));
-
-    const rows = [];
-    runNodeResults.forEach(t => {
-      Object.entries(t.consignments).forEach(([cId, status]) => {
-        rows.push({ ...t, cId, runStatus: status });
-      });
+    // Step 2 — group by consignment, keep only those with at least one WORKER
+    // row (= validation request), then decide pending vs validated:
+    //   • latest overall row is WORKER  → still pending
+    //   • latest overall row is CC      → validated (CC responded last)
+    // Same "latest entry decides" rule as analyzeRangeRemarks() / the app.
+    const rowsByConsignment = {};
+    allRows.forEach(row => {
+      const cId = row.consignment;
+      if (!rowsByConsignment[cId]) rowsByConsignment[cId] = [];
+      rowsByConsignment[cId].push(row);
     });
 
-    if (!rows.length) {
-      setStatus('Run পাওয়া গেছে কিন্তু কোনো consignment নেই');
-      return;
-    }
+    const latestMs = row => new Date(row.created_at).getTime();
 
-    // Step 3 — each UNIQUE consignment's details + FULL remarks history (not
-    // just the latest one), in parallel. The whole node is needed now since
-    // Step 4 below looks at every remark across the range, not one entry.
-    setStatus(`⏳ ${rows.length}টা consignment-এর detail আনা হচ্ছে…`);
-    const uniqueCids = [...new Set(rows.map(r => r.cId))];
-    const detailMap  = {};
-    await Promise.all(uniqueCids.map(async cId => {
-      const [cons, remarks] = await Promise.all([
-        fetch(`${FIREBASE_URL}/courier/consignments/${cId}.json${authQuery}`).then(r => r.json()),
-        fetch(`${FIREBASE_URL}/courier/remarks_by_consignment/${cId}.json${authQuery}`).then(r => r.json()),
-      ]);
-      detailMap[cId] = {
-        cons: cons || {},
-        remarksRaw: (remarks && typeof remarks === 'object') ? remarks : {}
-      };
-    }));
-
-    // Step 4 — one entry per CONSIGNMENT for the whole range (a re-attempted
-    // consignment can show up in `rows` more than once, once per run/day it
-    // was touched; per the user's own scoping call, Total Request/Validation
-    // count each consignment once for the whole range, not once per day) —
-    // keep whichever touching run is most recent, for the branch/agent/date
-    // shown on its row — then keep only consignments that ever had a verify-
-    // request in range (analyzeRangeRemarks() above decides pending vs
-    // validated using the SAME "latest entry decides" rule the app uses
-    // per-day, generalized to the whole range).
-    const latestRowByC = {};
-    rows.forEach(r => {
-      const existing = latestRowByC[r.cId];
-      if (!existing || r.runDate > existing.runDate) latestRowByC[r.cId] = r;
-    });
-
-    const rangeStart = fromDate.getTime();
-    const rangeEnd   = toDate.getTime() + 24 * 60 * 60 * 1000; // end of the "To" day, inclusive
     const requestRows = [];
-    Object.entries(latestRowByC).forEach(([cId, r]) => {
-      const d = detailMap[cId] || {};
-      const info = analyzeRangeRemarks(d.remarksRaw, rangeStart, rangeEnd);
-      if (!info.hadRequest) return;
-      requestRows.push({ ...r, cons: d.cons || {}, ...info });
+    Object.entries(rowsByConsignment).forEach(([cId, rows]) => {
+      const workerRows = rows.filter(r => r.source === 'WORKER');
+      if (!workerRows.length) return; // no validation request — skip
+
+      const latest       = rows.reduce((a, b) => latestMs(a) >= latestMs(b) ? a : b);
+      const stillPending = latest.source === 'WORKER';
+      const latestWorker = workerRows.reduce((a, b) => latestMs(a) >= latestMs(b) ? a : b);
+      const ccRows       = rows.filter(r => r.source === 'CC');
+      const latestCc     = ccRows.length
+        ? ccRows.reduce((a, b) => latestMs(a) >= latestMs(b) ? a : b)
+        : null;
+
+      requestRows.push({
+        cId,
+        branchId:        latest.branch_id,
+        agentSystemId:   latest.assigned_to_system_id,
+        runDate:         new Date(latestWorker.created_at), // date of the request
+        stillPending,
+        requestNote:     latestWorker.note || latestWorker.remarks || '',
+        requestAt:       latestMs(latestWorker),
+        resolutionNote:  stillPending ? '' : (latestCc?.note || latestCc?.remarks || ''),
+        resolutionStatus:stillPending ? '' : (latestCc?.remarks_status || ''),
+        resolutionAt:    stillPending ? 0  : (latestCc ? latestMs(latestCc) : 0),
+        cons:            {} // filled in Step 3
+      });
     });
 
-    // Most actionable first: still-pending ones on top, most recently
-    // requested within each group first.
+    if (!requestRows.length) {
+      setStatus('এই date range/branch-এ কোনো validation request পাওয়া যায়নি');
+      return;
+    }
+
+    // Step 3 — fetch Firebase consignment details (name, address, COD) for
+    // each unique consignment. customer_phone is already in Supabase rows but
+    // recipientName / recipientAddress / collectableAmount are not — still
+    // needed from Firebase for the CSV export and on-screen display.
+    setStatus(`⏳ ${requestRows.length}টা consignment-এর detail আনা হচ্ছে…`);
+    const uniqueCids = [...new Set(requestRows.map(r => r.cId))];
+    const consMap    = {};
+    await Promise.all(uniqueCids.map(async cId => {
+      const res  = await fetch(`${FIREBASE_URL}/courier/consignments/${cId}.json${authQuery}`);
+      consMap[cId] = (await res.json()) || {};
+    }));
+    requestRows.forEach(r => { r.cons = consMap[r.cId] || {}; });
+
+    // Most actionable first: pending on top, most recently requested within each group.
     requestRows.sort((a, b) => {
       if (a.stillPending !== b.stillPending) return a.stillPending ? -1 : 1;
       return (b.requestAt || 0) - (a.requestAt || 0);
@@ -2845,10 +2835,6 @@ async function generateHoldValidationReport() {
     hvReportRows = requestRows;
     renderHvReport();
 
-    if (!requestRows.length) {
-      setStatus('এই date range/branch-এ কোনো validation request পাওয়া যায়নি');
-      return;
-    }
     const pendingCount = requestRows.filter(r => r.stillPending).length;
     setStatus(`✓ Total Request ${requestRows.length} · Validated ${requestRows.length - pendingCount} · Pending ${pendingCount}`);
     downloadBtn?.classList.add('visible');
