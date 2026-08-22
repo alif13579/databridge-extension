@@ -5,6 +5,6 @@ const CONFIG = {
   // TODO (Sonia): fill in — project URL (https://<ref>.supabase.co) + anon/public key
   // (Project Settings → API). Used by Hold Validation Export; see fetchAllSupabaseRows()
   // in popup.js. Do NOT put the service_role key here — this runs client-side.
-  SUPABASE_URL: "",
-  SUPABASE_ANON_KEY: ""
+  SUPABASE_URL: "https://jlmvpozfacpxphftzfvw.supabase.co",
+  SUPABASE_ANON_KEY: "sb_publishable_YINDbO2gdT54E-usP3zLLg_JBN-fuaV"
 };
