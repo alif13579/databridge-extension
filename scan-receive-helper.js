@@ -602,6 +602,32 @@
   let minimized = false;
   let selectedFieldEl = null; // manually-picked auto-fill target (see detectPageInputs/selectField)
 
+  /** Reads the saved panel position for the current run URL from localStorage
+   *  and applies it to the panel element, clamping to the visible viewport so
+   *  the panel can't end up off-screen if the window was resized since last use.
+   *  Falls back to the CSS default (top:0 / right:375px) when nothing is saved. */
+  function applyPanelPosition(panelEl) {
+    try {
+      const raw = localStorage.getItem(`db-panel-pos-${getRunId()}`);
+      if (!raw) return;
+      const { left, top } = JSON.parse(raw);
+      if (!left || !top) return;
+
+      // Clamp so the panel stays inside the viewport
+      const panelW = panelEl.offsetWidth  || 340;
+      const panelH = panelEl.offsetHeight || 200;
+      const maxLeft = Math.max(0, window.innerWidth  - panelW);
+      const maxTop  = Math.max(0, window.innerHeight - panelH);
+
+      const clampedLeft = Math.min(Math.max(0, parseInt(left, 10)),  maxLeft);
+      const clampedTop  = Math.min(Math.max(0, parseInt(top,  10)),  maxTop);
+
+      panelEl.style.left  = clampedLeft + 'px';
+      panelEl.style.top   = clampedTop  + 'px';
+      panelEl.style.right = 'auto'; // override the CSS default right:375px
+    } catch (_) {}
+  }
+
   function createPanel() {
     panel = document.createElement('div');
     panel.id = 'db-panel';
@@ -640,6 +666,7 @@
       <div class="db-resize-handle" title="Drag to resize"></div>
     `;
     document.body.appendChild(panel);
+    applyPanelPosition(panel);
 
     document.getElementById('db-min').addEventListener('click', () => {
       minimized = !minimized;
@@ -760,7 +787,10 @@
       }
     });
 
-    // Draggable
+    // Draggable — position is saved to localStorage per run URL on mouseup
+    // so the panel remembers where it was left the next time the same run
+    // is opened. Key: db-panel-pos-{runId}. Restored in applyPanelPosition()
+    // (called just above). Viewport-clamped on restore to handle window resizes.
     const hdr = panel.querySelector('.db-hdr');
     let ox, oy, ol, ot;
     hdr.addEventListener('mousedown', e => {
@@ -771,7 +801,16 @@
         panel.style.right = 'auto';
       };
       document.addEventListener('mousemove', move);
-      document.addEventListener('mouseup', () => document.removeEventListener('mousemove', move), { once: true });
+      document.addEventListener('mouseup', () => {
+        document.removeEventListener('mousemove', move);
+        // Save final position for this run URL
+        try {
+          localStorage.setItem(
+            `db-panel-pos-${getRunId()}`,
+            JSON.stringify({ left: panel.style.left, top: panel.style.top })
+          );
+        } catch (_) {}
+      }, { once: true });
     });
 
     // Resizable — bottom-right grip drag adjusts width + height together.
