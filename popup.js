@@ -2260,6 +2260,24 @@ function setupDashboardTab() {
 
   const downloadHvBtn = document.getElementById('download-hv-btn');
   if (downloadHvBtn) downloadHvBtn.addEventListener('click', () => downloadHvReport());
+
+  document.querySelectorAll('.dash-hv-mode-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      if (btn.dataset.mode === hvMode) return;
+      hvMode = btn.dataset.mode;
+      document.querySelectorAll('.dash-hv-mode-btn').forEach(b => b.classList.toggle('active', b === btn));
+      // A report already on screen was built for the OLD mode — clear it so
+      // Summary/Details never look "active" while showing the other mode's
+      // data. Forces a re-click of "Report দেখুন", which keeps hvReportMode
+      // (used by render/download) always in sync with what's displayed.
+      hvReportRows = [];
+      const reportEl = document.getElementById('dash-hv-report');
+      if (reportEl) reportEl.innerHTML = '';
+      const statusEl = document.getElementById('dash-hv-status');
+      if (statusEl) statusEl.textContent = '';
+      document.getElementById('download-hv-btn')?.classList.remove('visible');
+    });
+  });
 }
 
 function renderDashboard() {
@@ -2612,6 +2630,35 @@ async function fetchSupabaseReportRows(branchId, startIso, endIso, idToken) {
 // ══════════════════════════════════════════════════════════════════════
 
 let hvReportRows = []; // rows currently shown in the report — cached here so Download doesn't refetch
+let hvMode       = 'summary'; // 'summary' | 'details' — live toggle state (see setupDashboardTab)
+let hvReportMode = 'summary'; // mode hvReportRows was actually BUILT for — set once per generate,
+                               // read by renderHvReport()/downloadHvReport() so a stale toggle click
+                               // can never make Download not match what's on screen
+
+/** BD-local calendar-date key (YYYY-MM-DD) from a Supabase created_at ISO
+ *  string — the unit Summary groups by. Relies on the same assumption
+ *  generateHoldValidationReport() already documents for its own from/to
+ *  inputs: this extension runs on a device physically in Bangladesh, so
+ *  Date's LOCAL getters are already Bangladesh-local — no manual UTC+6
+ *  offset needed. */
+function localDateKey(isoString) {
+  const d = new Date(isoString);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+function dateKeyToDdMmYyyy(dateKey) {
+  const [y, m, d] = dateKey.split('-');
+  return `${d}-${m}-${y}`;
+}
+
+function formatHhMm(isoString) {
+  const d = new Date(isoString);
+  let h = d.getHours();
+  const m = String(d.getMinutes()).padStart(2, '0');
+  const ampm = h >= 12 ? 'PM' : 'AM';
+  h = h % 12 || 12;
+  return `${h}:${m} ${ampm}`;
+}
 
 /** Mirrors StatusMetaCache.isVerifyRequestStatus() on the app side exactly:
  *  a remark's status field, trimmed and compared case-insensitively against
@@ -2747,7 +2794,6 @@ async function generateHoldValidationReport() {
   // for Bangladesh (UTC+6) devices; endIso adds one full day to include the "To" date.
   const startIso = fromDate.toISOString();
   const endIso   = new Date(toDate.getTime() + 24 * 60 * 60 * 1000).toISOString();
-  const authQuery = `?auth=${idToken}`;
 
   try {
     // Step 1 — fetch all validation rows from Supabase per branch (parallel,
@@ -2766,77 +2812,100 @@ async function generateHoldValidationReport() {
       return;
     }
 
-    // Step 2 — group by consignment, keep only those with at least one WORKER
-    // row (= validation request), then decide pending vs validated:
-    //   • latest overall row is WORKER  → still pending
-    //   • latest overall row is CC      → validated (CC responded last)
-    // Same "latest entry decides" rule as analyzeRangeRemarks() / the app.
-    const rowsByConsignment = {};
+    // Step 2 — group by (local calendar date, consignment). A group only
+    // counts as a hold-validation event if it has at least one WORKER row
+    // (= an actual validation request that day) — same "must have a
+    // request" rule the old whole-range grouping used, just scoped down to
+    // a single day instead of the whole range, so both Summary and Details
+    // stay in lockstep (a date+consignment hidden from one is hidden from
+    // the other too). No Firebase fetch needed here — branch, consignment
+    // and every remark field the export uses already live on the Supabase
+    // row itself.
+    const groups = {};
     allRows.forEach(row => {
-      const cId = row.consignment;
-      if (!rowsByConsignment[cId]) rowsByConsignment[cId] = [];
-      rowsByConsignment[cId].push(row);
+      const dateKey = localDateKey(row.created_at);
+      const key = `${dateKey}__${row.consignment}`;
+      if (!groups[key]) groups[key] = { dateKey, cId: row.consignment, branchId: row.branch_id, rows: [] };
+      groups[key].rows.push(row);
     });
 
-    const latestMs = row => new Date(row.created_at).getTime();
+    const validGroups = Object.values(groups).filter(g => g.rows.some(r => r.source === 'WORKER'));
 
-    const requestRows = [];
-    Object.entries(rowsByConsignment).forEach(([cId, rows]) => {
-      const workerRows = rows.filter(r => r.source === 'WORKER');
-      if (!workerRows.length) return; // no validation request — skip
-
-      const latest       = rows.reduce((a, b) => latestMs(a) >= latestMs(b) ? a : b);
-      const stillPending = latest.source === 'WORKER';
-      const latestWorker = workerRows.reduce((a, b) => latestMs(a) >= latestMs(b) ? a : b);
-      const ccRows       = rows.filter(r => r.source === 'CC');
-      const latestCc     = ccRows.length
-        ? ccRows.reduce((a, b) => latestMs(a) >= latestMs(b) ? a : b)
-        : null;
-
-      requestRows.push({
-        cId,
-        branchId:        latest.branch_id,
-        agentSystemId:   latest.assigned_to_system_id,
-        runDate:         new Date(latestWorker.created_at), // date of the request
-        stillPending,
-        requestNote:     latestWorker.note || latestWorker.remarks || '',
-        requestAt:       latestMs(latestWorker),
-        resolutionNote:  stillPending ? '' : (latestCc?.note || latestCc?.remarks || ''),
-        resolutionStatus:stillPending ? '' : (latestCc?.remarks_status || ''),
-        resolutionAt:    stillPending ? 0  : (latestCc ? latestMs(latestCc) : 0),
-        cons:            {} // filled in Step 3
-      });
-    });
-
-    if (!requestRows.length) {
+    if (!validGroups.length) {
       setStatus('এই date range/branch-এ কোনো validation request পাওয়া যায়নি');
       return;
     }
 
-    // Step 3 — fetch Firebase consignment details (name, address, COD) for
-    // each unique consignment. customer_phone is already in Supabase rows but
-    // recipientName / recipientAddress / collectableAmount are not — still
-    // needed from Firebase for the CSV export and on-screen display.
-    setStatus(`⏳ ${requestRows.length}টা consignment-এর detail আনা হচ্ছে…`);
-    const uniqueCids = [...new Set(requestRows.map(r => r.cId))];
-    const consMap    = {};
-    await Promise.all(uniqueCids.map(async cId => {
-      const res  = await fetch(`${FIREBASE_URL}/courier/consignments/${cId}.json${authQuery}`);
-      consMap[cId] = (await res.json()) || {};
-    }));
-    requestRows.forEach(r => { r.cons = consMap[r.cId] || {}; });
+    const latestMs   = row => new Date(row.created_at).getTime();
+    const earliestOf = rows => rows.reduce((e, r) => (!e || latestMs(r) < latestMs(e)) ? r : e, null);
+    const latestOf    = rows => rows.reduce((l, r) => (!l || latestMs(r) >= latestMs(l)) ? r : l, null);
 
-    // Most actionable first: pending on top, most recently requested within each group.
-    requestRows.sort((a, b) => {
-      if (a.stillPending !== b.stillPending) return a.stillPending ? -1 : 1;
-      return (b.requestAt || 0) - (a.requestAt || 0);
-    });
+    if (hvMode === 'summary') {
+      // One row per (date, consignment): first WORKER remark that day +
+      // last CC remark that day (blank if CC hasn't responded yet — still
+      // shown, per how this should behave). "Pending" if the truly latest
+      // entry that day (either source) is a WORKER row — same "latest
+      // entry decides" rule analyzeRangeRemarks()/the app use, just scoped
+      // to the day instead of the whole range.
+      const summaryRows = validGroups.map(g => {
+        const workerRows  = g.rows.filter(r => r.source === 'WORKER');
+        const ccRows      = g.rows.filter(r => r.source === 'CC');
+        const firstWorker = earliestOf(workerRows);
+        const lastCc      = ccRows.length ? latestOf(ccRows) : null;
+        const stillPending = latestOf(g.rows).source === 'WORKER';
+        return {
+          dateKey:   g.dateKey,
+          dateLabel: dateKeyToDdMmYyyy(g.dateKey),
+          branchId:  g.branchId,
+          cId:       g.cId,
+          agentSystemId:     g.rows[0].assigned_to_system_id,
+          firstWorkerRemark: firstWorker.note || firstWorker.remarks || '',
+          firstWorkerStatus: firstWorker.remarks_status || '',
+          lastCcRemark:      lastCc ? (lastCc.note || lastCc.remarks || '') : '',
+          lastCcStatus:      lastCc ? (lastCc.remarks_status || '') : '',
+          stillPending,
+        };
+      });
+      summaryRows.sort((a, b) => a.dateKey === b.dateKey ? a.cId.localeCompare(b.cId) : a.dateKey.localeCompare(b.dateKey));
+      hvReportRows = summaryRows;
+    } else {
+      // Details: every raw remark row, unconsolidated — the breakdown
+      // Summary's consolidated rows are built from. Same date+consignment
+      // grouping/filter as Summary so toggling between the two always
+      // describes the same underlying set of events.
+      const detailRows = [];
+      validGroups.forEach(g => {
+        g.rows.slice().sort((a, b) => latestMs(a) - latestMs(b)).forEach(r => {
+          detailRows.push({
+            dateKey:   g.dateKey,
+            dateLabel: dateKeyToDdMmYyyy(g.dateKey),
+            timeLabel: formatHhMm(r.created_at),
+            branchId:  g.branchId,
+            cId:       g.cId,
+            agentSystemId: r.assigned_to_system_id,
+            source:  r.source,
+            remark:  r.note || r.remarks || '',
+            status:  r.remarks_status || '',
+          });
+        });
+      });
+      detailRows.sort((a, b) => {
+        if (a.dateKey !== b.dateKey) return a.dateKey.localeCompare(b.dateKey);
+        if (a.cId !== b.cId) return a.cId.localeCompare(b.cId);
+        return a.timeLabel.localeCompare(b.timeLabel);
+      });
+      hvReportRows = detailRows;
+    }
 
-    hvReportRows = requestRows;
+    hvReportMode = hvMode;
     renderHvReport();
 
-    const pendingCount = requestRows.filter(r => r.stillPending).length;
-    setStatus(`✓ Total Request ${requestRows.length} · Validated ${requestRows.length - pendingCount} · Pending ${pendingCount}`);
+    if (hvReportMode === 'summary') {
+      const pendingCount = hvReportRows.filter(r => r.stillPending).length;
+      setStatus(`✓ Total ${hvReportRows.length} · Validated ${hvReportRows.length - pendingCount} · Pending ${pendingCount}`);
+    } else {
+      setStatus(`✓ ${hvReportRows.length}টা remark পাওয়া গেছে`);
+    }
     downloadBtn?.classList.add('visible');
   } catch (e) {
     console.error('[DB] generateHoldValidationReport failed:', e);
@@ -2846,22 +2915,33 @@ async function generateHoldValidationReport() {
 
 /** Draws the on-screen report from hvReportRows. Called once generation
  *  finishes — never re-fetches, so Download reusing hvReportRows always
- *  matches exactly what's on screen. Shows both pending and validated
- *  parcels together, most-actionable (pending) first — see the sort in
- *  generateHoldValidationReport() — each tagged with a badge. */
+ *  matches exactly what's on screen. Branches on hvReportMode (the mode
+ *  the CURRENT hvReportRows was built for), not the live hvMode toggle —
+ *  see the toggle click handler in setupDashboardTab() for why those two
+ *  can never disagree while a report is showing. */
 function renderHvReport() {
   const reportEl = document.getElementById('dash-hv-report');
   if (!reportEl) return;
   if (!hvReportRows.length) { reportEl.innerHTML = ''; return; }
 
+  if (hvReportMode === 'summary') renderHvReportSummary(reportEl);
+  else renderHvReportDetails(reportEl);
+}
+
+/** One card per (date, consignment) — first Worker remark, last CC remark
+ *  (blank/no card shown for that half if CC hasn't responded yet), tagged
+ *  Pending/Validated. Most-actionable (pending) first, then by date. */
+function renderHvReportSummary(reportEl) {
   const totalRequest   = hvReportRows.length;
-  const totalPending   = hvReportRows.filter(r => r.stillPending).length;
+  const totalPending    = hvReportRows.filter(r => r.stillPending).length;
   const totalValidated = totalRequest - totalPending;
 
-  const rowsHtml = hvReportRows.map(r => {
-    const cons = r.cons || {};
-    const dd = String(r.runDate.getDate()).padStart(2, '0');
-    const mm = String(r.runDate.getMonth() + 1).padStart(2, '0');
+  const sorted = hvReportRows.slice().sort((a, b) => {
+    if (a.stillPending !== b.stillPending) return a.stillPending ? -1 : 1;
+    return b.dateKey.localeCompare(a.dateKey);
+  });
+
+  const rowsHtml = sorted.map(r => {
     const badge = r.stillPending
       ? '<span class="dash-hv-badge dash-hv-badge-pending">⏳ Pending</span>'
       : '<span class="dash-hv-badge dash-hv-badge-validated">✓ Validated</span>';
@@ -2869,12 +2949,11 @@ function renderHvReport() {
       <div class="dash-hv-row ${r.stillPending ? 'dash-hv-row-pending' : 'dash-hv-row-validated'}">
         <div class="dash-hv-row-top">
           <span class="dash-hv-row-id">${escapeHtml(r.cId)}</span>
-          <span>${dd}-${mm}-${r.runDate.getFullYear()}</span>
+          <span>${r.dateLabel}</span>
         </div>
-        <div>${escapeHtml(cons.recipientName || '—')} · ${escapeHtml(cons.recipientPhone || '—')}</div>
-        <div class="dash-hv-row-meta">${escapeHtml(ccBranchNames[r.branchId] || r.branchId)} · ${escapeHtml(r.agentSystemId)} · COD ${escapeHtml(String(cons.collectableAmount ?? '—'))}</div>
-        <div class="dash-hv-row-remark">🙋 ${escapeHtml(r.requestNote || '(no note)')}</div>
-        ${r.resolutionNote ? `<div class="dash-hv-row-resolution">↳ ${escapeHtml(r.resolutionNote)}</div>` : ''}
+        <div class="dash-hv-row-meta">${escapeHtml(ccBranchNames[r.branchId] || r.branchId)} · ${escapeHtml(r.agentSystemId || '—')}</div>
+        <div class="dash-hv-row-remark">🙋 ${escapeHtml(r.firstWorkerRemark || '(no note)')}${r.firstWorkerStatus ? ' — ' + escapeHtml(r.firstWorkerStatus) : ''}</div>
+        ${r.lastCcRemark ? `<div class="dash-hv-row-resolution">↳ ${escapeHtml(r.lastCcRemark)}${r.lastCcStatus ? ' — ' + escapeHtml(r.lastCcStatus) : ''}</div>` : ''}
         <div class="dash-hv-row-badge-line">${badge}</div>
       </div>`;
   }).join('');
@@ -2883,11 +2962,11 @@ function renderHvReport() {
     <div class="dash-hv-summary-grid">
       <div class="dash-hv-summary-stat">
         <div class="dash-hv-summary-val">${totalRequest}</div>
-        <div class="dash-hv-summary-label">Total Request</div>
+        <div class="dash-hv-summary-label">Total</div>
       </div>
       <div class="dash-hv-summary-stat">
         <div class="dash-hv-summary-val validated">${totalValidated}</div>
-        <div class="dash-hv-summary-label">Total Validation</div>
+        <div class="dash-hv-summary-label">Validated</div>
       </div>
       <div class="dash-hv-summary-stat">
         <div class="dash-hv-summary-val pending">${totalPending}</div>
@@ -2896,6 +2975,30 @@ function renderHvReport() {
     </div>
     <div class="dash-hv-list">${rowsHtml}</div>
   `;
+}
+
+/** One card per raw remark, chronological within each (date, consignment) —
+ *  the unconsolidated breakdown Summary's rows are built from. Reuses the
+ *  pending/validated colour classes to mean Worker/CC instead (orange =
+ *  request, green = response) rather than adding new CSS for it. */
+function renderHvReportDetails(reportEl) {
+  const rowsHtml = hvReportRows.map(r => {
+    const isWorker = r.source === 'WORKER';
+    const badge = isWorker
+      ? '<span class="dash-hv-badge dash-hv-badge-pending">🙋 Worker</span>'
+      : '<span class="dash-hv-badge dash-hv-badge-validated">📞 CC</span>';
+    return `
+      <div class="dash-hv-row ${isWorker ? 'dash-hv-row-pending' : 'dash-hv-row-validated'}">
+        <div class="dash-hv-row-top">
+          <span class="dash-hv-row-id">${escapeHtml(r.cId)}</span>
+          <span>${r.dateLabel} · ${r.timeLabel}</span>
+        </div>
+        <div class="dash-hv-row-meta">${escapeHtml(ccBranchNames[r.branchId] || r.branchId)} · ${escapeHtml(r.agentSystemId || '—')} ${badge}</div>
+        <div class="dash-hv-row-remark">${escapeHtml(r.remark || '(no note)')}${r.status ? ' — ' + escapeHtml(r.status) : ''}</div>
+      </div>`;
+  }).join('');
+
+  reportEl.innerHTML = `<div class="dash-hv-list">${rowsHtml}</div>`;
 }
 
 /** Lowercases and dashes a branch name for use inside a filename. */
@@ -2917,7 +3020,7 @@ function buildHvFilename(fromVal, toVal, selectedIds) {
   } else {
     branchPart = `${selectedIds.length}-branches`;
   }
-  return `databridge-hold-validation_${branchPart}_${datePart}.csv`;
+  return `databridge-hold-validation-${hvReportMode}_${branchPart}_${datePart}.csv`;
 }
 
 function downloadHvReport() {
@@ -2925,27 +3028,37 @@ function downloadHvReport() {
   const fromInput = document.getElementById('dash-hv-from');
   const toInput   = document.getElementById('dash-hv-to');
 
-  const csvRows = [[
-    'Consignment ID', 'Branch', 'Agent System ID', 'Last Touched', 'Customer Name',
-    'Phone', 'Address', 'COD', 'Validation Status', 'Request Note', 'Resolution Note'
-  ]];
+  const csvRows = hvReportMode === 'summary'
+    ? [['Date', 'Branch', 'Consignment ID', 'Agent System ID',
+        'First Worker Remark', 'First Worker Remark Status',
+        'Last CC Remark', 'Last CC Remark Status', 'Validation Status']]
+    : [['Date', 'Time', 'Branch', 'Consignment ID', 'Agent System ID', 'Source', 'Remark', 'Remark Status']];
+
   hvReportRows.forEach(r => {
-    const cons = r.cons || {};
-    const dd = String(r.runDate.getDate()).padStart(2, '0');
-    const mm = String(r.runDate.getMonth() + 1).padStart(2, '0');
-    csvRows.push([
-      r.cId,
-      ccBranchNames[r.branchId] || r.branchId,
-      r.agentSystemId,
-      `${dd}-${mm}-${r.runDate.getFullYear()}`,
-      cons.recipientName    || '',
-      cons.recipientPhone   || '',
-      cons.recipientAddress || '',
-      cons.collectableAmount ?? '',
-      r.stillPending ? 'Pending' : 'Validated',
-      r.requestNote    || '',
-      r.resolutionNote || ''
-    ]);
+    if (hvReportMode === 'summary') {
+      csvRows.push([
+        r.dateLabel,
+        ccBranchNames[r.branchId] || r.branchId,
+        r.cId,
+        r.agentSystemId || '',
+        r.firstWorkerRemark || '',
+        r.firstWorkerStatus || '',
+        r.lastCcRemark || '',
+        r.lastCcStatus || '',
+        r.stillPending ? 'Pending' : 'Validated',
+      ]);
+    } else {
+      csvRows.push([
+        r.dateLabel,
+        r.timeLabel,
+        ccBranchNames[r.branchId] || r.branchId,
+        r.cId,
+        r.agentSystemId || '',
+        r.source === 'WORKER' ? 'Worker' : 'CC',
+        r.remark || '',
+        r.status || '',
+      ]);
+    }
   });
 
   downloadCsv(buildHvFilename(fromInput.value, toInput.value, getSelectedHvBranchIds()), csvRows);

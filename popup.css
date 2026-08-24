@@ -872,6 +872,20 @@ input:checked + .toggle-slider:before { transform: translateX(14px); }
 .dash-cc-status { font-size: 10px; color: #888; margin-top: 6px; text-align: center; min-height: 12px; }
 
 /* ── Hold Validation (Dashboard) ── */
+.dash-hv-mode-toggle { display: flex; gap: 6px; margin-bottom: 8px; }
+.dash-hv-mode-btn {
+  flex: 1;
+  background: #0d1b2e;
+  color: #888;
+  border: 1px solid #2d5a8e;
+  border-radius: 5px;
+  padding: 5px 6px;
+  font-size: 10px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.dash-hv-mode-btn.active { background: #00d4ff14; color: #00d4ff; border-color: #00d4ff40; }
+
 .dash-hv-branch-list {
   max-height: 90px;
   overflow-y: auto;
