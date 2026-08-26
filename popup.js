@@ -2706,6 +2706,7 @@ async function generateHoldValidationReport() {
           lastCcRemark:      lastCc ? (lastCc.remarks || '') : '',
           lastCcNote:        lastCc ? (lastCc.note || '') : '',
           lastCcStatus:      lastCc ? (lastCc.remarks_status || '') : '',
+          validatorEmployeeId: lastCc ? (lastCc.author?.employee_id || lastCc.author_system_id || '') : '',
           stillPending,
         };
       });
@@ -2799,6 +2800,7 @@ function renderHvReportSummary(reportEl) {
         ${r.firstWorkerNote ? `<div class="dash-hv-row-meta">📝 ${escapeHtml(r.firstWorkerNote)}</div>` : ''}
         ${r.lastCcRemark ? `<div class="dash-hv-row-resolution">↳ ${escapeHtml(r.lastCcRemark)}${r.lastCcStatus ? ' — ' + escapeHtml(r.lastCcStatus) : ''}</div>` : ''}
         ${r.lastCcNote ? `<div class="dash-hv-row-meta">↳ 📝 ${escapeHtml(r.lastCcNote)}</div>` : ''}
+        ${r.validatorEmployeeId ? `<div class="dash-hv-row-meta">↳ 👤 ${escapeHtml(r.validatorEmployeeId)}</div>` : ''}
         <div class="dash-hv-row-badge-line">${badge}</div>
       </div>`;
   }).join('');
@@ -2879,7 +2881,7 @@ function downloadHvReport() {
   const toInput   = document.getElementById('dash-hv-to');
 
   const csvRows = hvReportMode === 'summary'
-    ? [['Date', 'Branch', 'Consignment ID', 'Agent System ID',
+    ? [['Date', 'Branch', 'Consignment ID', 'Agent System ID', 'Validator Employee ID',
         'First Worker Remark', 'First Worker Note', 'First Worker Remark Status',
         'Last CC Remark', 'Last CC Note', 'Last CC Remark Status', 'Validation Status']]
     : [['Date', 'Time', 'Branch', 'Consignment ID', 'Agent System ID', 'Source', 'Remark', 'Note', 'Remark Status']];
@@ -2891,6 +2893,7 @@ function downloadHvReport() {
         ccBranchNames[r.branchId] || r.branchId,
         r.cId,
         r.agentSystemId || '',
+        r.validatorEmployeeId || '',
         r.firstWorkerRemark || '',
         r.firstWorkerNote || '',
         r.firstWorkerStatus || '',
