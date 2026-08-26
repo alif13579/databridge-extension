@@ -2700,9 +2700,11 @@ async function generateHoldValidationReport() {
           branchId:  g.branchId,
           cId:       g.cId,
           agentSystemId:     g.rows[0].assigned_to_system_id,
-          firstWorkerRemark: firstWorker.note || firstWorker.remarks || '',
+          firstWorkerRemark: firstWorker.remarks || '',
+          firstWorkerNote:   firstWorker.note || '',
           firstWorkerStatus: firstWorker.remarks_status || '',
-          lastCcRemark:      lastCc ? (lastCc.note || lastCc.remarks || '') : '',
+          lastCcRemark:      lastCc ? (lastCc.remarks || '') : '',
+          lastCcNote:        lastCc ? (lastCc.note || '') : '',
           lastCcStatus:      lastCc ? (lastCc.remarks_status || '') : '',
           stillPending,
         };
@@ -2725,7 +2727,8 @@ async function generateHoldValidationReport() {
             cId:       g.cId,
             agentSystemId: r.assigned_to_system_id,
             source:  r.source,
-            remark:  r.note || r.remarks || '',
+            remark:  r.remarks || '',
+            note:    r.note || '',
             status:  r.remarks_status || '',
           });
         });
@@ -2792,8 +2795,10 @@ function renderHvReportSummary(reportEl) {
           <span>${r.dateLabel}</span>
         </div>
         <div class="dash-hv-row-meta">${escapeHtml(ccBranchNames[r.branchId] || r.branchId)} · ${escapeHtml(r.agentSystemId || '—')}</div>
-        <div class="dash-hv-row-remark">🙋 ${escapeHtml(r.firstWorkerRemark || '(no note)')}${r.firstWorkerStatus ? ' — ' + escapeHtml(r.firstWorkerStatus) : ''}</div>
+        <div class="dash-hv-row-remark">🙋 ${escapeHtml(r.firstWorkerRemark || '(no remark)')}${r.firstWorkerStatus ? ' — ' + escapeHtml(r.firstWorkerStatus) : ''}</div>
+        ${r.firstWorkerNote ? `<div class="dash-hv-row-meta">📝 ${escapeHtml(r.firstWorkerNote)}</div>` : ''}
         ${r.lastCcRemark ? `<div class="dash-hv-row-resolution">↳ ${escapeHtml(r.lastCcRemark)}${r.lastCcStatus ? ' — ' + escapeHtml(r.lastCcStatus) : ''}</div>` : ''}
+        ${r.lastCcNote ? `<div class="dash-hv-row-meta">↳ 📝 ${escapeHtml(r.lastCcNote)}</div>` : ''}
         <div class="dash-hv-row-badge-line">${badge}</div>
       </div>`;
   }).join('');
@@ -2834,7 +2839,8 @@ function renderHvReportDetails(reportEl) {
           <span>${r.dateLabel} · ${r.timeLabel}</span>
         </div>
         <div class="dash-hv-row-meta">${escapeHtml(ccBranchNames[r.branchId] || r.branchId)} · ${escapeHtml(r.agentSystemId || '—')} ${badge}</div>
-        <div class="dash-hv-row-remark">${escapeHtml(r.remark || '(no note)')}${r.status ? ' — ' + escapeHtml(r.status) : ''}</div>
+        <div class="dash-hv-row-remark">${escapeHtml(r.remark || '(no remark)')}${r.status ? ' — ' + escapeHtml(r.status) : ''}</div>
+        ${r.note ? `<div class="dash-hv-row-meta">📝 ${escapeHtml(r.note)}</div>` : ''}
       </div>`;
   }).join('');
 
@@ -2874,9 +2880,9 @@ function downloadHvReport() {
 
   const csvRows = hvReportMode === 'summary'
     ? [['Date', 'Branch', 'Consignment ID', 'Agent System ID',
-        'First Worker Remark', 'First Worker Remark Status',
-        'Last CC Remark', 'Last CC Remark Status', 'Validation Status']]
-    : [['Date', 'Time', 'Branch', 'Consignment ID', 'Agent System ID', 'Source', 'Remark', 'Remark Status']];
+        'First Worker Remark', 'First Worker Note', 'First Worker Remark Status',
+        'Last CC Remark', 'Last CC Note', 'Last CC Remark Status', 'Validation Status']]
+    : [['Date', 'Time', 'Branch', 'Consignment ID', 'Agent System ID', 'Source', 'Remark', 'Note', 'Remark Status']];
 
   hvReportRows.forEach(r => {
     if (hvReportMode === 'summary') {
@@ -2886,8 +2892,10 @@ function downloadHvReport() {
         r.cId,
         r.agentSystemId || '',
         r.firstWorkerRemark || '',
+        r.firstWorkerNote || '',
         r.firstWorkerStatus || '',
         r.lastCcRemark || '',
+        r.lastCcNote || '',
         r.lastCcStatus || '',
         r.stillPending ? 'Pending' : 'Validated',
       ]);
@@ -2900,6 +2908,7 @@ function downloadHvReport() {
         r.agentSystemId || '',
         r.source === 'WORKER' ? 'Worker' : 'CC',
         r.remark || '',
+        r.note || '',
         r.status || '',
       ]);
     }
