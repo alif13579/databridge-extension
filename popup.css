@@ -947,5 +947,4 @@ input:checked + .toggle-slider:before { transform: translateX(14px); }
 .dash-hv-badge-pending   { background: #ffaa0018; color: #ffaa00; }
 .dash-hv-badge-validated { background: #00ff8818; color: #00ff88; }
 
-.dash-hv-download-btn { display: none; margin-top: 8px; }
-.dash-hv-download-btn.visible { display: block; }
+.dash-hv-download-btn { margin-top: 8px; }

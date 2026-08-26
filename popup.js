@@ -2252,9 +2252,6 @@ function setupDashboardTab() {
   const exportScansBtn = document.getElementById('export-scans-btn');
   if (exportScansBtn) exportScansBtn.addEventListener('click', () => exportScansToCsv());
 
-  const exportCcBtn = document.getElementById('export-cc-btn');
-  if (exportCcBtn) exportCcBtn.addEventListener('click', () => exportCallCenterData());
-
   const generateHvBtn = document.getElementById('generate-hv-btn');
   if (generateHvBtn) generateHvBtn.addEventListener('click', () => generateHoldValidationReport());
 
@@ -2275,7 +2272,6 @@ function setupDashboardTab() {
       if (reportEl) reportEl.innerHTML = '';
       const statusEl = document.getElementById('dash-hv-status');
       if (statusEl) statusEl.textContent = '';
-      document.getElementById('download-hv-btn')?.classList.remove('visible');
     });
   });
 }
@@ -2368,10 +2364,7 @@ const ccBranchNames = {}; // branchId -> resolved display name
  *  actually calls it). Called once, the first time the Dashboard tab is opened
  *  while Google-linked. */
 async function loadCcBranches() {
-  const branchSelect = document.getElementById('dash-cc-branch');
-  if (!branchSelect) return;
   if (!currentGoogleUid) {
-    branchSelect.innerHTML = '<option value="">Google দিয়ে লগইন করুন প্রথমে</option>';
     renderHvBranchCheckboxes();
     return;
   }
@@ -2384,7 +2377,6 @@ async function loadCcBranches() {
     ccBranchIds = Array.isArray(data) ? data.filter(Boolean) : Object.values(data || {});
 
     if (!ccBranchIds.length) {
-      branchSelect.innerHTML = '<option value="">কোনো branch assigned নেই</option>';
       renderHvBranchCheckboxes();
       return;
     }
@@ -2396,162 +2388,13 @@ async function loadCcBranches() {
       } catch { ccBranchNames[id] = id; }
     }));
 
-    branchSelect.innerHTML = '<option value="">All My Branches</option>' +
-      ccBranchIds.map(id => `<option value="${escapeHtml(id)}">${escapeHtml(ccBranchNames[id])}</option>`).join('');
     renderHvBranchCheckboxes();
   } catch (e) {
     console.warn('[DB] loadCcBranches failed:', e);
-    branchSelect.innerHTML = '<option value="">⚠ Branch list load failed</option>';
-    renderHvBranchCheckboxes();
+    const listEl = document.getElementById('dash-hv-branch-list');
+    if (listEl) listEl.innerHTML = '<div class="dash-hv-branch-empty">⚠ Branch list load failed</div>';
   }
 }
-
-/** Parses the yyyyMMdd date embedded in a run key (e.g. "20260722" from
- *  "run_20260722_EMP001") into a real Date at local midnight. Returns null
- *  if the run id doesn't match the expected shape (defensive — a malformed
- *  key shouldn't crash the export). */
-function parseRunKeyDate(yyyyMMdd) {
-  const m = yyyyMMdd.match(/^(\d{4})(\d{2})(\d{2})$/);
-  if (!m) return null;
-  const yyyy = parseInt(m[1], 10), MM = parseInt(m[2], 10), dd = parseInt(m[3], 10);
-  return new Date(yyyy, MM - 1, dd);
-}
-
-async function exportCallCenterData() {
-  const statusEl  = document.getElementById('dash-cc-status');
-  const branchSel = document.getElementById('dash-cc-branch');
-  const fromInput = document.getElementById('dash-cc-from');
-  const toInput   = document.getElementById('dash-cc-to');
-  const setStatus = msg => { if (statusEl) statusEl.textContent = msg; };
-
-  if (!fromInput.value || !toInput.value) {
-    setStatus('⚠ From এবং To — দুটো date-ই select করুন');
-    return;
-  }
-  const fromDate = new Date(fromInput.value + 'T00:00:00');
-  const toDate   = new Date(toInput.value   + 'T00:00:00');
-  if (fromDate > toDate) {
-    setStatus('⚠ From date, To date-এর পরে হতে পারবে না');
-    return;
-  }
-
-  const selectedBranch  = branchSel.value;
-  const branchesToQuery = selectedBranch ? [selectedBranch] : ccBranchIds;
-  if (!branchesToQuery.length) {
-    setStatus('⚠ কোনো branch পাওয়া যায়নি — Connect tab-এ Google login check করো');
-    return;
-  }
-
-  const idToken   = await getValidFirebaseIdToken().catch(() => null);
-  const authQuery = idToken ? `?auth=${idToken}` : '';
-
-  try {
-    // Step 1 — one full runs_by_branchId fetch per branch (parallel), then
-    // filter run keys by date range CLIENT-SIDE. Run keys now use a yyyyMMdd
-    // STRING, which does sort chronologically, so a server-side range query
-    // per branch would also work — kept as a client-side filter here for
-    // simplicity (one fetch per branch either way, avoids adding per-run-type
-    // range queries on top of the per-branch fetch).
-    setStatus('⏳ Branch data আনা হচ্ছে…');
-    const branchResults = await Promise.all(branchesToQuery.map(async branchId => {
-      const res  = await fetch(`${FIREBASE_URL}/courier/runs_by_branchId/${branchId}.json${authQuery}`);
-      return { branchId, data: await res.json() };
-    }));
-
-    const runTuples = [];
-    branchResults.forEach(({ branchId, data }) => {
-      if (!data || typeof data !== 'object') return;
-      Object.entries(data).forEach(([runType, runsOfType]) => {
-        if (!runsOfType || typeof runsOfType !== 'object') return;
-        Object.keys(runsOfType).forEach(runId => {
-          const m = runId.match(/^run_(\d{8})_(.+)$/);
-          if (!m) return;
-          const runDate = parseRunKeyDate(m[1]);
-          if (!runDate || runDate < fromDate || runDate > toDate) return;
-          runTuples.push({ branchId, runType, runId, runDate, agentSystemId: m[2] });
-        });
-      });
-    });
-
-    if (!runTuples.length) {
-      setStatus('এই date range-এ কোনো run পাওয়া যায়নি');
-      return;
-    }
-
-    // Step 2 — each surviving run's consignments map, in parallel
-    setStatus(`⏳ ${runTuples.length}টা run থেকে consignment বের করা হচ্ছে…`);
-    const runNodeResults = await Promise.all(runTuples.map(async t => {
-      const res  = await fetch(`${FIREBASE_URL}/courier/run_routes/${t.runType}/${t.runId}.json${authQuery}`);
-      const data = await res.json();
-      return { ...t, consignments: (data && data.consignments) || {} };
-    }));
-
-    // One row per (runType, runId, consignmentId) — intentionally NOT
-    // deduped by consignment id alone, since the same id can legitimately
-    // appear in separate runs across different days in the range (a
-    // re-attempt), and each such occurrence is its own row.
-    const rows = [];
-    runNodeResults.forEach(t => {
-      Object.entries(t.consignments).forEach(([cId, status]) => {
-        rows.push({ ...t, cId, runStatus: status });
-      });
-    });
-
-    if (!rows.length) {
-      setStatus('Run পাওয়া গেছে কিন্তু কোনো consignment নেই');
-      return;
-    }
-
-    // Step 3 — each UNIQUE consignment's details + latest remark, in parallel
-    setStatus(`⏳ ${rows.length}টা consignment-এর detail আনা হচ্ছে…`);
-    const uniqueCids = [...new Set(rows.map(r => r.cId))];
-    const detailMap  = {};
-    await Promise.all(uniqueCids.map(async cId => {
-      const [cons, remarks] = await Promise.all([
-        fetch(`${FIREBASE_URL}/courier/consignments/${cId}.json${authQuery}`).then(r => r.json()),
-        fetch(`${FIREBASE_URL}/courier/remarks_by_consignment/${cId}.json${authQuery}`).then(r => r.json()),
-      ]);
-      let latestRemark = null;
-      if (remarks && typeof remarks === 'object') {
-        latestRemark = Object.values(remarks).reduce((latest, r) =>
-          (!latest || (r.createdAt || 0) > (latest.createdAt || 0)) ? r : latest, null);
-      }
-      detailMap[cId] = { cons: cons || {}, remark: latestRemark };
-    }));
-
-    // Step 4 — assemble + download
-    const csvRows = [[
-      'Date', 'Branch', 'Agent System ID', 'Consignment ID', 'Customer Name',
-      'Phone', 'Address', 'COD', 'Status', 'Latest Remark', 'Remark Status'
-    ]];
-    rows.forEach(r => {
-      const d    = detailMap[r.cId] || {};
-      const cons = d.cons || {};
-      const dd   = String(r.runDate.getDate()).padStart(2, '0');
-      const mm   = String(r.runDate.getMonth() + 1).padStart(2, '0');
-      csvRows.push([
-        `${dd}-${mm}-${r.runDate.getFullYear()}`,
-        ccBranchNames[r.branchId] || r.branchId,
-        r.agentSystemId,
-        r.cId,
-        cons.recipientName    || '',
-        cons.recipientPhone   || '',
-        cons.recipientAddress || '',
-        cons.collectableAmount ?? '',
-        r.runStatus || cons.status || '',
-        d.remark?.remarks || '',
-        d.remark?.status  || ''
-      ]);
-    });
-
-    downloadCsv(`databridge-callcenter-${fromInput.value}_to_${toInput.value}.csv`, csvRows);
-    setStatus(`✓ ${rows.length}টা row export হয়েছে`);
-  } catch (e) {
-    console.error('[DB] exportCallCenterData failed:', e);
-    setStatus('⚠ Export failed — console (F12) দেখো');
-  }
-}
-
 
 // ══════════════════════════════════════════════════════════════════════
 // 🗄️ SUPABASE — validation data lives here (Edge Function report action).
@@ -2759,10 +2602,8 @@ async function generateHoldValidationReport() {
   const fromInput   = document.getElementById('dash-hv-from');
   const toInput     = document.getElementById('dash-hv-to');
   const reportEl    = document.getElementById('dash-hv-report');
-  const downloadBtn = document.getElementById('download-hv-btn');
   const setStatus   = msg => { if (statusEl) statusEl.textContent = msg; };
 
-  downloadBtn?.classList.remove('visible');
   hvReportRows = [];
   if (reportEl) reportEl.innerHTML = '';
 
@@ -2906,7 +2747,6 @@ async function generateHoldValidationReport() {
     } else {
       setStatus(`✓ ${hvReportRows.length}টা remark পাওয়া গেছে`);
     }
-    downloadBtn?.classList.add('visible');
   } catch (e) {
     console.error('[DB] generateHoldValidationReport failed:', e);
     setStatus('⚠ Report load failed — console (F12) দেখো');
@@ -3024,7 +2864,11 @@ function buildHvFilename(fromVal, toVal, selectedIds) {
 }
 
 function downloadHvReport() {
-  if (!hvReportRows.length) return;
+  if (!hvReportRows.length) {
+    const statusEl = document.getElementById('dash-hv-status');
+    if (statusEl) statusEl.textContent = '⚠ আগে "Report দেখুন"-এ ক্লিক করো';
+    return;
+  }
   const fromInput = document.getElementById('dash-hv-from');
   const toInput   = document.getElementById('dash-hv-to');
 
