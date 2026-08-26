@@ -2484,9 +2484,20 @@ let hvReportMode = 'summary'; // mode hvReportRows was actually BUILT for — se
  *  inputs: this extension runs on a device physically in Bangladesh, so
  *  Date's LOCAL getters are already Bangladesh-local — no manual UTC+6
  *  offset needed. */
+// Explicit Asia/Dhaka formatter — never the machine's own timezone. Matches
+// bangladeshTodayStartMillis() on the Android side: a remark near midnight
+// Bangladesh time must group/display on the same calendar day regardless of
+// what OS timezone the browser running this extension happens to be set to.
+const BD_DATE_PARTS = new Intl.DateTimeFormat('en-CA', {
+  timeZone: 'Asia/Dhaka', year: 'numeric', month: '2-digit', day: '2-digit',
+});
+const BD_TIME_PARTS = new Intl.DateTimeFormat('en-US', {
+  timeZone: 'Asia/Dhaka', hour: 'numeric', minute: '2-digit', hour12: true,
+});
+
 function localDateKey(isoString) {
-  const d = new Date(isoString);
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  // en-CA formats as YYYY-MM-DD directly, already the dateKey shape used everywhere else.
+  return BD_DATE_PARTS.format(new Date(isoString));
 }
 
 function dateKeyToDdMmYyyy(dateKey) {
@@ -2495,12 +2506,7 @@ function dateKeyToDdMmYyyy(dateKey) {
 }
 
 function formatHhMm(isoString) {
-  const d = new Date(isoString);
-  let h = d.getHours();
-  const m = String(d.getMinutes()).padStart(2, '0');
-  const ampm = h >= 12 ? 'PM' : 'AM';
-  h = h % 12 || 12;
-  return `${h}:${m} ${ampm}`;
+  return BD_TIME_PARTS.format(new Date(isoString)).replace(/\s?([AP]M)$/i, ' $1');
 }
 
 /** Mirrors StatusMetaCache.isVerifyRequestStatus() on the app side exactly:
