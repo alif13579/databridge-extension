@@ -106,7 +106,7 @@ function setupNavigation() {
       if (tab === 'scan') loadScanHistory();
       if (tab === 'dashboard') {
         renderDashboard();
-        if (!ccBranchIds.length) loadCcBranches(); // cached after first successful load
+        loadDashboardTabAndAutoGenerate();
       }
     });
   });
@@ -2363,6 +2363,27 @@ const ccBranchNames = {}; // branchId -> resolved display name
  *  users/{uid}/company_info path with no /profile/ segment; nothing in the app
  *  actually calls it). Called once, the first time the Dashboard tab is opened
  *  while Google-linked. */
+/** Called every time the Dashboard nav tab is opened. Defaults the Hold
+ *  Validation From/To range to TODAY (Bangladesh-local, same BD_DATE_PARTS
+ *  formatter used for the report's own date display — never the machine's
+ *  own timezone) and auto-runs the Summary report, so the tab always opens
+ *  showing today's data with zero clicks. Branch checkboxes default to
+ *  "checked" once rendered (see renderHvBranchCheckboxes), so nothing
+ *  extra is needed there. Waits for loadCcBranches() on first open (branch
+ *  checkboxes must exist before getSelectedHvBranchIds() finds anything);
+ *  on later opens branches are already cached and this runs immediately. */
+async function loadDashboardTabAndAutoGenerate() {
+  if (!ccBranchIds.length) await loadCcBranches(); // cached after first successful load
+
+  const fromInput = document.getElementById('dash-hv-from');
+  const toInput    = document.getElementById('dash-hv-to');
+  const todayBd = BD_DATE_PARTS.format(new Date());
+  if (fromInput) fromInput.value = todayBd;
+  if (toInput)   toInput.value   = todayBd;
+
+  if (currentGoogleUid && ccBranchIds.length) generateHoldValidationReport();
+}
+
 async function loadCcBranches() {
   if (!currentGoogleUid) {
     renderHvBranchCheckboxes();
