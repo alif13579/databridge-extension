@@ -2505,6 +2505,15 @@ function dateKeyToDdMmYyyy(dateKey) {
   return `${d}-${m}-${y}`;
 }
 
+/** CSV-only: month/day/year with slashes. Spreadsheet apps (Excel/Sheets) auto-detect
+ *  this shape as a real date on paste and let it sort/filter as one; the dash-separated
+ *  dd-mm-yyyy used for the on-screen dateLabel is read fine by a person but often lands
+ *  as plain text once pasted into a sheet instead of becoming a date value. */
+function dateKeyToMmDdYyyy(dateKey) {
+  const [y, m, d] = dateKey.split('-');
+  return `${m}/${d}/${y}`;
+}
+
 function formatHhMm(isoString) {
   return BD_TIME_PARTS.format(new Date(isoString)).replace(/\s?([AP]M)$/i, ' $1');
 }
@@ -2707,7 +2716,6 @@ async function generateHoldValidationReport() {
           cId:       g.cId,
           agentSystemId:     g.rows[0].assigned_to_system_id,
           firstWorkerRemark: firstWorker.remarks || '',
-          firstWorkerNote:   firstWorker.note || '',
           firstWorkerStatus: firstWorker.remarks_status || '',
           lastCcRemark:      lastCc ? (lastCc.remarks || '') : '',
           lastCcNote:        lastCc ? (lastCc.note || '') : '',
@@ -2803,7 +2811,6 @@ function renderHvReportSummary(reportEl) {
         </div>
         <div class="dash-hv-row-meta">${escapeHtml(ccBranchNames[r.branchId] || r.branchId)} · ${escapeHtml(r.agentSystemId || '—')}</div>
         <div class="dash-hv-row-remark">🙋 ${escapeHtml(r.firstWorkerRemark || '(no remark)')}${r.firstWorkerStatus ? ' — ' + escapeHtml(r.firstWorkerStatus) : ''}</div>
-        ${r.firstWorkerNote ? `<div class="dash-hv-row-meta">📝 ${escapeHtml(r.firstWorkerNote)}</div>` : ''}
         ${r.lastCcRemark ? `<div class="dash-hv-row-resolution">↳ ${escapeHtml(r.lastCcRemark)}${r.lastCcStatus ? ' — ' + escapeHtml(r.lastCcStatus) : ''}</div>` : ''}
         ${r.lastCcNote ? `<div class="dash-hv-row-meta">↳ 📝 ${escapeHtml(r.lastCcNote)}</div>` : ''}
         ${r.validatorEmployeeId ? `<div class="dash-hv-row-meta">↳ 👤 ${escapeHtml(r.validatorEmployeeId)}</div>` : ''}
@@ -2888,20 +2895,19 @@ function downloadHvReport() {
 
   const csvRows = hvReportMode === 'summary'
     ? [['Date', 'Branch', 'Consignment ID', 'Agent System ID', 'Validator Employee ID',
-        'First Worker Remark', 'First Worker Note', 'First Worker Remark Status',
+        'First Worker Remark', 'First Worker Remark Status',
         'Last CC Remark', 'Last CC Note', 'Last CC Remark Status', 'Validation Status']]
     : [['Date', 'Time', 'Branch', 'Consignment ID', 'Agent System ID', 'Source', 'Remark', 'Note', 'Remark Status']];
 
   hvReportRows.forEach(r => {
     if (hvReportMode === 'summary') {
       csvRows.push([
-        r.dateLabel,
+        dateKeyToMmDdYyyy(r.dateKey),
         ccBranchNames[r.branchId] || r.branchId,
         r.cId,
         r.agentSystemId || '',
         r.validatorEmployeeId || '',
         r.firstWorkerRemark || '',
-        r.firstWorkerNote || '',
         r.firstWorkerStatus || '',
         r.lastCcRemark || '',
         r.lastCcNote || '',
@@ -2910,7 +2916,7 @@ function downloadHvReport() {
       ]);
     } else {
       csvRows.push([
-        r.dateLabel,
+        dateKeyToMmDdYyyy(r.dateKey),
         r.timeLabel,
         ccBranchNames[r.branchId] || r.branchId,
         r.cId,
