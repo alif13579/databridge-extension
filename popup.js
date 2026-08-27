@@ -1697,39 +1697,6 @@ function safeFirebaseKey(barcode) {
   return String(barcode).replace(/[.#$[\]/+\s]/g, '_');
 }
 
-// ══════════════════════════════
-// 📞 Consignment phone lookup — lazy + cached, same pattern as fetchProfileName()
-// above. courier/consignments/{barcode}/recipientPhone is the same field the
-// Android app and its remark-validations Edge Function already read for a parcel's
-// customer phone number.
-const consignmentPhoneCache = {};
-
-async function fetchConsignmentPhone(barcode) {
-  if (!barcode) return null;
-  if (barcode in consignmentPhoneCache && !(consignmentPhoneCache[barcode] instanceof Promise)) {
-    return consignmentPhoneCache[barcode];
-  }
-  if (consignmentPhoneCache[barcode] instanceof Promise) return consignmentPhoneCache[barcode];
-
-  const promise = (async () => {
-    try {
-      const idToken = await getValidFirebaseIdToken().catch(() => null);
-      const authParam = idToken ? `?auth=${idToken}` : '';
-      const res = await fetch(`${FIREBASE_URL}/courier/consignments/${encodeURIComponent(barcode)}/recipientPhone.json${authParam}`);
-      if (!res.ok) return null;
-      const phone = await res.json();
-      return (typeof phone === 'string' && phone.trim()) ? phone.trim() : null;
-    } catch (e) {
-      console.warn('[Scan] consignment phone fetch failed:', e);
-      return null;
-    }
-  })();
-
-  consignmentPhoneCache[barcode] = promise;
-  const resolved = await promise;
-  consignmentPhoneCache[barcode] = resolved; // replace in-flight promise with the final value
-  return resolved;
-}
 
 // 👤 Profile name resolution — lazy + cached
 // ══════════════════════════════
@@ -2162,7 +2129,7 @@ function renderScanList() {
     // Copy button
     const copyBtn = document.createElement('button');
     copyBtn.className = 'action-btn btn-copy';
-    copyBtn.style.cssText = 'margin: 6px 4px 8px 8px; flex: 1;';
+    copyBtn.style.cssText = 'margin: 6px 8px 8px 8px; flex: 1;';
     copyBtn.textContent = '⎘ Copy barcode';
     copyBtn.addEventListener('click', e => {
       e.stopPropagation();
@@ -2171,34 +2138,9 @@ function renderScanList() {
       setTimeout(() => { copyBtn.textContent = '⎘ Copy barcode'; }, 1500);
     });
 
-    // Call button — fetches this parcel's customer phone (lazy, cached across
-    // cards) and sends it to the app the same way the existing context-menu/
-    // keyboard-shortcut "Send to DataBridge" paths already do (sendToFirebase(),
-    // relayed through background.js since popup.js can't call it directly).
-    const callBtn = document.createElement('button');
-    callBtn.className = 'action-btn btn-dial';
-    callBtn.style.cssText = 'margin: 6px 8px 8px 4px; flex: 1;';
-    callBtn.textContent = '📞 Call';
-    callBtn.addEventListener('click', async e => {
-      e.stopPropagation();
-      callBtn.disabled = true;
-      callBtn.textContent = '⏳ …';
-      const phone = await fetchConsignmentPhone(item.barcode);
-      if (!phone) {
-        callBtn.textContent = '❌ No phone';
-        setTimeout(() => { callBtn.textContent = '📞 Call'; callBtn.disabled = false; }, 1500);
-        return;
-      }
-      chrome.runtime.sendMessage({ action: 'send_to_app', text: phone }, () => {
-        callBtn.textContent = '📞 Sent!';
-        setTimeout(() => { callBtn.textContent = '📞 Call'; callBtn.disabled = false; }, 1500);
-      });
-    });
-
     const cardActionsRow = document.createElement('div');
     cardActionsRow.style.cssText = 'display: flex;';
     cardActionsRow.appendChild(copyBtn);
-    cardActionsRow.appendChild(callBtn);
     body.appendChild(cardActionsRow);
 
     // Toggle on header click
@@ -2858,13 +2800,15 @@ async function generateHoldValidationReport({ skipRender = false } = {}) {
         const ccRows      = g.rows.filter(r => r.source === 'CC');
         const firstWorker = earliestOf(workerRows);
         const lastCc      = ccRows.length ? latestOf(ccRows) : null;
-        const stillPending = latestOf(g.rows).source === 'WORKER';
+        const latestOfAll = latestOf(g.rows);
+        const stillPending = latestOfAll.source === 'WORKER';
         return {
           dateKey:   g.dateKey,
           dateLabel: dateKeyToDdMmYyyy(g.dateKey),
           branchId:  g.branchId,
           cId:       g.cId,
           agentSystemId:     g.rows[0].assigned_to_system_id,
+          customerPhone:     (latestOfAll.customer_phone || '').trim(),
           firstWorkerRemark: firstWorker.remarks || '',
           firstWorkerStatus: firstWorker.remarks_status || '',
           lastCcRemark:      lastCc ? (lastCc.remarks || '') : '',
@@ -2970,7 +2914,10 @@ function renderHvReportSummary(reportEl) {
         ${r.lastCcRemark ? `<div class="dash-hv-row-resolution">↳ ${escapeHtml(r.lastCcRemark)}${r.lastCcStatus ? ' — ' + escapeHtml(r.lastCcStatus) : ''}</div>` : ''}
         ${r.lastCcNote ? `<div class="dash-hv-row-meta">↳ 📝 ${escapeHtml(r.lastCcNote)}</div>` : ''}
         ${r.validatorEmployeeId ? `<div class="dash-hv-row-meta">↳ 👤 ${escapeHtml(r.validatorEmployeeId)}</div>` : ''}
-        <div class="dash-hv-row-badge-line">${badge}</div>
+        <div class="dash-hv-row-badge-line">
+          ${badge}
+          ${r.customerPhone ? `<button type="button" class="dash-hv-call-btn" data-phone="${escapeHtml(r.customerPhone)}">📞 Call</button>` : ''}
+        </div>
       </div>`;
   }).join('') : `<div class="dash-hv-branch-empty">এই filter-এ কোনো entry নেই</div>`;
 
@@ -2997,6 +2944,14 @@ function renderHvReportSummary(reportEl) {
       // Click the already-active filter again to clear it back to "all".
       hvSummaryFilter = (hvSummaryFilter === cell.dataset.filter) ? 'all' : cell.dataset.filter;
       renderHvReportSummary(reportEl);
+    });
+  });
+
+  reportEl.querySelectorAll('.dash-hv-call-btn').forEach(btn => {
+    btn.addEventListener('click', e => {
+      e.stopPropagation();
+      const cleaned = btn.dataset.phone.replace(/[\s-()]/g, '');
+      chrome.tabs.create({ url: `tel:${cleaned}` });
     });
   });
 }

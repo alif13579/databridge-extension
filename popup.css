@@ -951,7 +951,17 @@ input:checked + .toggle-slider:before { transform: translateX(14px); }
 .dash-hv-row-meta { color: #888; }
 .dash-hv-row-remark    { margin-top: 3px; color: #8ab4d8; font-style: italic; }
 .dash-hv-row-resolution { margin-top: 2px; color: #00ff88; font-style: italic; }
-.dash-hv-row-badge-line { margin-top: 4px; }
+.dash-hv-row-badge-line { margin-top: 4px; display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+.dash-hv-call-btn {
+  background: #00ff8818;
+  color: #00ff88;
+  border: 1px solid #00ff8840;
+  border-radius: 4px;
+  padding: 3px 8px;
+  font-size: 10px;
+  font-weight: 600;
+  cursor: pointer;
+}
 
 .dash-hv-badge { font-size: 9px; padding: 2px 6px; border-radius: 3px; font-weight: 700; }
 .dash-hv-badge-pending   { background: #ffaa0018; color: #ffaa00; }
