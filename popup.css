@@ -927,6 +927,12 @@ input:checked + .toggle-slider:before { transform: translateX(14px); }
 .dash-hv-summary-val.pending { color: #ffaa00; }
 .dash-hv-summary-label { font-size: 8px; color: #888; margin-top: 2px; text-transform: uppercase; letter-spacing: 0.3px; }
 
+/* ── Team Performance (Dashboard) — reuses dash-hv-* card/list/row styling,
+   just wraps to 2 columns since it shows 4-5 stat cards instead of 3 ── */
+.dash-perf-summary-grid { flex-wrap: wrap; }
+.dash-perf-summary-grid .dash-hv-summary-stat { flex: 1 1 calc(50% - 6px); min-width: 70px; }
+.dash-perf-row .dash-hv-row-id { font-size: 11px; }
+
 .dash-hv-list { max-height: 200px; overflow-y: auto; display: flex; flex-direction: column; gap: 4px; }
 .dash-hv-row {
   background: #0d1b2e;

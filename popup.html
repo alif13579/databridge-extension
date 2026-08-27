@@ -128,6 +128,34 @@
       <button class="dash-export-btn dash-cc-export-btn dash-hv-download-btn" id="download-hv-btn">⬇ Download Report</button>
     </div>
 
+    <div class="dash-cc-section dash-perf-section">
+      <div class="dash-sec-title">👥 Team Performance</div>
+      <div class="dash-cc-row">
+        <span class="dash-cc-label">Branch</span>
+        <select class="dash-filter-chip" id="dash-perf-branch">
+          <option value="">Loading…</option>
+        </select>
+      </div>
+      <div class="dash-cc-row">
+        <span class="dash-cc-label">Mode</span>
+        <select class="dash-filter-chip" id="dash-perf-mode">
+          <option value="team">Team (date-wise)</option>
+          <option value="agent">Agent (leaderboard)</option>
+        </select>
+      </div>
+      <div class="dash-cc-row">
+        <span class="dash-cc-label">From</span>
+        <input type="date" class="dash-cc-date" id="dash-perf-from">
+      </div>
+      <div class="dash-cc-row">
+        <span class="dash-cc-label">To</span>
+        <input type="date" class="dash-cc-date" id="dash-perf-to">
+      </div>
+      <button class="dash-export-btn dash-cc-export-btn" id="generate-perf-btn">🔍 Report দেখুন</button>
+      <div class="dash-cc-status" id="dash-perf-status"></div>
+      <div class="dash-hv-report" id="dash-perf-report"></div>
+    </div>
+
     <div class="dash-note">📊 Demo dashboard — tell me what else this should show.</div>
   </div>
 

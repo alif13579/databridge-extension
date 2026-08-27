@@ -107,6 +107,7 @@ function setupNavigation() {
       if (tab === 'dashboard') {
         renderDashboard();
         loadDashboardTabAndAutoGenerate();
+        restorePerfModePreference();
       }
     });
   });
@@ -2345,6 +2346,20 @@ function setupDashboardTab() {
       if (statusEl) statusEl.textContent = '';
     });
   });
+
+  const generatePerfBtn = document.getElementById('generate-perf-btn');
+  if (generatePerfBtn) generatePerfBtn.addEventListener('click', () => generateTeamPerformanceReport());
+
+  // Branch/Mode selections persist to chrome.storage.local (see loadPerfPreferences/
+  // renderPerfBranchDropdown) so they come back pre-selected next time the popup
+  // opens — date range intentionally does NOT persist, picked fresh each time.
+  const perfBranchSel = document.getElementById('dash-perf-branch');
+  if (perfBranchSel) perfBranchSel.addEventListener('change', () =>
+    chrome.storage.local.set({ perf_branch_id: perfBranchSel.value }));
+
+  const perfModeSel = document.getElementById('dash-perf-mode');
+  if (perfModeSel) perfModeSel.addEventListener('change', () =>
+    chrome.storage.local.set({ perf_mode: perfModeSel.value }));
 }
 
 function renderDashboard() {
@@ -2458,6 +2473,7 @@ async function loadDashboardTabAndAutoGenerate() {
 async function loadCcBranches() {
   if (!currentGoogleUid) {
     renderHvBranchCheckboxes();
+    await renderPerfBranchDropdown();
     return;
   }
 
@@ -2470,6 +2486,7 @@ async function loadCcBranches() {
 
     if (!ccBranchIds.length) {
       renderHvBranchCheckboxes();
+      await renderPerfBranchDropdown();
       return;
     }
 
@@ -2481,11 +2498,46 @@ async function loadCcBranches() {
     }));
 
     renderHvBranchCheckboxes();
+    await renderPerfBranchDropdown();
   } catch (e) {
     console.warn('[DB] loadCcBranches failed:', e);
     const listEl = document.getElementById('dash-hv-branch-list');
     if (listEl) listEl.innerHTML = '<div class="dash-hv-branch-empty">⚠ Branch list load failed</div>';
+    const perfSel = document.getElementById('dash-perf-branch');
+    if (perfSel) perfSel.innerHTML = '<option value="">⚠ Branch list load failed</option>';
   }
+}
+
+/** Populates #dash-perf-branch from ccBranchIds/ccBranchNames (already loaded
+ *  by loadCcBranches for the Hold Validation checkboxes — no separate fetch
+ *  here) and restores the last-selected branch from chrome.storage.local,
+ *  falling back to the first branch if nothing stored yet or the stored id
+ *  is no longer in this user's branch list. */
+async function renderPerfBranchDropdown() {
+  const sel = document.getElementById('dash-perf-branch');
+  if (!sel) return;
+
+  if (!ccBranchIds.length) {
+    sel.innerHTML = '<option value="">কোনো branch assigned নেই</option>';
+    return;
+  }
+
+  sel.innerHTML = ccBranchIds
+    .map(id => `<option value="${escapeHtml(id)}">${escapeHtml(ccBranchNames[id] || id)}</option>`)
+    .join('');
+
+  const { perf_branch_id } = await chrome.storage.local.get(['perf_branch_id']);
+  sel.value = ccBranchIds.includes(perf_branch_id) ? perf_branch_id : ccBranchIds[0];
+}
+
+/** Restores the last-selected Team/Agent mode from chrome.storage.local.
+ *  Doesn't depend on branch data, so it runs independently of loadCcBranches
+ *  — called once each time the Dashboard tab is opened (idempotent, cheap). */
+async function restorePerfModePreference() {
+  const modeSel = document.getElementById('dash-perf-mode');
+  if (!modeSel) return;
+  const { perf_mode } = await chrome.storage.local.get(['perf_mode']);
+  if (perf_mode === 'team' || perf_mode === 'agent') modeSel.value = perf_mode;
 }
 
 // ══════════════════════════════════════════════════════════════════════
@@ -3042,6 +3094,184 @@ function downloadHvReport() {
   });
 
   downloadCsv(buildHvFilename(fromInput.value, toInput.value, getSelectedHvBranchIds()), csvRows);
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// 👥 TEAM PERFORMANCE (Dashboard)
+// Single branch + date range → CC-sourced rows from the same Supabase
+// report action Hold Validation uses. Two independent breakdowns share one
+// fetch:
+//   • Top summary cards — dedupe by CONSIGNMENT across the whole range;
+//     each consignment's truly latest CC row decides its status bucket.
+//     Answers "what happened" — one vote per consignment, no double count.
+//   • Mode table — counts every CC row (no dedupe): Team groups by
+//     (date, agent) for a day-by-day view, Agent groups by agent alone
+//     across the whole range for a leaderboard. Answers "who did the work"
+//     — an agent revisiting the same consignment twice is two acts of work,
+//     so it's deliberately NOT deduped the way the summary cards are.
+// ══════════════════════════════════════════════════════════════════════
+
+const PERF_STATUS_LABELS = {
+  delivery_request: '📦 Delivery',
+  hold_verified:    '🔒 Hold Verified',
+  return_verified:  '↩ Return Verified',
+};
+
+async function generateTeamPerformanceReport() {
+  const statusEl  = document.getElementById('dash-perf-status');
+  const fromInput = document.getElementById('dash-perf-from');
+  const toInput   = document.getElementById('dash-perf-to');
+  const branchSel = document.getElementById('dash-perf-branch');
+  const modeSel   = document.getElementById('dash-perf-mode');
+  const reportEl  = document.getElementById('dash-perf-report');
+  const setStatus = msg => { if (statusEl) statusEl.textContent = msg; };
+
+  if (reportEl) reportEl.innerHTML = '';
+
+  if (!fromInput.value || !toInput.value) {
+    setStatus('⚠ From এবং To — দুটো date-ই select করুন');
+    return;
+  }
+  const fromDate = new Date(fromInput.value + 'T00:00:00');
+  const toDate   = new Date(toInput.value   + 'T00:00:00');
+  if (fromDate > toDate) {
+    setStatus('⚠ From date, To date-এর পরে হতে পারবে না');
+    return;
+  }
+  const branchId = branchSel.value;
+  if (!branchId) {
+    setStatus('⚠ Branch select করো');
+    return;
+  }
+  const mode = modeSel.value === 'agent' ? 'agent' : 'team';
+
+  const idToken = await getValidFirebaseIdToken().catch(() => null);
+  if (!idToken) {
+    setStatus('⚠ Login করুন প্রথমে');
+    return;
+  }
+
+  // Half-open [startIso, endIso) — same convention generateHoldValidationReport
+  // uses; browser-local Date getters are already Bangladesh-local on this
+  // extension's target devices, so no manual UTC+6 offset needed.
+  const startIso = fromDate.toISOString();
+  const endIso   = new Date(toDate.getTime() + 24 * 60 * 60 * 1000).toISOString();
+
+  try {
+    setStatus('⏳ Supabase থেকে data আনা হচ্ছে…');
+    const allRows = await fetchSupabaseReportRows(branchId, startIso, endIso, idToken);
+    const ccRows  = allRows.filter(r => r.source === 'CC');
+
+    if (!ccRows.length) {
+      setStatus('এই date range/branch-এ কোনো CC resolution পাওয়া যায়নি');
+      return;
+    }
+
+    const latestMs = row => new Date(row.created_at).getTime();
+    const statusKeyOf = row => (row.remarks_status || '').trim().toLowerCase();
+
+    // ── Summary cards: one vote per consignment (latest CC row wins) ──
+    const byConsignment = {};
+    ccRows.forEach(r => {
+      (byConsignment[r.consignment] ||= []).push(r);
+    });
+    const counts = { delivery_request: 0, hold_verified: 0, return_verified: 0, other: 0 };
+    Object.values(byConsignment).forEach(rows => {
+      const latest = rows.reduce((a, b) => latestMs(a) >= latestMs(b) ? a : b);
+      const key = statusKeyOf(latest);
+      if (key in counts) counts[key]++; else counts.other++;
+    });
+    const totalUnique = Object.keys(byConsignment).length;
+
+    // ── Mode table: every CC row counts (no dedupe) ──
+    let modeRows;
+    if (mode === 'team') {
+      const groups = {};
+      ccRows.forEach(r => {
+        const dateKey = localDateKey(r.created_at);
+        const agentId = r.author_system_id || '—';
+        const key = `${dateKey}__${agentId}`;
+        const g = groups[key] ||= {
+          dateKey, dateLabel: dateKeyToDdMmYyyy(dateKey),
+          agentName: r.author?.name || agentId,
+          agentEmpId: r.author?.employee_id || '',
+          count: 0,
+        };
+        g.count++;
+      });
+      modeRows = Object.values(groups).sort((a, b) =>
+        a.dateKey === b.dateKey ? b.count - a.count : b.dateKey.localeCompare(a.dateKey));
+    } else {
+      const groups = {};
+      ccRows.forEach(r => {
+        const agentId = r.author_system_id || '—';
+        const g = groups[agentId] ||= {
+          agentName: r.author?.name || agentId,
+          agentEmpId: r.author?.employee_id || '',
+          total: 0, delivery_request: 0, hold_verified: 0, return_verified: 0, other: 0,
+        };
+        g.total++;
+        const key = statusKeyOf(r);
+        if (key in g) g[key]++; else g.other++;
+      });
+      modeRows = Object.values(groups).sort((a, b) => b.total - a.total);
+    }
+
+    renderPerfReport(reportEl, mode, { totalUnique, counts }, modeRows);
+    setStatus(`✓ ${totalUnique}টা unique consignment · ${ccRows.length}টা CC entry`);
+  } catch (e) {
+    console.error('[DB] generateTeamPerformanceReport failed:', e);
+    setStatus('⚠ Report load failed — console (F12) দেখো');
+  }
+}
+
+function renderPerfReport(reportEl, mode, summary, modeRows) {
+  const { totalUnique, counts } = summary;
+
+  const summaryHtml = `
+    <div class="dash-hv-summary-grid dash-perf-summary-grid">
+      <div class="dash-hv-summary-stat">
+        <div class="dash-hv-summary-val">${totalUnique}</div>
+        <div class="dash-hv-summary-label">Total Unique</div>
+      </div>
+      <div class="dash-hv-summary-stat">
+        <div class="dash-hv-summary-val validated">${counts.delivery_request}</div>
+        <div class="dash-hv-summary-label">Delivery</div>
+      </div>
+      <div class="dash-hv-summary-stat">
+        <div class="dash-hv-summary-val pending">${counts.hold_verified}</div>
+        <div class="dash-hv-summary-label">Hold Verified</div>
+      </div>
+      <div class="dash-hv-summary-stat">
+        <div class="dash-hv-summary-val">${counts.return_verified}</div>
+        <div class="dash-hv-summary-label">Return Verified</div>
+      </div>
+      ${counts.other ? `
+      <div class="dash-hv-summary-stat">
+        <div class="dash-hv-summary-val">${counts.other}</div>
+        <div class="dash-hv-summary-label">Other</div>
+      </div>` : ''}
+    </div>`;
+
+  const rowsHtml = mode === 'team'
+    ? modeRows.map(r => `
+      <div class="dash-hv-row dash-perf-row">
+        <div class="dash-hv-row-top">
+          <span class="dash-hv-row-id">${escapeHtml(r.agentName)}${r.agentEmpId ? ' (' + escapeHtml(r.agentEmpId) + ')' : ''}</span>
+          <span>${r.dateLabel}</span>
+        </div>
+        <div class="dash-hv-row-meta">${r.count}টা validation</div>
+      </div>`).join('')
+    : modeRows.map((r, i) => `
+      <div class="dash-hv-row dash-perf-row">
+        <div class="dash-hv-row-top">
+          <span class="dash-hv-row-id">#${i + 1} ${escapeHtml(r.agentName)}${r.agentEmpId ? ' (' + escapeHtml(r.agentEmpId) + ')' : ''}</span>
+          <span>Total ${r.total}</span>
+        </div>
+        <div class="dash-hv-row-meta">${PERF_STATUS_LABELS.delivery_request} ${r.delivery_request} · ${PERF_STATUS_LABELS.hold_verified} ${r.hold_verified} · ${PERF_STATUS_LABELS.return_verified} ${r.return_verified}${r.other ? ' · ❓ ' + r.other : ''}</div>
+      </div>`).join('');
+
+  reportEl.innerHTML = summaryHtml + `<div class="dash-hv-list">${rowsHtml}</div>`;
 }
 
 document.addEventListener('DOMContentLoaded', init);
