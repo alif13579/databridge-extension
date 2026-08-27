@@ -1697,6 +1697,39 @@ function safeFirebaseKey(barcode) {
 }
 
 // ══════════════════════════════
+// 📞 Consignment phone lookup — lazy + cached, same pattern as fetchProfileName()
+// above. courier/consignments/{barcode}/recipientPhone is the same field the
+// Android app and its remark-validations Edge Function already read for a parcel's
+// customer phone number.
+const consignmentPhoneCache = {};
+
+async function fetchConsignmentPhone(barcode) {
+  if (!barcode) return null;
+  if (barcode in consignmentPhoneCache && !(consignmentPhoneCache[barcode] instanceof Promise)) {
+    return consignmentPhoneCache[barcode];
+  }
+  if (consignmentPhoneCache[barcode] instanceof Promise) return consignmentPhoneCache[barcode];
+
+  const promise = (async () => {
+    try {
+      const idToken = await getValidFirebaseIdToken().catch(() => null);
+      const authParam = idToken ? `?auth=${idToken}` : '';
+      const res = await fetch(`${FIREBASE_URL}/courier/consignments/${encodeURIComponent(barcode)}/recipientPhone.json${authParam}`);
+      if (!res.ok) return null;
+      const phone = await res.json();
+      return (typeof phone === 'string' && phone.trim()) ? phone.trim() : null;
+    } catch (e) {
+      console.warn('[Scan] consignment phone fetch failed:', e);
+      return null;
+    }
+  })();
+
+  consignmentPhoneCache[barcode] = promise;
+  const resolved = await promise;
+  consignmentPhoneCache[barcode] = resolved; // replace in-flight promise with the final value
+  return resolved;
+}
+
 // 👤 Profile name resolution — lazy + cached
 // ══════════════════════════════
 // uid -> resolved name string | null (not found) | Promise (in-flight).
@@ -2128,7 +2161,7 @@ function renderScanList() {
     // Copy button
     const copyBtn = document.createElement('button');
     copyBtn.className = 'action-btn btn-copy';
-    copyBtn.style.cssText = 'margin: 6px 8px 8px; width: calc(100% - 16px);';
+    copyBtn.style.cssText = 'margin: 6px 4px 8px 8px; flex: 1;';
     copyBtn.textContent = '⎘ Copy barcode';
     copyBtn.addEventListener('click', e => {
       e.stopPropagation();
@@ -2136,7 +2169,36 @@ function renderScanList() {
       copyBtn.textContent = '✅ Copied!';
       setTimeout(() => { copyBtn.textContent = '⎘ Copy barcode'; }, 1500);
     });
-    body.appendChild(copyBtn);
+
+    // Call button — fetches this parcel's customer phone (lazy, cached across
+    // cards) and sends it to the app the same way the existing context-menu/
+    // keyboard-shortcut "Send to DataBridge" paths already do (sendToFirebase(),
+    // relayed through background.js since popup.js can't call it directly).
+    const callBtn = document.createElement('button');
+    callBtn.className = 'action-btn btn-dial';
+    callBtn.style.cssText = 'margin: 6px 8px 8px 4px; flex: 1;';
+    callBtn.textContent = '📞 Call';
+    callBtn.addEventListener('click', async e => {
+      e.stopPropagation();
+      callBtn.disabled = true;
+      callBtn.textContent = '⏳ …';
+      const phone = await fetchConsignmentPhone(item.barcode);
+      if (!phone) {
+        callBtn.textContent = '❌ No phone';
+        setTimeout(() => { callBtn.textContent = '📞 Call'; callBtn.disabled = false; }, 1500);
+        return;
+      }
+      chrome.runtime.sendMessage({ action: 'send_to_app', text: phone }, () => {
+        callBtn.textContent = '📞 Sent!';
+        setTimeout(() => { callBtn.textContent = '📞 Call'; callBtn.disabled = false; }, 1500);
+      });
+    });
+
+    const cardActionsRow = document.createElement('div');
+    cardActionsRow.style.cssText = 'display: flex;';
+    cardActionsRow.appendChild(copyBtn);
+    cardActionsRow.appendChild(callBtn);
+    body.appendChild(cardActionsRow);
 
     // Toggle on header click
     header.addEventListener('click', () => {
@@ -2507,6 +2569,11 @@ let hvMode       = 'summary'; // 'summary' | 'details' — live toggle state (se
 let hvReportMode = 'summary'; // mode hvReportRows was actually BUILT for — set once per generate,
                                // read by renderHvReport()/downloadHvReport() so a stale toggle click
                                // can never make Download not match what's on screen
+let hvSummaryFilter = 'all';  // 'all' | 'validated' | 'pending' — set by clicking a Total/Validated/
+                               // Pending stat cell in renderHvReportSummary(); reset on every fresh
+                               // generateHoldValidationReport() call so a new report always starts
+                               // fully visible. Download is unaffected — it always exports everything,
+                               // this only filters what's shown on screen.
 
 /** BD-local calendar-date key (YYYY-MM-DD) from a Supabase created_at ISO
  *  string — the unit Summary groups by. Relies on the same assumption
@@ -2650,6 +2717,7 @@ async function generateHoldValidationReport({ skipRender = false } = {}) {
   const setStatus   = msg => { if (statusEl) statusEl.textContent = msg; };
 
   hvReportRows = [];
+  hvSummaryFilter = 'all';
   if (!skipRender && reportEl) reportEl.innerHTML = '';
 
   if (!fromInput.value || !toInput.value) {
@@ -2824,12 +2892,18 @@ function renderHvReportSummary(reportEl) {
   const totalPending    = hvReportRows.filter(r => r.stillPending).length;
   const totalValidated = totalRequest - totalPending;
 
-  const sorted = hvReportRows.slice().sort((a, b) => {
+  const filtered = hvReportRows.filter(r =>
+    hvSummaryFilter === 'validated' ? !r.stillPending :
+    hvSummaryFilter === 'pending'   ? r.stillPending :
+    true
+  );
+
+  const sorted = filtered.slice().sort((a, b) => {
     if (a.stillPending !== b.stillPending) return a.stillPending ? -1 : 1;
     return b.dateKey.localeCompare(a.dateKey);
   });
 
-  const rowsHtml = sorted.map(r => {
+  const rowsHtml = sorted.length ? sorted.map(r => {
     const badge = r.stillPending
       ? '<span class="dash-hv-badge dash-hv-badge-pending">⏳ Pending</span>'
       : '<span class="dash-hv-badge dash-hv-badge-validated">✓ Validated</span>';
@@ -2846,25 +2920,33 @@ function renderHvReportSummary(reportEl) {
         ${r.validatorEmployeeId ? `<div class="dash-hv-row-meta">↳ 👤 ${escapeHtml(r.validatorEmployeeId)}</div>` : ''}
         <div class="dash-hv-row-badge-line">${badge}</div>
       </div>`;
-  }).join('');
+  }).join('') : `<div class="dash-hv-branch-empty">এই filter-এ কোনো entry নেই</div>`;
 
   reportEl.innerHTML = `
     <div class="dash-hv-summary-grid">
-      <div class="dash-hv-summary-stat">
+      <div class="dash-hv-summary-stat${hvSummaryFilter === 'all' ? ' active' : ''}" data-filter="all">
         <div class="dash-hv-summary-val">${totalRequest}</div>
         <div class="dash-hv-summary-label">Total</div>
       </div>
-      <div class="dash-hv-summary-stat">
+      <div class="dash-hv-summary-stat${hvSummaryFilter === 'validated' ? ' active' : ''}" data-filter="validated">
         <div class="dash-hv-summary-val validated">${totalValidated}</div>
         <div class="dash-hv-summary-label">Validated</div>
       </div>
-      <div class="dash-hv-summary-stat">
+      <div class="dash-hv-summary-stat${hvSummaryFilter === 'pending' ? ' active' : ''}" data-filter="pending">
         <div class="dash-hv-summary-val pending">${totalPending}</div>
         <div class="dash-hv-summary-label">Pending</div>
       </div>
     </div>
     <div class="dash-hv-list">${rowsHtml}</div>
   `;
+
+  reportEl.querySelectorAll('.dash-hv-summary-stat').forEach(cell => {
+    cell.addEventListener('click', () => {
+      // Click the already-active filter again to clear it back to "all".
+      hvSummaryFilter = (hvSummaryFilter === cell.dataset.filter) ? 'all' : cell.dataset.filter;
+      renderHvReportSummary(reportEl);
+    });
+  });
 }
 
 /** One card per raw remark, chronological within each (date, consignment) —

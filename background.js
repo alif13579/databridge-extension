@@ -106,6 +106,17 @@ function askContentScript(tabId) {
   });
 }
 
+// popup.js runs in its own execution context (not this service worker), so it can't call
+// sendToFirebase() directly — it has to relay through here. Used by the Scan tab's parcel
+// card "📞 Call" button to send a customer phone number to the app the same way the
+// existing context-menu/keyboard-shortcut paths above already do.
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message?.action === 'send_to_app' && message.text) {
+    sendToFirebase(message.text).then(() => sendResponse({ ok: true }));
+    return true; // keep the message channel open for the async sendResponse above
+  }
+});
+
 function isPhoneNumber(text) {
   const s = text.replace(/[\s\-().]/g, '');
   if (/^\+\d{7,15}$/.test(s)) return true;

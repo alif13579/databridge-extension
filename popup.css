@@ -917,7 +917,11 @@ input:checked + .toggle-slider:before { transform: translateX(14px); }
   border-radius: 6px;
   padding: 6px 4px;
   text-align: center;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
 }
+.dash-hv-summary-stat:hover { background: #12233b; }
+.dash-hv-summary-stat.active { border-color: #00d4ff; background: #12233b; }
 .dash-hv-summary-val { font-size: 16px; font-weight: 700; color: #00d4ff; line-height: 1.2; }
 .dash-hv-summary-val.validated { color: #00ff88; }
 .dash-hv-summary-val.pending { color: #ffaa00; }
