@@ -2256,7 +2256,16 @@ function setupDashboardTab() {
   if (generateHvBtn) generateHvBtn.addEventListener('click', () => generateHoldValidationReport());
 
   const downloadHvBtn = document.getElementById('download-hv-btn');
-  if (downloadHvBtn) downloadHvBtn.addEventListener('click', () => downloadHvReport());
+  if (downloadHvBtn) downloadHvBtn.addEventListener('click', async () => {
+    // Direct download: fetches fresh data for whatever From/To/branch/mode is
+    // currently set, WITHOUT rendering the on-screen table — "Report দেখুন" is
+    // no longer a required step first. generateHoldValidationReport() already
+    // resets hvReportRows to [] up front on every call (including on any
+    // early-return failure path), so checking .length here after it settles
+    // never downloads stale data left over from an earlier successful report.
+    await generateHoldValidationReport({ skipRender: true });
+    if (hvReportRows.length) downloadHvReport();
+  });
 
   document.querySelectorAll('.dash-hv-mode-btn').forEach(btn => {
     btn.addEventListener('click', () => {
@@ -2633,7 +2642,7 @@ function getSelectedHvBranchIds() {
   return [...document.querySelectorAll('.dash-hv-branch-cb:checked')].map(cb => cb.value);
 }
 
-async function generateHoldValidationReport() {
+async function generateHoldValidationReport({ skipRender = false } = {}) {
   const statusEl    = document.getElementById('dash-hv-status');
   const fromInput   = document.getElementById('dash-hv-from');
   const toInput     = document.getElementById('dash-hv-to');
@@ -2641,7 +2650,7 @@ async function generateHoldValidationReport() {
   const setStatus   = msg => { if (statusEl) statusEl.textContent = msg; };
 
   hvReportRows = [];
-  if (reportEl) reportEl.innerHTML = '';
+  if (!skipRender && reportEl) reportEl.innerHTML = '';
 
   if (!fromInput.value || !toInput.value) {
     setStatus('⚠ From এবং To — দুটো date-ই select করুন');
@@ -2778,7 +2787,7 @@ async function generateHoldValidationReport() {
     }
 
     hvReportMode = hvMode;
-    renderHvReport();
+    if (!skipRender) renderHvReport();
 
     if (hvReportMode === 'summary') {
       const pendingCount = hvReportRows.filter(r => r.stillPending).length;
