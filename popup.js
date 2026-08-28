@@ -2951,7 +2951,13 @@ function renderHvReportSummary(reportEl) {
     btn.addEventListener('click', e => {
       e.stopPropagation();
       const cleaned = btn.dataset.phone.replace(/[\s-()]/g, '');
-      chrome.tabs.create({ url: `tel:${cleaned}` });
+      const originalText = btn.textContent;
+      btn.disabled = true;
+      btn.textContent = '⏳ …';
+      chrome.runtime.sendMessage({ action: 'send_to_app', text: cleaned }, () => {
+        btn.textContent = '📞 Sent!';
+        setTimeout(() => { btn.textContent = originalText; btn.disabled = false; }, 1500);
+      });
     });
   });
 }
