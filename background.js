@@ -117,6 +117,18 @@ function askContentScript(tabId) {
   });
 }
 
+// cc-panel.js (a content script) has no access to chrome.tabs.* — content
+// scripts only get a limited chrome.* surface, tabs.create isn't part of
+// it — so its 📞 Call button relays the phone number here to actually
+// open the tel: link, same reasoning popup.js's own handleDial() sidesteps
+// simply by already running in a full extension-page context.
+chrome.runtime.onMessage.addListener((message) => {
+  if (message?.action === 'db_cc_dial' && message.phone) {
+    const cleaned = String(message.phone).replace(/[\s-()]/g, '');
+    chrome.tabs.create({ url: `tel:${cleaned}` });
+  }
+});
+
 function isPhoneNumber(text) {
   const s = text.replace(/[\s\-().]/g, '');
   if (/^\+\d{7,15}$/.test(s)) return true;
