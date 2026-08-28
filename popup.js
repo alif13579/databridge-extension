@@ -1453,6 +1453,7 @@ function setupSettings() {
   });
 
   setupAutofillUrls();
+  setupCcPanelUrls();
   setupAutoCopyToggle();
 }
 
@@ -1496,6 +1497,53 @@ async function setupAutofillUrls() {
     listEl.innerHTML = urls.length
       ? urls.map(u => `<div class="autofill-url-chip"><span>${u}</span><span class="url-remove" data-url="${u}">✕</span></div>`).join('')
       : '<div class="settings-hint">No pages configured — panel won\'t auto-appear anywhere.</div>';
+    listEl.querySelectorAll('[data-url]').forEach(el => {
+      el.addEventListener('click', async () => {
+        await saveUrls((await loadUrls()).filter(u => u !== el.dataset.url));
+        render();
+      });
+    });
+  }
+
+  addBtn.addEventListener('click', async () => {
+    const val = input.value.trim();
+    if (!val) return;
+    const urls = await loadUrls();
+    if (urls.includes(val)) { input.value = ''; return; }
+    urls.push(val);
+    await saveUrls(urls);
+    input.value = '';
+    render();
+  });
+  input.addEventListener('keydown', e => { if (e.key === 'Enter') addBtn.click(); });
+
+  render();
+}
+
+// Manages the "Call Center Panel Pages" list (chrome.storage.local key:
+// cc_panel_urls) that the Call Center panel's own init gate reads to decide
+// which pages it should appear on. Same pattern as setupAutofillUrls() above,
+// but the default is an empty array, not a hardcoded URL — unlike the
+// Reconcile panel (which always had a known Hermes URL), there's no known
+// default page for this one, so it stays off everywhere until configured.
+async function setupCcPanelUrls() {
+  const input  = document.getElementById('cc-panel-url-input');
+  const addBtn = document.getElementById('cc-panel-url-add-btn');
+  const listEl = document.getElementById('cc-panel-url-list');
+  if (!input || !addBtn || !listEl) return;
+
+  async function loadUrls() {
+    const result = await chrome.storage.local.get(['cc_panel_urls']);
+    return Array.isArray(result.cc_panel_urls) ? result.cc_panel_urls : [];
+  }
+  async function saveUrls(urls) {
+    await chrome.storage.local.set({ cc_panel_urls: urls });
+  }
+  async function render() {
+    const urls = await loadUrls();
+    listEl.innerHTML = urls.length
+      ? urls.map(u => `<div class="autofill-url-chip"><span>${u}</span><span class="url-remove" data-url="${u}">✕</span></div>`).join('')
+      : '<div class="settings-hint">No pages configured — panel won\'t appear anywhere.</div>';
     listEl.querySelectorAll('[data-url]').forEach(el => {
       el.addEventListener('click', async () => {
         await saveUrls((await loadUrls()).filter(u => u !== el.dataset.url));
