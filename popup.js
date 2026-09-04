@@ -2539,7 +2539,7 @@ async function restorePerfModePreference() {
 const SUPABASE_REPORT_PAGE_SIZE = 100; // Edge Function report action max page_size
 
 /** Fetches ALL validation rows for one branch + date range from the
- *  remark-validations Edge Function's `report` action, paging through
+ *  validations Edge Function's `report` action, paging through
  *  all results (page_size 100, the Edge Function's maximum).
  *
  *  branchId  — e.g. "aab"
@@ -2556,7 +2556,7 @@ async function fetchSupabaseReportRows(branchId, startIso, endIso, idToken) {
   const rows = [];
   let page = 0;
   while (true) {
-    const res = await fetch(`${SUPABASE_URL}/functions/v1/remark-validations`, {
+    const res = await fetch(`${SUPABASE_URL}/functions/v1/validations`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -3022,7 +3022,7 @@ function renderHvReportSummary(reportEl) {
 // ── Dashboard card remarks (CC) ──────────────────────────────────────────
 // Same catalog + save path as the app's CallCenterFragment sheet: predefined
 // CC options as chips, admin instruction auto-fills the note box, note-only
-// save allowed. Writes go through the remark-validations `write` action.
+// save allowed. Writes go through the validations `write` action.
 // NOTE: no sheet-verdict mirror here — that needs the agent device's Google
 // account (RemarkSheetMirror, app-side); the extension only saves the remark.
 let ccDashboardRemarkOpts = null; // cached per popup open
@@ -3123,7 +3123,7 @@ async function toggleHvRemarkSection(reportEl, sorted, idx) {
     saveBtn.disabled = true;
     saveBtn.textContent = '⏳ …';
     try {
-      const res = await fetch(`${SUPABASE_URL}/functions/v1/remark-validations`, {
+      const res = await fetch(`${SUPABASE_URL}/functions/v1/validations`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${idToken}`, 'apikey': SUPABASE_ANON_KEY },
         body: JSON.stringify({ action: 'write', row: {

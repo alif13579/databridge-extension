@@ -80,7 +80,7 @@
     const rows = [];
     let page = 0;
     for (;;) {
-      const res = await fetch(`${SUPABASE_URL}/functions/v1/remark-validations`, {
+      const res = await fetch(`${SUPABASE_URL}/functions/v1/validations`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
