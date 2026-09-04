@@ -962,6 +962,47 @@ input:checked + .toggle-slider:before { transform: translateX(14px); }
   font-weight: 600;
   cursor: pointer;
 }
+.dash-hv-remark-btn {
+  background: #00d4ff18;
+  color: #00d4ff;
+  border: 1px solid #00d4ff40;
+  border-radius: 4px;
+  padding: 3px 8px;
+  font-size: 10px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.dash-hv-remark-section { margin-top: 6px; border-top: 1px dashed #333; padding-top: 6px; }
+.dash-hv-chip-row { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 6px; }
+.dash-hv-chip {
+  background: #1a1a2e;
+  color: #c9d8ec;
+  border: 1px solid #444;
+  border-radius: 12px;
+  padding: 4px 10px;
+  font-size: 10px;
+  cursor: pointer;
+}
+.dash-hv-chip.selected { background: #00d4ff; color: #001018; border-color: #00d4ff; font-weight: 700; }
+.dash-hv-note {
+  width: 100%; box-sizing: border-box;
+  background: #0d0d1a; color: #fff;
+  border: 1px solid #444; border-radius: 5px;
+  padding: 6px 8px; font-size: 11px; resize: vertical;
+}
+.dash-hv-remark-actions { display: flex; gap: 6px; margin-top: 6px; }
+.dash-hv-save-btn {
+  flex: 1; background: #00ff88; color: #001008;
+  border: none; border-radius: 4px; padding: 6px;
+  font-size: 11px; font-weight: 700; cursor: pointer;
+}
+.dash-hv-save-btn:disabled { opacity: .6; cursor: default; }
+.dash-hv-cancel-btn {
+  flex: 1; background: transparent; color: #888;
+  border: 1px solid #444; border-radius: 4px; padding: 6px;
+  font-size: 11px; cursor: pointer;
+}
+.dash-hv-status { font-size: 10px; color: #888; padding: 4px 0; }
 
 .dash-hv-badge { font-size: 9px; padding: 2px 6px; border-radius: 3px; font-weight: 700; }
 .dash-hv-badge-pending   { background: #ffaa0018; color: #ffaa00; }

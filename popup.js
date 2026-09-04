@@ -2947,7 +2947,7 @@ function renderHvReportSummary(reportEl) {
     return b.dateKey.localeCompare(a.dateKey);
   });
 
-  const rowsHtml = sorted.length ? sorted.map(r => {
+  const rowsHtml = sorted.length ? sorted.map((r, idx) => {
     const badge = r.stillPending
       ? '<span class="dash-hv-badge dash-hv-badge-pending">⏳ Pending</span>'
       : '<span class="dash-hv-badge dash-hv-badge-validated">✓ Validated</span>';
@@ -2965,7 +2965,9 @@ function renderHvReportSummary(reportEl) {
         <div class="dash-hv-row-badge-line">
           ${badge}
           ${r.customerPhone ? `<button type="button" class="dash-hv-call-btn" data-phone="${escapeHtml(r.customerPhone)}">📞 Call</button>` : ''}
+          <button type="button" class="dash-hv-remark-btn" data-idx="${idx}">📝 Remarks</button>
         </div>
+        <div class="dash-hv-remark-section" data-idx="${idx}" style="display:none"></div>
       </div>`;
   }).join('') : `<div class="dash-hv-branch-empty">এই filter-এ কোনো entry নেই</div>`;
 
@@ -3007,6 +3009,141 @@ function renderHvReportSummary(reportEl) {
         setTimeout(() => { btn.textContent = originalText; btn.disabled = false; }, 1500);
       });
     });
+  });
+
+  reportEl.querySelectorAll('.dash-hv-remark-btn').forEach(btn => {
+    btn.addEventListener('click', e => {
+      e.stopPropagation();
+      toggleHvRemarkSection(reportEl, sorted, +btn.dataset.idx);
+    });
+  });
+}
+
+// ── Dashboard card remarks (CC) ──────────────────────────────────────────
+// Same catalog + save path as the app's CallCenterFragment sheet: predefined
+// CC options as chips, admin instruction auto-fills the note box, note-only
+// save allowed. Writes go through the remark-validations `write` action.
+// NOTE: no sheet-verdict mirror here — that needs the agent device's Google
+// account (RemarkSheetMirror, app-side); the extension only saves the remark.
+let ccDashboardRemarkOpts = null; // cached per popup open
+
+async function fetchCcDashboardRemarkOptions(idToken) {
+  if (ccDashboardRemarkOpts) return ccDashboardRemarkOpts;
+  let remarkLang = 'bn';
+  try {
+    const langRes = await fetch(`${FIREBASE_URL}/config/language/ccLang.json?auth=${idToken}`);
+    const langVal = ((await langRes.json()) || '').trim() || 'bn_en';
+    remarkLang = langVal.split('_')[0] || 'bn';
+  } catch { /* default bn */ }
+  const url = `${SUPABASE_URL}/rest/v1/validation_remarks` +
+    `?select=remarks_en,remarks_bn,target_status,instruction_text` +
+    `&source=eq.CC&is_active=eq.true&order=priority.desc`;
+  const res = await fetch(url, {
+    headers: { 'apikey': SUPABASE_ANON_KEY, 'Authorization': `Bearer ${idToken}`, 'Accept': 'application/json' },
+  });
+  if (!res.ok) throw new Error(`remark options fetch failed (${res.status})`);
+  const rows = await res.json();
+  ccDashboardRemarkOpts = (Array.isArray(rows) ? rows : []).map(r => {
+    const en = (r.remarks_en || '').trim();
+    const bn = (r.remarks_bn || '').trim();
+    return {
+      label: (remarkLang === 'en' ? (en || bn) : (bn || en)).trim(),
+      english: en || bn,
+      target: (r.target_status || '').trim(),
+      instruction: (r.instruction_text || '').trim(),
+    };
+  }).filter(o => o.label && o.target);
+  return ccDashboardRemarkOpts;
+}
+
+async function toggleHvRemarkSection(reportEl, sorted, idx) {
+  const card = sorted[idx];
+  const section = reportEl.querySelector(`.dash-hv-remark-section[data-idx="${idx}"]`);
+  if (!section || !card) return;
+  if (section.style.display !== 'none') { section.style.display = 'none'; return; }
+  section.style.display = '';
+  if (section.dataset.loaded) return;
+  section.innerHTML = '<div class="dash-hv-status">⏳ Remarks লোড হচ্ছে…</div>';
+
+  const idToken = await getValidFirebaseIdToken().catch(() => null);
+  if (!idToken) { section.innerHTML = '<div class="dash-hv-status">⚠ Login করুন প্রথমে</div>'; return; }
+  if (!card.agentSystemId) {
+    section.innerHTML = '<div class="dash-hv-status">⚠ এই parcel-এ এখনো কোনো worker assign/touch করেনি, তাই remark save করা যাচ্ছে না</div>';
+    return;
+  }
+
+  let options;
+  try {
+    options = await fetchCcDashboardRemarkOptions(idToken);
+  } catch (e) {
+    section.innerHTML = `<div class="dash-hv-status">⚠ Remarks load failed — ${escapeHtml(e.message || 'network error')}</div>`;
+    return;
+  }
+  section.dataset.loaded = '1';
+
+  const chipsHtml = options.length
+    ? `<div class="dash-hv-chip-row">${options.map((o, i) =>
+        `<button type="button" class="dash-hv-chip" data-opt="${i}" title="→ ${escapeHtml(o.target)}">${escapeHtml(o.label)}</button>`
+      ).join('')}</div>`
+    : '<div class="dash-hv-status">⚠ Config-এ কোনো remark সেট করা নেই। নোট হিসেবে লিখতে পারেন:</div>';
+
+  section.innerHTML = `
+    ${chipsHtml}
+    <textarea class="dash-hv-note" rows="2" placeholder="নোট লিখুন (ঐচ্ছিক)"></textarea>
+    <div class="dash-hv-remark-actions">
+      <button type="button" class="dash-hv-cancel-btn">বন্ধ করুন</button>
+      <button type="button" class="dash-hv-save-btn">সেভ করুন</button>
+    </div>
+    <div class="dash-hv-status" data-role="msg" style="display:none"></div>`;
+
+  const msgEl  = section.querySelector('[data-role="msg"]');
+  const noteEl = section.querySelector('.dash-hv-note');
+  const saveBtn = section.querySelector('.dash-hv-save-btn');
+  let selected = -1;
+  const say = t => { msgEl.textContent = t; msgEl.style.display = t ? '' : 'none'; };
+
+  section.querySelectorAll('.dash-hv-chip').forEach(chip => {
+    chip.addEventListener('click', () => {
+      const i = +chip.dataset.opt;
+      selected = (selected === i) ? -1 : i;
+      section.querySelectorAll('.dash-hv-chip').forEach(c =>
+        c.classList.toggle('selected', +c.dataset.opt === selected));
+      // CC parity: selecting fills the admin-written instruction into the
+      // note box (blank clears a previous fill).
+      noteEl.value = selected >= 0 ? options[selected].instruction : '';
+    });
+  });
+  section.querySelector('.dash-hv-cancel-btn').addEventListener('click', () => {
+    section.style.display = 'none';
+  });
+  saveBtn.addEventListener('click', async () => {
+    const note = noteEl.value.trim();
+    const opt = selected >= 0 ? options[selected] : null;
+    if (!opt && !note) { say('একটি রিমার্কস বেছে নিন বা নোট লিখুন'); return; }
+    saveBtn.disabled = true;
+    saveBtn.textContent = '⏳ …';
+    try {
+      const res = await fetch(`${SUPABASE_URL}/functions/v1/remark-validations`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${idToken}`, 'apikey': SUPABASE_ANON_KEY },
+        body: JSON.stringify({ action: 'write', row: {
+          consignment: card.cId, branch_id: card.branchId,
+          assigned_to_system_id: card.agentSystemId, source: 'CC',
+          remarks_status: opt ? opt.target : '',
+          remarks: opt ? opt.english : '',
+          note,
+          remarks_bn: (opt && opt.label !== opt.english) ? opt.label : '',
+        }}),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data.ok === false) throw new Error(data.error || `HTTP ${res.status}`);
+      say('✓ রিমার্কস সেভ হয়েছে — report refresh হচ্ছে…');
+      setTimeout(() => { generateHoldValidationReport(); }, 800);
+    } catch (e) {
+      say(`⚠ Save failed — ${e.message || 'network error'}`);
+      saveBtn.disabled = false;
+      saveBtn.textContent = 'সেভ করুন';
+    }
   });
 }
 
