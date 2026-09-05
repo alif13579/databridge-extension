@@ -174,6 +174,43 @@
         background: #dcfce7; color: #15803d; border: 1px solid #86efac;
         border-radius: 4px; padding: 3px 8px; font-size: 10px; font-weight: 600; cursor: pointer;
       }
+      .db-cc-call-btn:disabled { opacity: .6; cursor: default; }
+      .db-cc-hist-btn, .db-cc-remark-btn {
+        background: #f1f5f9; color: #334155; border: 1px solid #cbd5e1;
+        border-radius: 4px; padding: 3px 8px; font-size: 10px; font-weight: 600; cursor: pointer;
+        margin-left: 4px;
+      }
+      .db-cc-hist-section, .db-cc-remark-section {
+        margin-top: 6px; border-top: 1px dashed #cbd5e1; padding-top: 6px;
+      }
+      .db-cc-hist-entry {
+        background: #fff; border: 1px solid #e2e8f0; border-radius: 4px;
+        padding: 4px 6px; margin-bottom: 4px; font-size: 10px; color: #334155;
+      }
+      .db-cc-hist-worker { border-left: 3px solid #d97706; }
+      .db-cc-hist-cc     { border-left: 3px solid #16a34a; }
+      .db-cc-hist-head { display: flex; justify-content: space-between; font-weight: 700; color: #1e293b; }
+      .db-cc-hist-status { color: #64748b; }
+      .db-cc-chip-row { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 6px; }
+      .db-cc-chip {
+        background: #f1f5f9; color: #1e293b; border: 1px solid #cbd5e1;
+        border-radius: 12px; padding: 3px 9px; font-size: 10px; cursor: pointer;
+      }
+      .db-cc-chip.selected { background: #2563eb; color: #fff; border-color: #2563eb; font-weight: 700; }
+      .db-cc-note {
+        width: 100%; box-sizing: border-box; font: inherit; font-size: 11px;
+        border: 1px solid #cbd5e1; border-radius: 4px; padding: 5px 6px; resize: vertical;
+      }
+      .db-cc-remark-actions { display: flex; gap: 6px; margin-top: 6px; }
+      .db-cc-cancel-btn {
+        flex: 1; background: #f1f5f9; color: #334155; border: 1px solid #cbd5e1;
+        border-radius: 4px; padding: 5px; font-size: 11px; font-weight: 600; cursor: pointer;
+      }
+      .db-cc-save-btn {
+        flex: 1; background: #16a34a; color: #fff; border: none;
+        border-radius: 4px; padding: 5px; font-size: 11px; font-weight: 700; cursor: pointer;
+      }
+      .db-cc-save-btn:disabled { opacity: .6; cursor: default; }
     `;
     document.head.appendChild(s);
   }
@@ -242,6 +279,10 @@
   // combined, with no date/branch pickers (no room for them here).
   let summaryRows = [];
   let filter = 'all'; // 'all' | 'pending' | 'validated'
+  let ccIdToken = null;      // set per loadAndRender — remark options + save reuse it
+  let ccBodyEl = null;
+  let ccBranchNamesCache = {};
+  let ccRemarkOpts = null;   // CC catalog, cached per page load
 
   function computeSummaryRows(allRows) {
     const groups = {};
@@ -263,14 +304,26 @@
       const firstWorker = earliestOf(workerRows);
       const lastCc      = ccRows.length ? latestOf(ccRows) : null;
       const latestOfAll = latestOf(g.rows);
+      // Full chronological trail for the expandable history (already in memory —
+      // no extra fetch). Same fields the dashboard Details mode renders.
+      const trail = g.rows.slice().sort((a, b) => latestMs(a) - latestMs(b)).map(r => ({
+        source:  r.source || '',
+        remark:  r.remarks || '',
+        note:    r.note || '',
+        status:  r.remarks_status || '',
+        created: r.created_at || '',
+        author:  (r.author && r.author.employee_id) || r.author_system_id || '',
+      }));
       return {
         dateLabel: dateKeyToDdMmYyyy(g.dateKey),
         branchId:  g.branchId,
         cId:       g.cId,
+        agentSystemId: (g.rows[0] && g.rows[0].assigned_to_system_id) || '',
         customerPhone:     (latestOfAll.customer_phone || '').trim(),
         firstWorkerRemark: firstWorker.remarks || firstWorker.note || '',
         lastCcRemark:      lastCc ? (lastCc.remarks || lastCc.note || '') : '',
         stillPending:      latestOfAll.source === 'WORKER',
+        trail,
       };
     });
   }
@@ -283,7 +336,7 @@
     const filtered = filter === 'all' ? summaryRows
       : summaryRows.filter(r => filter === 'pending' ? r.stillPending : !r.stillPending);
 
-    const rowsHtml = filtered.length ? filtered.map(r => `
+    const rowsHtml = filtered.length ? filtered.map((r, idx) => `
       <div class="db-cc-row ${r.stillPending ? 'db-cc-row-pending' : 'db-cc-row-validated'}">
         <div class="db-cc-row-top">
           <span>${escapeHtml(r.cId)}</span>
@@ -295,8 +348,14 @@
           <span class="db-cc-badge ${r.stillPending ? 'db-cc-badge-pending' : 'db-cc-badge-validated'}">
             ${r.stillPending ? '⏳ Pending' : '✓ Validated'}
           </span>
-          ${r.customerPhone ? `<button type="button" class="db-cc-call-btn" data-phone="${escapeHtml(r.customerPhone)}">📞 Call</button>` : ''}
+          <span>
+            ${r.customerPhone ? `<button type="button" class="db-cc-call-btn" data-phone="${escapeHtml(r.customerPhone)}">📞 Call</button>` : ''}
+            <button type="button" class="db-cc-hist-btn" data-idx="${idx}">▼ History (${r.trail.length})</button>
+            <button type="button" class="db-cc-remark-btn" data-idx="${idx}">📝 Remarks</button>
+          </span>
         </div>
+        <div class="db-cc-hist-section" data-idx="${idx}" style="display:none"></div>
+        <div class="db-cc-remark-section" data-idx="${idx}" style="display:none"></div>
       </div>`).join('') : `<div class="db-cc-status">এই filter-এ কোনো entry নেই</div>`;
 
     bodyEl.innerHTML = `
@@ -321,16 +380,182 @@
       });
     });
     bodyEl.querySelectorAll('.db-cc-call-btn').forEach(btn => {
+      // Same as the dashboard's Hold Validation Call button: send the number to
+      // the app (background → Firebase session → app auto-dial), NOT a tel: link.
       btn.addEventListener('click', () => {
-        chrome.runtime.sendMessage({ action: 'db_cc_dial', phone: btn.dataset.phone });
+        const cleaned = btn.dataset.phone.replace(/[\s-()]/g, '');
+        const originalText = btn.textContent;
+        btn.disabled = true;
+        btn.textContent = '⏳ …';
+        chrome.runtime.sendMessage({ action: 'send_to_app', text: cleaned }, () => {
+          btn.textContent = '📞 Sent!';
+          setTimeout(() => { btn.textContent = originalText; btn.disabled = false; }, 1500);
+        });
       });
+    });
+    bodyEl.querySelectorAll('.db-cc-hist-btn').forEach(btn => {
+      btn.addEventListener('click', () => toggleCcHistory(bodyEl, filtered, +btn.dataset.idx, btn));
+    });
+    bodyEl.querySelectorAll('.db-cc-remark-btn').forEach(btn => {
+      btn.addEventListener('click', () => toggleCcRemarkSection(bodyEl, filtered, +btn.dataset.idx));
+    });
+  }
+
+  function fmtHhMm(iso) {
+    try {
+      const d = new Date(iso);
+      const p = n => String(n).padStart(2, '0');
+      return `${p(d.getDate())}-${p(d.getMonth() + 1)} ${p(d.getHours())}:${p(d.getMinutes())}`;
+    } catch { return ''; }
+  }
+
+  // Expandable full trail (every WORKER request + CC response, chronological) —
+  // the rows are already in memory from the report fetch, no extra request.
+  function toggleCcHistory(bodyEl, rows, idx, btn) {
+    const r = rows[idx];
+    const section = bodyEl.querySelector(`.db-cc-hist-section[data-idx="${idx}"]`);
+    if (!section || !r) return;
+    if (section.style.display !== 'none') {
+      section.style.display = 'none';
+      btn.textContent = `▼ History (${r.trail.length})`;
+      return;
+    }
+    section.style.display = '';
+    btn.textContent = `▲ History (${r.trail.length})`;
+    section.innerHTML = r.trail.length ? r.trail.map(t => {
+      const who = t.source === 'CC' ? '↳ CC' : '🙋 Worker';
+      const cls = t.source === 'CC' ? 'db-cc-hist-cc' : 'db-cc-hist-worker';
+      const txt = [t.remark, t.note ? `📝 ${t.note}` : ''].filter(Boolean).join(' — ') || '(no text)';
+      return `<div class="db-cc-hist-entry ${cls}">
+        <div class="db-cc-hist-head"><span>${who}${t.author ? ' · ' + escapeHtml(t.author) : ''}</span><span>${escapeHtml(fmtHhMm(t.created))}</span></div>
+        <div>${escapeHtml(txt)}${t.status ? ` <span class="db-cc-hist-status">[${escapeHtml(t.status)}]</span>` : ''}</div>
+      </div>`;
+    }).join('') : '<div class="db-cc-status">কোনো history নেই</div>';
+  }
+
+  // CC remark options catalog (ported from popup.js fetchCcDashboardRemarkOptions).
+  async function fetchCcRemarkOptions() {
+    if (ccRemarkOpts) return ccRemarkOpts;
+    let remarkLang = 'bn';
+    try {
+      const langRes = await fetch(`${FIREBASE_URL}/config/language/ccLang.json?auth=${ccIdToken}`);
+      remarkLang = ((((await langRes.json()) || '').trim()) || 'bn_en').split('_')[0] || 'bn';
+    } catch { /* default bn */ }
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/validation_remarks` +
+      `?select=remarks_en,remarks_bn,target_status,instruction_text` +
+      `&source=eq.CC&is_active=eq.true&order=priority.desc`, {
+      headers: { 'apikey': SUPABASE_ANON_KEY, 'Authorization': `Bearer ${ccIdToken}`, 'Accept': 'application/json' },
+    });
+    if (!res.ok) throw new Error(`remark options fetch failed (${res.status})`);
+    const data = await res.json();
+    ccRemarkOpts = (Array.isArray(data) ? data : []).map(x => {
+      const en = (x.remarks_en || '').trim();
+      const bn = (x.remarks_bn || '').trim();
+      return {
+        label: (remarkLang === 'en' ? (en || bn) : (bn || en)).trim(),
+        english: en || bn,
+        target: (x.target_status || '').trim(),
+        instruction: (x.instruction_text || '').trim(),
+      };
+    }).filter(o => o.label && o.target);
+    return ccRemarkOpts;
+  }
+
+  // Per-row 📝 Remarks → CC options + note + save, same catalog + write path as
+  // the dashboard (popup.js toggleHvRemarkSection) and the app's CC sheet.
+  // No sheet-verdict mirror here (needs the device Google account, app-side only).
+  async function toggleCcRemarkSection(bodyEl, rows, idx) {
+    const card = rows[idx];
+    const section = bodyEl.querySelector(`.db-cc-remark-section[data-idx="${idx}"]`);
+    if (!section || !card) return;
+    if (section.style.display !== 'none') { section.style.display = 'none'; return; }
+    section.style.display = '';
+    if (section.dataset.loaded) return;
+    section.innerHTML = '<div class="db-cc-status">⏳ Remarks লোড হচ্ছে…</div>';
+
+    if (!ccIdToken) { section.innerHTML = '<div class="db-cc-status">⚠ Login করুন প্রথমে</div>'; return; }
+    if (!card.agentSystemId) {
+      section.innerHTML = '<div class="db-cc-status">⚠ এই parcel-এ এখনো কোনো worker assign/touch করেনি, তাই remark save করা যাচ্ছে না</div>';
+      return;
+    }
+    let options;
+    try {
+      options = await fetchCcRemarkOptions();
+    } catch (e) {
+      section.innerHTML = `<div class="db-cc-status">⚠ Remarks load failed — ${escapeHtml(e.message || 'network error')}</div>`;
+      return;
+    }
+    section.dataset.loaded = '1';
+
+    const chipsHtml = options.length
+      ? `<div class="db-cc-chip-row">${options.map((o, i) =>
+          `<button type="button" class="db-cc-chip" data-opt="${i}" title="→ ${escapeHtml(o.target)}">${escapeHtml(o.label)}</button>`
+        ).join('')}</div>`
+      : '<div class="db-cc-status">⚠ Config-এ কোনো remark সেট করা নেই। নোট হিসেবে লিখতে পারেন:</div>';
+
+    section.innerHTML = `
+      ${chipsHtml}
+      <textarea class="db-cc-note" rows="2" placeholder="নোট লিখুন (ঐচ্ছিক)"></textarea>
+      <div class="db-cc-remark-actions">
+        <button type="button" class="db-cc-cancel-btn">বন্ধ করুন</button>
+        <button type="button" class="db-cc-save-btn">সেভ করুন</button>
+      </div>
+      <div class="db-cc-status" data-role="msg" style="display:none"></div>`;
+
+    const msgEl   = section.querySelector('[data-role="msg"]');
+    const noteEl  = section.querySelector('.db-cc-note');
+    const saveBtn = section.querySelector('.db-cc-save-btn');
+    let selected = -1;
+    const say = t => { msgEl.textContent = t; msgEl.style.display = t ? '' : 'none'; };
+
+    section.querySelectorAll('.db-cc-chip').forEach(chip => {
+      chip.addEventListener('click', () => {
+        const i = +chip.dataset.opt;
+        selected = (selected === i) ? -1 : i;
+        section.querySelectorAll('.db-cc-chip').forEach(c =>
+          c.classList.toggle('selected', +c.dataset.opt === selected));
+        noteEl.value = selected >= 0 ? options[selected].instruction : '';
+      });
+    });
+    section.querySelector('.db-cc-cancel-btn').addEventListener('click', () => {
+      section.style.display = 'none';
+    });
+    saveBtn.addEventListener('click', async () => {
+      const note = noteEl.value.trim();
+      const opt = selected >= 0 ? options[selected] : null;
+      if (!opt && !note) { say('একটি রিমার্কস বেছে নিন বা নোট লিখুন'); return; }
+      saveBtn.disabled = true;
+      saveBtn.textContent = '⏳ …';
+      try {
+        const res = await fetch(`${SUPABASE_URL}/functions/v1/validations`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${ccIdToken}`, 'apikey': SUPABASE_ANON_KEY },
+          body: JSON.stringify({ action: 'write', row: {
+            consignment: card.cId, branch_id: card.branchId,
+            assigned_to_system_id: card.agentSystemId, source: 'CC',
+            remarks_status: opt ? opt.target : '',
+            remarks: opt ? opt.english : '',
+            note,
+            remarks_bn: (opt && opt.label !== opt.english) ? opt.label : '',
+          }}),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || data.ok === false) throw new Error(data.error || `HTTP ${res.status}`);
+        say('✓ রিমার্কস সেভ হয়েছে — reload হচ্ছে…');
+        setTimeout(() => { if (ccBodyEl) loadAndRender(ccBodyEl); }, 800);
+      } catch (e) {
+        say(`⚠ Save failed — ${e.message || 'network error'}`);
+        saveBtn.disabled = false;
+        saveBtn.textContent = 'সেভ করুন';
+      }
     });
   }
 
   async function loadAndRender(bodyEl) {
     const idToken = await getValidFirebaseIdToken();
     if (!idToken) { bodyEl.innerHTML = '<div class="db-cc-status">⚠ Extension-এ Google দিয়ে login করুন প্রথমে</div>'; return; }
-
+    ccIdToken = idToken;
+    ccBodyEl = bodyEl;
     const { google_uid } = await chrome.storage.local.get(['google_uid']);
     if (!google_uid) { bodyEl.innerHTML = '<div class="db-cc-status">⚠ Google login পাওয়া যায়নি</div>'; return; }
 
@@ -348,6 +573,7 @@
         allRows.push(...rows);
       }));
       summaryRows = computeSummaryRows(allRows);
+      ccBranchNamesCache = branchNames;
       render(bodyEl, branchNames);
     } catch (e) {
       console.error('[DB CC Panel] load failed:', e);
