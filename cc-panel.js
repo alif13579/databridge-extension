@@ -660,7 +660,7 @@
   // exactly on one row; writes go together; never appended.
   function effectiveLookups(conn) {
     const dyn = (conn.lookups || []).filter(r => r && String(r.colRef || '').trim());
-    if (dyn.length) return dyn.map(r => ({ colRef: String(r.colRef).trim(), kind: r.kind === 'today' ? 'today' : 'consignment' }));
+    if (dyn.length) return dyn.map(r => ({ colRef: String(r.colRef).trim(), kind: String(r.kind || 'consignment'), mode: r.mode === 'text' ? 'text' : 'index' }));
     if (!conn.dateMatchColumn) return [];
     const out = [];
     if (conn.matchColumn) out.push({ colRef: conn.matchColumn, kind: 'consignment' });
@@ -671,14 +671,16 @@
   function effectiveWrites(conn) {
     const dyn = (conn.writes || []).filter(r => r && String(r.colRef || '').trim());
     if (dyn.length) {
-      const kinds = ['verdict', 'remark', 'note', 'status', 'today'];
-      return dyn.map(r => ({ colRef: String(r.colRef).trim(), kind: kinds.includes(r.kind) ? r.kind : 'verdict' }));
+      return dyn.map(r => ({ colRef: String(r.colRef).trim(), kind: String(r.kind || 'verdict'), mode: r.mode === 'text' ? 'text' : 'index' }));
     }
     if (!conn.dateMatchColumn || !conn.writeColumn) return [];
     return [{ colRef: conn.writeColumn, kind: 'verdict' }];
   }
 
   function isRemarkConn(conn) {
+    if (!conn || conn.enabled === false) return false;
+    if (conn.purpose === 'scanner') return false;
+    if (conn.purpose === 'remark') return true;
     return effectiveLookups(conn).length > 0 && effectiveWrites(conn).length > 0;
   }
 
@@ -696,6 +698,31 @@
     [/^(\d{1,2})\.(\d{1,2})\.(\d{4})$/, (m) => [m[3], m[2].padStart(2, '0'), m[1].padStart(2, '0')]],
   ];
   const MONTHS = { jan: '01', feb: '02', mar: '03', apr: '04', may: '05', jun: '06', jul: '07', aug: '08', sep: '09', oct: '10', nov: '11', dec: '12' };
+  // yyyy-MM-dd key or null. Covers the sheet zoo + our Dhaka stamp + ISO.
+  function parseSheetDate(raw) {
+    const s2 = String(raw || '').trim();
+    if (!s2) return null;
+    let m = s2.match(/^(\d{4})-(\d{2})-(\d{2})/);
+    if (m) return `${m[1]}-${m[2]}-${m[3]}`;
+    m = s2.match(/^(\d{1,2})-(\d{1,2})-(\d{4})/);
+    if (m) return `${m[3]}-${m[2].padStart(2, '0')}-${m[1].padStart(2, '0')}`;
+    m = s2.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+    if (m) {
+      const isoDmy = `${m[3]}-${m[2].padStart(2, '0')}-${m[1].padStart(2, '0')}`;
+      const isoMdy = `${m[3]}-${m[1].padStart(2, '0')}-${m[2].padStart(2, '0')}`;
+      return isoDmy;
+    }
+    m = s2.match(/^(\d{1,2})-([A-Za-z]{3})-(\d{2}|\d{4})$/);
+    if (m) {
+      const months = { jan: '01', feb: '02', mar: '03', apr: '04', may: '05', jun: '06', jul: '07', aug: '08', sep: '09', oct: '10', nov: '11', dec: '12' };
+      const mo = months[m[2].toLowerCase()];
+      if (mo) return `${m[3].length === 2 ? '20' + m[3] : m[3]}-${mo}-${m[1].padStart(2, '0')}`;
+    }
+    const d = new Date(s2);
+    if (!isNaN(d)) return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    return null;
+  }
+
   function sheetCellIsToday(cell, todayKey) {
     const raw = String(cell || '').trim();
     if (!raw) return false;
@@ -727,17 +754,31 @@
     return res.json();
   }
 
-  async function resolveLetter(token, sheetId, tab, ref, headerCache) {
-    const t = String(ref || '').trim();
+  // mode-aware like the app: {mode:'text'} = exact header match in the
+  // connection's headerRow; otherwise letter (or 1-based number).
+  async function resolveLetter(token, sheetId, tab, rule, headerRow, headerCache) {
+    const t = String(rule?.colRef || '').trim();
     if (!t) return null;
-    if (/^[A-Za-z]{1,3}$/.test(t)) return t.toUpperCase();
-    if (!headerCache.values) {
-      const data = await sheetsGet(token,
-        `https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values/${encodeURIComponent(tab + '!1:1')}`);
-      const rows = data.values || [];
-      headerCache.values = rows.length ? rows[0] : [];
+    const mode = rule?.mode === 'text' ? 'text' : 'index';
+    if (mode !== 'text') {
+      if (/^[A-Za-z]{1,3}$/.test(t)) return t.toUpperCase();
+      const n = parseInt(t, 10);
+      if (!isNaN(n) && n >= 1 && n <= 702) {
+        let s2 = '', num = n;
+        while (num > 0) { const rem = (num - 1) % 26; s2 = String.fromCharCode(65 + rem) + s2; num = Math.floor((num - 1) / 26); }
+        return s2;
+      }
+      return null;
     }
-    const idx = headerCache.values.findIndex(h => String(h || '').trim().toLowerCase() === t.toLowerCase());
+    const hr = (headerRow >= 1 && headerRow <= 20) ? headerRow : 1;
+    const key = tab + '#' + hr;
+    if (!headerCache[key]) {
+      const data = await sheetsGet(token,
+        `https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values/${encodeURIComponent(tab + '!' + hr + ':' + hr)}`);
+      const rows = data.values || [];
+      headerCache[key] = rows.length ? rows[0] : [];
+    }
+    const idx = headerCache[key].findIndex(h => String(h || '').trim() === t);
     return idx >= 0 ? indexToLetter(idx + 1) : null;
   }
 
@@ -784,7 +825,33 @@
         note:    (latestCc && latestCc.note) || (latestAny && latestAny.note) || '',
         status:  (latestCc && latestCc.status) || (latestAny && latestAny.status) || '',
         today:   `${todayParts[0]}-${todayParts[1]}-${todayParts[2]}`,
+        consignment: card.cId,
       };
+      // Enrich with the latest validations row (same branch, today) so lookups
+      // and writes can point at row columns (author, created_at...) too.
+      try {
+        const dateKey = todayBdDateKey();
+        const startIso = new Date(`${dateKey}T00:00:00+06:00`).toISOString();
+        const endIso = new Date(new Date(startIso).getTime() + 24 * 60 * 60 * 1000).toISOString();
+        const repRows = await fetchSupabaseReportRows(card.branchId, startIso, endIso, ccIdToken);
+        const mine = repRows.filter(r => r.consignment === card.cId)
+          .sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+        const latest = mine.length ? mine[mine.length - 1] : null;
+        if (latest) {
+          vals.remarks_status = latest.remarks_status || '';
+          vals.remarks = latest.remarks || vals.remark;
+          vals.note = latest.note != null ? latest.note : vals.note;
+          vals.source = latest.source || '';
+          vals.created_at = latest.created_at || '';
+          vals.customer_phone = latest.customer_phone || '';
+          vals.consignment_status = latest.consignment_status || '';
+          vals.branch_id = latest.branch_id || card.branchId;
+          vals.author_system_id = latest.author_system_id || '';
+          vals.assigned_to_system_id = latest.assigned_to_system_id || '';
+          vals.author_name = (latest.author && latest.author.name) || latest.author_system_id || '';
+          vals.assigned_name = latest.assigned_to_system_id || '';
+        }
+      } catch (e) { console.warn('[DB CC Panel] sync enrich failed (trail values kept):', e); }
       let done = 0, lastErr = '';
       for (const conn of conns) {
         try {
@@ -806,16 +873,17 @@
     const lookups = effectiveLookups(conn);
     const writes = effectiveWrites(conn);
     const tab = (conn.tabPattern || 'Day {dd}').replace('{dd}', todayBdDateKey().split('-')[2]);
+    const hr = (conn.headerRow >= 1 && conn.headerRow <= 20) ? conn.headerRow : 1;
     const headerCache = {};
     const lookupCols = [];
     for (const rule of lookups) {
-      const letter = await resolveLetter(token, conn.sheetId, tab, rule.colRef, headerCache);
+      const letter = await resolveLetter(token, conn.sheetId, tab, rule, hr, headerCache);
       if (!letter) throw new Error(`lookup column '${rule.colRef}' পাওয়া যায়নি`);
       lookupCols.push({ rule, letter });
     }
     const writeCols = [];
     for (const rule of writes) {
-      const letter = await resolveLetter(token, conn.sheetId, tab, rule.colRef, headerCache);
+      const letter = await resolveLetter(token, conn.sheetId, tab, rule, hr, headerCache);
       if (!letter) throw new Error(`write column '${rule.colRef}' পাওয়া যায়নি`);
       writeCols.push({ rule, letter });
     }
@@ -829,13 +897,28 @@
     }
     const scanned = Math.max(0, ...Object.values(columns).map(c => c.length));
     const todayKey = todayBdDateKey();
-    const wantOf = kind => kind === 'consignment' ? consignmentId.trim() : 'আজকের তারিখ';
+    const wantOf = kind => {
+      if (kind === 'consignment') return consignmentId.trim();
+      if (kind === 'today') return 'আজকের তারিখ';
+      const v = vals[kind];
+      return (v != null && String(v) !== '') ? String(v) : '(খালি)';
+    };
+    const cellMatches = (kind, cell) => {
+      const t = String(cell || '').trim();
+      if (kind === 'consignment') return t === consignmentId.trim();
+      if (kind === 'today') return sheetCellIsToday(t, todayKey);
+      if (kind === 'created_at') {
+        const want = parseSheetDate(String(vals[kind] || ''));
+        if (!want) return false;
+        const got = parseSheetDate(t);
+        return !!got && got === want;
+      }
+      const want = vals[kind];
+      return want != null && String(want) !== '' && t === String(want).trim();
+    };
     for (let i = 0; i < scanned; i++) {
-      const okAll = lookupCols.every(({ rule, letter }) => {
-        const cell = (columns[letter][i] || '').trim();
-        return rule.kind === 'consignment' ? cell === consignmentId.trim()
-          : sheetCellIsToday(cell, todayKey);
-      });
+      const okAll = lookupCols.every(({ rule, letter }) =>
+        cellMatches(rule.kind, columns[letter][i]));
       if (!okAll) continue;
       // Exact row — write all rules together.
       for (const { rule, letter } of writeCols) {
