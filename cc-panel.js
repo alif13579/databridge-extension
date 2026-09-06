@@ -766,7 +766,7 @@
       const connRes = await fetch(
         `${FIREBASE_URL}/config/connectors/${encodeURIComponent(card.branchId)}/current.json?auth=${ccIdToken}`);
       const connObj = await connRes.json().catch(() => ({})) || {};
-      const conns = Object.values(connObj).filter(isRemarkConn);
+      const conns = Object.values(connObj).filter(isRemarkConn).filter(c => c.enabled !== false);
       if (!conns.length) throw new Error('এই branch-এ remark connection নেই');
       // 2. Sheets OAuth token (background → chrome.identity; needs re-login
       //    once after the update, since the spreadsheets scope is new).
