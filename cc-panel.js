@@ -188,13 +188,12 @@
         border-radius: 4px; padding: 3px 8px; font-size: 10px; font-weight: 600; cursor: pointer;
         margin-left: 4px;
       }
-      .db-cc-sync-btn {
+      #db-cc-sync-sheet {
         background: #ede9fe; color: #6d28d9; border: 1px solid #c4b5fd;
-        border-radius: 4px; padding: 3px 8px; font-size: 10px; font-weight: 600; cursor: pointer;
-        margin-left: 4px;
+        border-radius: 4px; padding: 2px 8px; font-size: 11px; font-weight: 700; cursor: pointer;
+        margin-right: 4px;
       }
-      .db-cc-sync-btn:disabled { opacity: .6; cursor: default; }
-      .db-cc-sync-msg { font-size: 10px; color: #64748b; margin-top: 4px; }
+      #db-cc-sync-sheet:disabled { opacity: .6; cursor: default; }
       .db-cc-hist-section, .db-cc-remark-section {
         margin-top: 6px; border-top: 1px dashed #cbd5e1; padding-top: 6px;
       }
@@ -270,7 +269,7 @@
     panel.innerHTML = `
       <div class="db-cc-hdr" id="db-cc-hdr">
         <span>☎️ Call Center — Hold Validation</span>
-        <span><button id="db-cc-refresh" title="Reload now">⟳</button><button id="db-cc-min" title="Minimize">−</button></span>
+        <span><button id="db-cc-sync-sheet" title="Sync to Sheet — sheet-এর today blank + Supabase CC মিলিয়ে bulk update">⇪ Sheet</button><button id="db-cc-refresh" title="Reload now">⟳</button><button id="db-cc-min" title="Minimize">−</button></span>
       </div>
       <div class="db-cc-body" id="db-cc-body">
         <div class="db-cc-status">⏳ Loading…</div>
@@ -281,7 +280,7 @@
 
     const hdr = panel.querySelector('#db-cc-hdr');
     hdr.addEventListener('mousedown', e => {
-      if (e.target.id === 'db-cc-min') return;
+      if (e.target.closest && e.target.closest('button')) return;
       const startX = e.clientX, startY = e.clientY;
       const startLeft = panel.offsetLeft, startTop = panel.offsetTop;
       function onMove(ev) {
@@ -310,6 +309,12 @@
       btn.textContent = '⏳';
       try { if (ccBodyEl) await loadAndRender(ccBodyEl); }
       finally { btn.textContent = '⟳'; }
+    });
+
+    panel.querySelector('#db-cc-sync-sheet').addEventListener('click', async (e) => {
+      e.stopPropagation();
+      const btn = e.currentTarget;
+      await bulkSyncToSheet(btn);
     });
 
     return panel;
@@ -341,6 +346,8 @@
   let ccIdToken = null;      // set per loadAndRender — remark options + save reuse it
   let ccBodyEl = null;
   let ccBranchNamesCache = {};
+  let ccBranchIdsCache = []; // user's branches (bulk sync iterates these)
+  let ccAllReportRows = [];  // raw report rows for today (bulk sync consolidates CC)
   let ccRemarkOpts = null;   // CC catalog, cached per page load
   let ccRefreshTimer = null;
   const CC_REFRESH_MS = 60_000; // auto-refresh: new parcels + called-status updates
@@ -415,10 +422,8 @@
             ${r.customerPhone ? `<button type="button" class="db-cc-call-btn" data-phone="${escapeHtml(r.customerPhone)}">📞 Call</button>` : ''}
             <button type="button" class="db-cc-hist-btn" data-idx="${idx}">▼ History (${r.trail.length})</button>
             <button type="button" class="db-cc-remark-btn" data-idx="${idx}">📝 Remarks</button>
-            <button type="button" class="db-cc-sync-btn" data-idx="${idx}" title="Sheet sync — dynamic lookup দিয়ে reference খুঁজে field update">🔄 Sync</button>
           </span>
         </div>
-        <div class="db-cc-sync-msg" data-idx="${idx}" style="display:none"></div>
         <div class="db-cc-hist-section" data-idx="${idx}" style="display:none"></div>
         <div class="db-cc-remark-section" data-idx="${idx}" style="display:none"></div>
       </div>`).join('') : `<div class="db-cc-status">এই filter-এ কোনো entry নেই</div>`;
@@ -463,9 +468,6 @@
     });
     bodyEl.querySelectorAll('.db-cc-remark-btn').forEach(btn => {
       btn.addEventListener('click', () => toggleCcRemarkSection(bodyEl, filtered, +btn.dataset.idx));
-    });
-    bodyEl.querySelectorAll('.db-cc-sync-btn').forEach(btn => {
-      btn.addEventListener('click', () => syncCardToSheet(bodyEl, filtered, +btn.dataset.idx, btn));
     });
   }
 
@@ -645,6 +647,8 @@
       }));
       summaryRows = computeSummaryRows(allRows);
       ccBranchNamesCache = branchNames;
+      ccBranchIdsCache = branchIds.slice();
+      ccAllReportRows = allRows;
       await enrichWithParcelDetails(idToken);
       render(bodyEl, branchNames);
     } catch (e) {
@@ -792,156 +796,205 @@
     });
   }
 
-  async function syncCardToSheet(bodyEl, rows, idx, btn) {
-    const card = rows[idx];
-    const msgEl = bodyEl.querySelector(`.db-cc-sync-msg[data-idx="${idx}"]`);
-    const say = t => { if (msgEl) { msgEl.textContent = t; msgEl.style.display = t ? '' : 'none'; } };
-    if (!card) return;
-    btn.disabled = true;
-    const orig = btn.textContent;
-    btn.textContent = '⏳ …';
-    try {
-      if (!ccIdToken) throw new Error('login missing — extension-এ Google দিয়ে login করুন');
-      // 1. Branch's remark connections (dynamic rules live here).
-      const connRes = await fetch(
-        `${FIREBASE_URL}/config/connectors/${encodeURIComponent(card.branchId)}/current.json?auth=${ccIdToken}`);
-      const connObj = await connRes.json().catch(() => ({})) || {};
-      const conns = Object.values(connObj).filter(isRemarkConn).filter(c => c.enabled !== false);
-      if (!conns.length) throw new Error('এই branch-এ remark connection নেই');
-      // 2. Sheets OAuth token (background → chrome.identity; needs re-login
-      //    once after the update, since the spreadsheets scope is new).
-      const { token, error } = await getSheetsToken();
-      if (!token) throw new Error(error || 'Sheets permission নেই — extension popup থেকে re-login করুন');
-      // 3. Values: feedback = category of the latest CC remark (via catalog
-      //    map remark->category), validation = derived, validator_name =
-      //    latest CC author. Blank stays blank.
-      const ccTrail = (card.trail || []).filter(t => t.source === 'CC');
-      const latestCc = ccTrail.length ? ccTrail[ccTrail.length - 1] : null;
-      const latestAny = (card.trail || []).length ? card.trail[card.trail.length - 1] : null;
-      const todayParts = todayBdDateKey().split('-'); // yyyy-MM-dd (BD)
-      let feedback = '';
-      try {
-        const opts = await fetchCcRemarkOptions();
-        const key = (latestCc && (latestCc.remark || '')) || (latestAny && (latestAny.remark || '')) || '';
-        const hit = opts.find(o => o.english === key);
-        feedback = (hit && hit.category) || '';
-      } catch (e) { console.warn('[DB CC Panel] feedback map failed:', e); }
-      const validatorName =
-        (latestCc && ((latestCc.author && latestCc.author.name) || latestCc.author_system_id)) ||
-        (latestAny && ((latestAny.author && latestAny.author.name) || latestAny.author_system_id)) || '';
-      const vals = {
-        feedback,
-        validation: deriveValidation(feedback),
-        validator_name: validatorName || '',
-        today: `${todayParts[0]}-${todayParts[1]}-${todayParts[2]}`,
-        consignment: card.cId,
-        created_at: '',
-        author_name: '',
-      };
-      // Enrich lookups (created_at / author_name) from the latest validations
-      // row (same branch, today).
-      try {
-        const dateKey = todayBdDateKey();
-        const startIso = new Date(`${dateKey}T00:00:00+06:00`).toISOString();
-        const endIso = new Date(new Date(startIso).getTime() + 24 * 60 * 60 * 1000).toISOString();
-        const repRows = await fetchSupabaseReportRows(card.branchId, startIso, endIso, ccIdToken);
-        const mine = repRows.filter(r => r.consignment === card.cId)
-          .sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
-        const latest = mine.length ? mine[mine.length - 1] : null;
-        if (latest) {
-          vals.created_at = latest.created_at || '';
-          vals.author_name = (latest.author && latest.author.name) || latest.author_system_id || '';
-          // Prefer the row's author when trail missed it.
-          if (!vals.validator_name) vals.validator_name = vals.author_name;
-        }
-      } catch (e) { console.warn('[DB CC Panel] sync enrich failed (trail values kept):', e); }
-      let done = 0, lastErr = '';
-      for (const conn of conns) {
-        try {
-          const hit = await syncOneConnection(token, conn, card.cId, vals);
-          if (hit) done++;
-        } catch (e) { lastErr = e.message || 'sync failed'; }
-      }
-      if (done > 0) { btn.textContent = '✓ Synced'; say(`✓ Sheet updated (${done}/${conns.length})`); }
-      else { btn.textContent = '⚠ Failed'; say(`✕ ${lastErr || 'match পাওয়া যায়নি'}`); }
-      setTimeout(() => { btn.textContent = orig; btn.disabled = false; }, 2500);
-    } catch (e) {
-      btn.textContent = '⚠ Failed';
-      say(`✕ ${e.message || 'sync failed'}`);
-      setTimeout(() => { btn.textContent = orig; btn.disabled = false; }, 2500);
+  // ── BULK SYNC TO SHEET (header) ────────────────────────────────
+  // Branch-wise: every branch uses ONLY its own remark connections
+  // (config/connectors/{branchId}/current) → its own sheet.
+  // Sheet-driven: read the connection's today tab, take rows whose write
+  // cells are blank, match by consignment id against Supabase's
+  // consolidated CC (latest CC remark per consignment today), fill ONLY
+  // the blank cells. Never overwrites filled cells, never appends.
+  function bulkStatusEl() {
+    if (!ccBodyEl) return null;
+    let el = ccBodyEl.querySelector('#db-cc-bulk-msg');
+    if (!el) {
+      el = document.createElement('div');
+      el.id = 'db-cc-bulk-msg';
+      el.className = 'db-cc-status';
+      el.style.display = 'none';
+      ccBodyEl.insertAdjacentElement('afterbegin', el);
     }
+    return el;
   }
 
-  async function syncOneConnection(token, conn, consignmentId, vals) {
+  function bulkSay(t) {
+    const el = bulkStatusEl();
+    if (!el) return;
+    el.textContent = t;
+    el.style.display = t ? '' : 'none';
+  }
+
+  async function sheetsWriteCell(token, sheetId, tab, letter, row1, value) {
+    const res = await fetch(
+      `https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values/${encodeURIComponent(tab + '!' + letter + row1)}?valueInputOption=RAW`,
+      {
+        method: 'PUT',
+        headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ range: `${tab}!${letter}${row1}`, majorDimension: 'ROWS', values: [[value]] }),
+      });
+    if (!res.ok) throw new Error(`Sheets write ${res.status}`);
+  }
+
+  // Consolidated CC per (branch, consignment) for today: latest CC row →
+  // feedback (catalog map) / validation (derived) / validator_name / created_at.
+  async function buildConsolidatedCc() {
+    const opts = await fetchCcRemarkOptions().catch(() => []);
+    const byKey = new Map(); // `${branchId}__${consignment}` -> {rows:[]}
+    (ccAllReportRows || []).forEach(r => {
+      if (!r || !r.consignment || !r.branch_id) return;
+      const k = `${r.branch_id}__${r.consignment}`;
+      if (!byKey.has(k)) byKey.set(k, []);
+      byKey.get(k).push(r);
+    });
+    const out = new Map();
+    byKey.forEach((rows, k) => {
+      const ccRows = rows.filter(r => r.source === 'CC')
+        .sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+      if (!ccRows.length) return; // Supabase-এ CC remark নেই — sheet-এ লেখার কিছু নেই
+      const latest = ccRows[ccRows.length - 1];
+      const engKey = (latest.remarks || '').trim();
+      const hit = (opts || []).find(o => o.english === engKey);
+      const feedback = (hit && hit.category) || '';
+      out.set(k, {
+        feedback,
+        validation: deriveValidation(feedback),
+        validator_name: ((latest.author && latest.author.name) || latest.author_system_id || '').trim(),
+        created_at: latest.created_at || '',
+      });
+    });
+    return out;
+  }
+
+  // One connection → its own sheet. Returns counts for the summary line.
+  async function bulkSyncOneConnection(token, branchId, conn, consolidated, todayKey) {
+    const res = { scanned: 0, filled: 0, syncedRows: 0, syncedCells: 0, noCc: 0, skipped: 0 };
     const lookups = effectiveLookups(conn);
-    const writes = effectiveWrites(conn);
-    const tab = (conn.tabPattern || 'Day {dd}').replace('{dd}', todayBdDateKey().split('-')[2]);
+    const writes = effectiveWrites(conn).filter(r =>
+      r.kind === 'feedback' || r.kind === 'validation' || r.kind === 'validator_name');
+    if (!lookups.length || !writes.length) throw new Error('lookup/write rule নেই');
+    const cidRule = lookups.find(r => r.kind === 'consignment');
+    if (!cidRule) throw new Error('consignment lookup নেই — কোন column দিযে মিলাবো বোঝা যাচ্ছে না');
+    const tab = (conn.tabPattern || 'Day {dd}').replace('{dd}', todayKey.split('-')[2]);
     const hr = (conn.headerRow >= 1 && conn.headerRow <= 20) ? conn.headerRow : 1;
     const headerCache = {};
-    const lookupCols = [];
-    for (const rule of lookups) {
+    const cidLetter = await resolveLetter(token, conn.sheetId, tab, cidRule, hr, headerCache);
+    if (!cidLetter) throw new Error(`consignment column '${cidRule.colRef}' পাওয়া যায়নি`);
+    // Date lookups verify the row is really today's (tab-scoped safety).
+    const dateRules = lookups.filter(r => r.kind === 'today' || r.kind === 'created_at');
+    const dateLetters = new Map();
+    for (const rule of dateRules) {
       const letter = await resolveLetter(token, conn.sheetId, tab, rule, hr, headerCache);
       if (!letter) throw new Error(`lookup column '${rule.colRef}' পাওয়া যায়নি`);
-      lookupCols.push({ rule, letter });
+      dateLetters.set(rule, letter);
     }
-    const writeCols = [];
+    const writeLetters = [];
     for (const rule of writes) {
       const letter = await resolveLetter(token, conn.sheetId, tab, rule, hr, headerCache);
       if (!letter) throw new Error(`write column '${rule.colRef}' পাওয়া যায়নি`);
-      writeCols.push({ rule, letter });
+      writeLetters.push({ rule, letter });
     }
-    // Fetch each lookup column once.
-    const columns = {};
-    for (const { letter } of lookupCols) {
+    // One fetch per column (shared across all rows of this connection).
+    async function colValues(letter) {
       const data = await sheetsGet(token,
         `https://sheets.googleapis.com/v4/spreadsheets/${conn.sheetId}/values/${encodeURIComponent(tab + '!' + letter + ':' + letter)}`);
-      const rows = data.values || [];
-      columns[letter] = rows.map(r => (r && r[0]) || '');
+      return (data.values || []).map(r => (r && r[0]) || '');
     }
-    const scanned = Math.max(0, ...Object.values(columns).map(c => c.length));
-    const todayKey = todayBdDateKey();
-    const wantOf = kind => {
-      if (kind === 'consignment') return consignmentId.trim();
-      if (kind === 'today') return 'আজকের তারিখ';
-      const v = vals[kind];
-      return (v != null && String(v) !== '') ? String(v) : '(খালি)';
-    };
-    const cellMatches = (kind, cell) => {
-      const t = String(cell || '').trim();
-      if (kind === 'consignment') return t === consignmentId.trim();
-      if (kind === 'today') return sheetCellIsToday(t, todayKey);
-      if (kind === 'created_at') {
-        const rawWant = String(vals[kind] || '').trim();
-        if (!rawWant) return t === '';
-        const want = parseSheetDate(rawWant);
-        if (!want) return t === rawWant;
-        const got = parseSheetDate(t);
-        return !!got && got === want;
-      }
-      // Exact match, blank == blank (feedback/validation/validator_name).
-      const want = vals[kind] != null ? String(vals[kind]).trim() : '';
-      return t === want;
-    };
-    for (let i = 0; i < scanned; i++) {
-      const okAll = lookupCols.every(({ rule, letter }) =>
-        cellMatches(rule.kind, columns[letter][i]));
-      if (!okAll) continue;
-      // Exact row — write all rules together.
-      for (const { rule, letter } of writeCols) {
-        const v = vals[rule.kind] != null ? String(vals[rule.kind]) : '';
-        const res = await fetch(
-          `https://sheets.googleapis.com/v4/spreadsheets/${conn.sheetId}/values/${encodeURIComponent(tab + '!' + letter + (i + 1))}?valueInputOption=RAW`,
-          {
-            method: 'PUT',
-            headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
-            body: JSON.stringify({ range: `${tab}!${letter}${i + 1}`, majorDimension: 'ROWS', values: [[v]] }),
-          });
-        if (!res.ok) throw new Error(`Sheets write ${res.status}`);
-      }
-      return true;
+    const cidCol = await colValues(cidLetter);
+    const dateCols = new Map();
+    for (const [, letter] of dateLetters) {
+      if (![...dateCols.values()].includes(letter)) dateCols.set(letter, await colValues(letter));
     }
-    const wantList = lookupCols.map(({ rule }) => `${rule.colRef}='${wantOf(rule.kind)}'`).join(', ');
-    throw new Error(`exact match নেই (${wantList}) — append হয় না`);
+    const writeCols = new Map();
+    for (const { letter } of writeLetters) {
+      if (!writeCols.has(letter)) writeCols.set(letter, await colValues(letter));
+    }
+    res.scanned = cidCol.length;
+    for (let i = 0; i < cidCol.length; i++) {
+      const cid = String(cidCol[i] || '').trim();
+      if (!cid) continue;
+      // Date check: TODAY / CREATED_AT lookups must be today (tab safety).
+      let dateOk = true;
+      for (const [rule, letter] of dateLetters) {
+        const cell = (dateCols.get(letter) || [])[i] || '';
+        if (!sheetCellIsToday(String(cell || '').trim(), todayKey)) { dateOk = false; break; }
+      }
+      if (!dateOk) continue;
+      // Blank check: at least one write cell empty → needs filling.
+      const blanks = writeLetters.filter(({ letter }) =>
+        String((writeCols.get(letter) || [])[i] || '').trim() === '');
+      if (!blanks.length) { res.filled++; continue; }
+      const vals = consolidated.get(`${branchId}__${cid}`);
+      if (!vals) { res.noCc++; continue; }
+      // Fill ONLY the blank cells (filled ones are never overwritten).
+      try {
+        for (const { rule, letter } of blanks) {
+          const v = vals[rule.kind] != null ? String(vals[rule.kind]) : '';
+          await sheetsWriteCell(token, conn.sheetId, tab, letter, i + 1, v);
+          const col = writeCols.get(letter) || [];
+          col[i] = v;
+          res.syncedCells++;
+        }
+        res.syncedRows++;
+      } catch (e) {
+        res.skipped++;
+        console.warn('[DB CC Panel] bulk row write failed:', cid, e);
+      }
+    }
+    return res;
+  }
+
+  async function bulkSyncToSheet(btn) {
+    const orig = btn ? btn.textContent : '';
+    if (btn) { btn.disabled = true; btn.textContent = '⏳ …'; }
+    try {
+      if (!ccIdToken) throw new Error('login missing — extension-এ Google দিয়ে login করুন');
+      const branchIds = (ccBranchIdsCache && ccBranchIdsCache.length)
+        ? ccBranchIdsCache.slice()
+        : [...new Set((summaryRows || []).map(r => r.branchId).filter(Boolean))];
+      if (!branchIds.length) throw new Error('কোনো branch পাওয়া যায়নি — আগে reload করুন');
+      bulkSay('⏳ Consolidated CC বানানো হচ্ছে…');
+      const consolidated = await buildConsolidatedCc();
+      if (!consolidated.size) throw new Error('Supabase-এ আজকের কোনো CC remark নেই — লেখার কিছু নেই');
+      const { token, error } = await getSheetsToken();
+      if (!token) throw new Error(error || 'Sheets permission নেই — extension popup থেকে re-login করুন');
+      const todayKey = todayBdDateKey();
+      let totConns = 0, totScanned = 0, totFilled = 0, totRows = 0, totCells = 0, totNoCc = 0;
+      const errs = [];
+      for (const branchId of branchIds) {
+        let conns = [];
+        try {
+          const connRes = await fetch(
+            `${FIREBASE_URL}/config/connectors/${encodeURIComponent(branchId)}/current.json?auth=${ccIdToken}`);
+          const connObj = await connRes.json().catch(() => ({})) || {};
+          conns = Object.values(connObj).filter(isRemarkConn).filter(c => c.enabled !== false);
+        } catch (e) {
+          errs.push(`${branchId}: connection পড়া যায়নি`);
+          continue;
+        }
+        if (!conns.length) continue; // এই branch-এ remark connection নেই — skip (error না)
+        for (const conn of conns) {
+          totConns++;
+          const label = conn.sheetName || conn.sheetId || branchId;
+          bulkSay(`⏳ ${label} — sheet পড়ছে…`);
+          try {
+            const r = await bulkSyncOneConnection(token, branchId, conn, consolidated, todayKey);
+            totScanned += r.scanned; totFilled += r.filled;
+            totRows += r.syncedRows; totCells += r.syncedCells; totNoCc += r.noCc;
+          } catch (e) {
+            errs.push(`${label}: ${e.message || 'sync failed'}`);
+          }
+        }
+      }
+      if (!totConns) throw new Error('কোনো branch-এ remark connection নেই');
+      let msg = `✓ ${totRows} row synced (${totCells} cells) · ${totFilled} already filled · ${totNoCc} no CC yet · ${totScanned} sheet rows দেখা (${totConns} connection)`;
+      if (errs.length) msg += ` · ⚠ ${errs.length} error: ${errs.slice(0, 2).join('; ')}${errs.length > 2 ? '…' : ''}`;
+      bulkSay(msg);
+      if (btn) btn.textContent = '✓ Done';
+    } catch (e) {
+      bulkSay(`✕ ${e.message || 'sync failed'}`);
+      if (btn) btn.textContent = '⚠ Failed';
+    } finally {
+      if (btn) setTimeout(() => { btn.textContent = orig; btn.disabled = false; }, 2500);
+    }
   }
 
   // ── INIT — opt-in per page via Settings → "Call Center Panel Pages"
