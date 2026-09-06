@@ -687,6 +687,31 @@
     return effectiveLookups(conn).length > 0 && effectiveWrites(conn).length > 0;
   }
 
+  // Date scope: most-specific covering scope wins (range > month > global),
+  // same as the app's SheetScope.selectForDate. yyyy-MM-dd strings compare
+  // lexicographically, so no date parsing is needed.
+  function scopeCovers(conn, todayKey) {
+    const t = conn.scopeType || 'global';
+    if (t === 'month') {
+      const m = String(conn.scopeMonth || '').trim();
+      return m.length >= 7 && todayKey.slice(0, 7) === m.slice(0, 7);
+    }
+    if (t === 'range') {
+      const f = String(conn.scopeFrom || '').trim(), to = String(conn.scopeTo || '').trim();
+      if (!f || !to) return false;
+      return f <= todayKey && todayKey <= to;
+    }
+    return true;
+  }
+
+  function selectForToday(conns, todayKey) {
+    const cov = conns.filter(c => scopeCovers(c, todayKey));
+    if (!cov.length) return [];
+    const rank = c => (c.scopeType === 'range' ? 0 : c.scopeType === 'month' ? 1 : 2);
+    const best = Math.min(...cov.map(rank));
+    return cov.filter(c => rank(c) === best);
+  }
+
   function indexToLetter(n) { // 1-based
     let s = '', num = n;
     while (num > 0) { const rem = (num - 1) % 26; s = String.fromCharCode(65 + rem) + s; num = Math.floor((num - 1) / 26); }
@@ -965,12 +990,14 @@
           const connRes = await fetch(
             `${FIREBASE_URL}/config/connectors/${encodeURIComponent(branchId)}/current.json?auth=${ccIdToken}`);
           const connObj = await connRes.json().catch(() => ({})) || {};
-          conns = Object.values(connObj).filter(isRemarkConn).filter(c => c.enabled !== false);
+          conns = selectForToday(
+            Object.values(connObj).filter(isRemarkConn).filter(c => c.enabled !== false),
+            todayKey);
         } catch (e) {
           errs.push(`${branchId}: connection পড়া যায়নি`);
           continue;
         }
-        if (!conns.length) continue; // এই branch-এ remark connection নেই — skip (error না)
+        if (!conns.length) continue; // আজকের scope-এ remark connection নেই — skip (error না)
         for (const conn of conns) {
           totConns++;
           const label = conn.sheetName || conn.sheetId || branchId;
@@ -984,7 +1011,7 @@
           }
         }
       }
-      if (!totConns) throw new Error('কোনো branch-এ remark connection নেই');
+      if (!totConns) throw new Error('আজকের জন্য কোনো branch-এ remark connection নেই (scope দেখুন)');
       let msg = `✓ ${totRows} row synced (${totCells} cells) · ${totFilled} already filled · ${totNoCc} no CC yet · ${totScanned} sheet rows দেখা (${totConns} connection)`;
       if (errs.length) msg += ` · ⚠ ${errs.length} error: ${errs.slice(0, 2).join('; ')}${errs.length > 2 ? '…' : ''}`;
       bulkSay(msg);
