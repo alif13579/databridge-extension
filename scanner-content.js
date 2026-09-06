@@ -56,8 +56,10 @@
       return;
     }
 
-    // Accumulate printable characters only (ignore Shift, Ctrl, etc.)
-    if (e.key.length === 1 && !e.ctrlKey && !e.altKey && !e.metaKey) {
+    // Accumulate printable characters only (ignore Shift, Ctrl, etc.).
+    // typeof-guard: during extension update/reload a stray event can arrive
+    // with key undefined — that used to throw and kill the listener.
+    if (typeof e?.key === 'string' && e.key.length === 1 && !e.ctrlKey && !e.altKey && !e.metaKey) {
       _buf += e.key;
     }
   }
