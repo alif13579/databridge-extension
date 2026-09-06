@@ -512,7 +512,7 @@
     remarkLang = (((typeof langJson === 'string' ? langJson.trim() : '') || 'bn_en').split('_')[0]) || 'bn';
   } catch { /* default bn */ }
     const res = await fetch(`${SUPABASE_URL}/rest/v1/validation_remarks` +
-      `?select=remarks_en,remarks_bn,target_status,instruction_text` +
+      `?select=remarks_en,remarks_bn,target_status,instruction_text,category` +
       `&source=eq.CC&is_active=eq.true&order=priority.desc`, {
       headers: { 'apikey': SUPABASE_ANON_KEY, 'Authorization': `Bearer ${ccIdToken}`, 'Accept': 'application/json' },
     });
@@ -526,6 +526,7 @@
         english: en || bn,
         target: (x.target_status || '').trim(),
         instruction: (x.instruction_text || '').trim(),
+        category: (x.category || '').trim(),
       };
     }).filter(o => o.label && o.target);
     return ccRemarkOpts;
@@ -654,27 +655,25 @@
 
   // ── SHEET SYNC (per card) ─────────────────────────────────────────
   // Same dynamic lookup/write rules as the app's RemarkSheetMirror (see
-  // ScannerSheetModels.kt): effective rules = stored lists, else legacy
-  // 3-field conversion. Column ref = letter ("C") or header text
-  // ("Consignment ID", matched against row 1). ALL lookups must match
-  // exactly on one row; writes go together; never appended.
+  // ScannerSheetModels.kt): stored lists only, no legacy conversion.
+  // Column ref = letter ("C") or header text ("Consignment ID", matched
+  // against the connection's headerRow). ALL lookups must match exactly on
+  // one row; writes (feedback/validation/validator_name) go together;
+  // blank stays blank; never appended.
+  function deriveValidation(feedback) {
+    const f = String(feedback || '').trim();
+    if (!f) return '';
+    return f.toLowerCase() === 'willing to receive today' ? 'Invalid' : 'Valid';
+  }
+
   function effectiveLookups(conn) {
     const dyn = (conn.lookups || []).filter(r => r && String(r.colRef || '').trim());
-    if (dyn.length) return dyn.map(r => ({ colRef: String(r.colRef).trim(), kind: String(r.kind || 'consignment'), mode: r.mode === 'text' ? 'text' : 'index' }));
-    if (!conn.dateMatchColumn) return [];
-    const out = [];
-    if (conn.matchColumn) out.push({ colRef: conn.matchColumn, kind: 'consignment' });
-    out.push({ colRef: conn.dateMatchColumn, kind: 'today' });
-    return out;
+    return dyn.map(r => ({ colRef: String(r.colRef).trim(), kind: String(r.kind || 'consignment'), mode: r.mode === 'text' ? 'text' : 'index' }));
   }
 
   function effectiveWrites(conn) {
     const dyn = (conn.writes || []).filter(r => r && String(r.colRef || '').trim());
-    if (dyn.length) {
-      return dyn.map(r => ({ colRef: String(r.colRef).trim(), kind: String(r.kind || 'verdict'), mode: r.mode === 'text' ? 'text' : 'index' }));
-    }
-    if (!conn.dateMatchColumn || !conn.writeColumn) return [];
-    return [{ colRef: conn.writeColumn, kind: 'verdict' }];
+    return dyn.map(r => ({ colRef: String(r.colRef).trim(), kind: String(r.kind || 'feedback'), mode: r.mode === 'text' ? 'text' : 'index' }));
   }
 
   function isRemarkConn(conn) {
@@ -813,22 +812,34 @@
       //    once after the update, since the spreadsheets scope is new).
       const { token, error } = await getSheetsToken();
       if (!token) throw new Error(error || 'Sheets permission নেই — extension popup থেকে re-login করুন');
-      // 3. Values from the freshest CC row (worker row fallback): verdict =
-      //    CC english remarks (or status), remark/note/status/today per kind.
+      // 3. Values: feedback = category of the latest CC remark (via catalog
+      //    map remark->category), validation = derived, validator_name =
+      //    latest CC author. Blank stays blank.
       const ccTrail = (card.trail || []).filter(t => t.source === 'CC');
       const latestCc = ccTrail.length ? ccTrail[ccTrail.length - 1] : null;
       const latestAny = (card.trail || []).length ? card.trail[card.trail.length - 1] : null;
       const todayParts = todayBdDateKey().split('-'); // yyyy-MM-dd (BD)
+      let feedback = '';
+      try {
+        const opts = await fetchCcRemarkOptions();
+        const key = (latestCc && (latestCc.remark || '')) || (latestAny && (latestAny.remark || '')) || '';
+        const hit = opts.find(o => o.english === key);
+        feedback = (hit && hit.category) || '';
+      } catch (e) { console.warn('[DB CC Panel] feedback map failed:', e); }
+      const validatorName =
+        (latestCc && ((latestCc.author && latestCc.author.name) || latestCc.author_system_id)) ||
+        (latestAny && ((latestAny.author && latestAny.author.name) || latestAny.author_system_id)) || '';
       const vals = {
-        verdict: (latestCc && (latestCc.remark || latestCc.status)) || (latestAny && (latestAny.remark || latestAny.status)) || '',
-        remark:  (latestCc && latestCc.remark) || (latestAny && latestAny.remark) || '',
-        note:    (latestCc && latestCc.note) || (latestAny && latestAny.note) || '',
-        status:  (latestCc && latestCc.status) || (latestAny && latestAny.status) || '',
-        today:   `${todayParts[0]}-${todayParts[1]}-${todayParts[2]}`,
+        feedback,
+        validation: deriveValidation(feedback),
+        validator_name: validatorName || '',
+        today: `${todayParts[0]}-${todayParts[1]}-${todayParts[2]}`,
         consignment: card.cId,
+        created_at: '',
+        author_name: '',
       };
-      // Enrich with the latest validations row (same branch, today) so lookups
-      // and writes can point at row columns (author, created_at...) too.
+      // Enrich lookups (created_at / author_name) from the latest validations
+      // row (same branch, today).
       try {
         const dateKey = todayBdDateKey();
         const startIso = new Date(`${dateKey}T00:00:00+06:00`).toISOString();
@@ -838,18 +849,10 @@
           .sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
         const latest = mine.length ? mine[mine.length - 1] : null;
         if (latest) {
-          vals.remarks_status = latest.remarks_status || '';
-          vals.remarks = latest.remarks || vals.remark;
-          vals.note = latest.note != null ? latest.note : vals.note;
-          vals.source = latest.source || '';
           vals.created_at = latest.created_at || '';
-          vals.customer_phone = latest.customer_phone || '';
-          vals.consignment_status = latest.consignment_status || '';
-          vals.branch_id = latest.branch_id || card.branchId;
-          vals.author_system_id = latest.author_system_id || '';
-          vals.assigned_to_system_id = latest.assigned_to_system_id || '';
           vals.author_name = (latest.author && latest.author.name) || latest.author_system_id || '';
-          vals.assigned_name = latest.assigned_to_system_id || '';
+          // Prefer the row's author when trail missed it.
+          if (!vals.validator_name) vals.validator_name = vals.author_name;
         }
       } catch (e) { console.warn('[DB CC Panel] sync enrich failed (trail values kept):', e); }
       let done = 0, lastErr = '';
@@ -908,13 +911,16 @@
       if (kind === 'consignment') return t === consignmentId.trim();
       if (kind === 'today') return sheetCellIsToday(t, todayKey);
       if (kind === 'created_at') {
-        const want = parseSheetDate(String(vals[kind] || ''));
-        if (!want) return false;
+        const rawWant = String(vals[kind] || '').trim();
+        if (!rawWant) return t === '';
+        const want = parseSheetDate(rawWant);
+        if (!want) return t === rawWant;
         const got = parseSheetDate(t);
         return !!got && got === want;
       }
-      const want = vals[kind];
-      return want != null && String(want) !== '' && t === String(want).trim();
+      // Exact match, blank == blank (feedback/validation/validator_name).
+      const want = vals[kind] != null ? String(vals[kind]).trim() : '';
+      return t === want;
     };
     for (let i = 0; i < scanned; i++) {
       const okAll = lookupCols.every(({ rule, letter }) =>
