@@ -208,6 +208,9 @@ function setupCopyExtensionID(extension_id) {
       const original = btn.textContent;
       btn.textContent = '✅';
       setTimeout(() => { btn.textContent = original; }, 2000);
+    }).catch(() => {
+      btn.textContent = '❌';
+      setTimeout(() => { btn.textContent = '📋'; }, 2000);
     });
   });
 }
@@ -236,12 +239,13 @@ function exactTime(timestamp) {
 }
 
 function escapeHtml(str) {
-  if (!str) return '';
+  if (str == null) return '';
   return String(str)
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 }
 
 async function resolveRecordBasePath(itemId) {
@@ -437,14 +441,23 @@ async function updateMetaTimestamp() {
 }
 
 async function handleCopy(itemId, text) {
-  await navigator.clipboard.writeText(text);
-  await logAction(itemId, 'copy');
+  try {
+    await navigator.clipboard.writeText(text);
+  } catch (e) {
+    console.warn('[DB] clipboard copy denied:', e?.message || e);
+    return;
+  }
+  await logAction(itemId, 'copy').catch(e => console.warn('[DB] logAction failed:', e?.message || e));
 }
 
 async function handleDial(itemId, text) {
   const cleaned = text.replace(/[\s-()]/g, '');
-  chrome.tabs.create({ url: `tel:${cleaned}` });
-  await logAction(itemId, 'dial');
+  try {
+    await chrome.tabs.create({ url: `tel:${cleaned}` });
+  } catch (e) {
+    console.warn('[DB] tabs.create(tel:) failed:', e?.message || e);
+  }
+  await logAction(itemId, 'dial').catch(e => console.warn('[DB] logAction failed:', e?.message || e));
 }
 
 async function handleDelete(itemId) {
@@ -581,12 +594,12 @@ async function openRemarks(itemId) {
   const sheet = document.createElement('div');
   sheet.className = 'remarks-sheet';
   const item = historyItems.find(i => i.id === itemId);
-  sheet.innerHTML = `<div class="remarks-title">Add remark${item ? ' for ' + item.text.substring(0, 20) : ''}</div>`;
+  sheet.innerHTML = `<div class="remarks-title">Add remark${item ? ' for ' + escapeHtml(item.text.substring(0, 20)) : ''}</div>`;
 
   options.forEach(opt => {
     const el = document.createElement('div');
     el.className = 'remark-option';
-    el.innerHTML = `<div class="remark-radio"></div><span>${opt}</span>`;
+    el.innerHTML = `<div class="remark-radio"></div><span>${escapeHtml(opt)}</span>`;
     el.addEventListener('click', () => {
       document.querySelectorAll('.remark-option').forEach(o => {
         o.classList.remove('selected');
@@ -720,10 +733,17 @@ async function loadHistory(append = false) {
     // latency; with several sessions (very likely once several devices had connected
     // over time, especially before the pruning above existed) that stacked up to real,
     // user-visible delay on every popup open.
-    const sessionResults = await Promise.all([...sessionIds].map(async extId => {
+    const sessionResults = await Promise.all([...sessionIds].slice(0, 25).map(async extId => {
       try {
+        // sessions/* is intentionally public per Firebase rules (extension_id is
+        // an unguessable pairing secret), so no ?auth= needed here.
         const res = await fetch(`${FIREBASE_URL}/sessions/${extId}/records.json?cb=${Date.now()}`);
-        return { extId, data: await res.json() };
+        if (!res.ok) {
+          console.warn(`Session ${extId} fetch HTTP ${res.status} — skipped`);
+          return { extId, data: null };
+        }
+        const data = await res.json().catch(() => null);
+        return { extId, data: (data && typeof data === 'object') ? data : null };
       } catch (e) {
         console.warn(`Session ${extId} fetch failed:`, e);
         return { extId, data: null };
@@ -810,7 +830,7 @@ function startSessionListener(id) {
     } catch (e) { console.error('SSE patch parse error:', e); }
   });
   sseSource.onerror = () => {
-    setTimeout(() => { if (currentExtensionID) startSessionListener(currentExtensionID); }, 5000);
+    setTimeout(() => { if (!isShuttingDown && currentExtensionID) startSessionListener(currentExtensionID); }, 5000);
   };
 }
 
@@ -834,7 +854,7 @@ async function startContainerListener(containerId) {
   });
   containerSseSource.addEventListener('patch', reload);
   containerSseSource.onerror = () => {
-    setTimeout(() => { if (currentContainerID) startContainerListener(currentContainerID); }, 5000);
+    setTimeout(() => { if (!isShuttingDown && currentContainerID) startContainerListener(currentContainerID); }, 5000);
   };
 }
 
@@ -864,7 +884,7 @@ async function startScanListener() {
   });
   scanSseSource.addEventListener('patch', reload);
   scanSseSource.onerror = () => {
-    setTimeout(() => { if (currentGoogleUid) startScanListener(); }, 5000);
+    setTimeout(() => { if (!isShuttingDown && currentGoogleUid) startScanListener(); }, 5000);
   };
 }
 
@@ -886,14 +906,20 @@ function showConnectedState(d) {
   document.getElementById('screen-connected')?.classList.add('active');
   document.getElementById('status-dot')?.classList.add('connected');
   const n = d?.meta?.device_info || d?.meta?.android_id?.substring(0, 8) || 'Connected';
-  document.getElementById('status-name').textContent = n;
-  document.getElementById('agent-name').textContent = n;
+  const statusNameEl = document.getElementById('status-name');
+  if (statusNameEl) statusNameEl.textContent = n;
+  const agentNameEl = document.getElementById('agent-name');
+  if (agentNameEl) agentNameEl.textContent = n;
 
   const avatarEl = document.getElementById('agent-avatar');
   const avatarUrl = d?.meta?.avatar_url;
   if (avatarEl) {
-    if (avatarUrl) {
-      avatarEl.innerHTML = `<img src="${avatarUrl}" alt="" referrerpolicy="no-referrer">`;
+    if (typeof avatarUrl === 'string' && /^https:/.test(avatarUrl)) {
+      const img = document.createElement('img');
+      img.src = avatarUrl;
+      img.alt = '';
+      img.referrerPolicy = 'no-referrer';
+      avatarEl.replaceChildren(img);
     } else {
       avatarEl.textContent = n.charAt(0).toUpperCase();
     }
@@ -1495,7 +1521,7 @@ async function setupAutofillUrls() {
   async function render() {
     const urls = await loadUrls();
     listEl.innerHTML = urls.length
-      ? urls.map(u => `<div class="autofill-url-chip"><span>${u}</span><span class="url-remove" data-url="${u}">✕</span></div>`).join('')
+      ? urls.map(u => `<div class="autofill-url-chip"><span>${escapeHtml(u)}</span><span class="url-remove" data-url="${escapeHtml(u)}">✕</span></div>`).join('')
       : '<div class="settings-hint">No pages configured — panel won\'t auto-appear anywhere.</div>';
     listEl.querySelectorAll('[data-url]').forEach(el => {
       el.addEventListener('click', async () => {
@@ -1542,7 +1568,7 @@ async function setupCcPanelUrls() {
   async function render() {
     const urls = await loadUrls();
     listEl.innerHTML = urls.length
-      ? urls.map(u => `<div class="autofill-url-chip"><span>${u}</span><span class="url-remove" data-url="${u}">✕</span></div>`).join('')
+      ? urls.map(u => `<div class="autofill-url-chip"><span>${escapeHtml(u)}</span><span class="url-remove" data-url="${escapeHtml(u)}">✕</span></div>`).join('')
       : '<div class="settings-hint">No pages configured — panel won\'t appear anywhere.</div>';
     listEl.querySelectorAll('[data-url]').forEach(el => {
       el.addEventListener('click', async () => {
@@ -1631,8 +1657,8 @@ async function init() {
     // ✅ ১. লোকাল চেক → না থাকলে জেনারেট → স্টোরেজে সেভ
     const extension_id = await getOrCreateExtensionID();
     currentExtensionID = extension_id;
-    chrome.action.setBadgeText({ text: '' });
-    chrome.storage.local.set({ unread_count: 0 });
+    chrome.action.setBadgeText({ text: '' }).catch(() => {});
+    chrome.storage.local.set({ unread_count: 0 }).catch(() => {});
 
     // ✅ ২. UI সেটআপ
     // Reads from manifest.json directly (not hardcoded) so this can never drift out of
@@ -1691,9 +1717,13 @@ function setupConnectedInfoCopy() {
     btn.addEventListener('click', () => {
       const val = document.getElementById(valueId)?.textContent?.trim();
       if (!val || val === '—') return;
-      navigator.clipboard.writeText(val);
-      btn.textContent = '✅';
-      setTimeout(() => { btn.textContent = '📋'; }, 1500);
+      navigator.clipboard.writeText(val).then(() => {
+        btn.textContent = '✅';
+        setTimeout(() => { btn.textContent = '📋'; }, 1500);
+      }).catch(() => {
+        btn.textContent = '❌';
+        setTimeout(() => { btn.textContent = '📋'; }, 1500);
+      });
     });
   }
   makeCopyBtn('copy-connected-ext-btn', 'connected-ext-id');
@@ -1809,7 +1839,16 @@ function loadScanHistory() {
   scanTotalCount  = null;
 
   chrome.storage.local.get(['scan_log'], async (result) => {
-    const log = result.scan_log || {};
+    try {
+      if (chrome.runtime.lastError) throw new Error(chrome.runtime.lastError.message);
+      await loadScanHistoryInner(result.scan_log || {});
+    } catch (e) {
+      console.warn('[Scan] loadScanHistory failed:', e?.message || e);
+    }
+  });
+}
+
+async function loadScanHistoryInner(log) {
     const barcodeKeys = Object.keys(log);
     console.log(`[Scan] loadScanHistory: ${barcodeKeys.length} barcode(s) in local storage`);
 
@@ -1875,7 +1914,6 @@ function loadScanHistory() {
     console.log(`[Scan] loadScanHistory done — ${scanItems.length} item(s) in feed, hasMore=${scanHasMore}`);
     renderScanList();
     updateScanBadge();
-  });
 }
 
 // Fetches one page of barcodes ordered by recency (lastScannedAt) and merges them into
@@ -2157,16 +2195,22 @@ function renderScanList() {
       // Wired here (not inline in the template) so the raw entry.url is used directly
       // from closure — safer than round-tripping it through an HTML attribute.
       const urlChip = row.querySelector('.scan-url-chip');
-      if (urlChip && entry.url) {
-        urlChip.addEventListener('click', () => chrome.tabs.create({ url: entry.url }));
+      if (urlChip && entry.url && /^https?:\/\//.test(entry.url)) {
+        urlChip.addEventListener('click', () => {
+          chrome.tabs.create({ url: entry.url }).catch(e => console.warn('[DB] tabs.create failed:', e?.message || e));
+        });
       }
       const urlCopyBtn = row.querySelector('.scan-url-copy-btn');
       if (urlCopyBtn) {
         urlCopyBtn.addEventListener('click', (e) => {
           e.stopPropagation();
-          navigator.clipboard.writeText(entry.url || entry.hostname);
-          urlCopyBtn.textContent = '✅';
-          setTimeout(() => { urlCopyBtn.textContent = '⎘'; }, 1200);
+          navigator.clipboard.writeText(entry.url || entry.hostname).then(() => {
+            urlCopyBtn.textContent = '✅';
+            setTimeout(() => { urlCopyBtn.textContent = '⎘'; }, 1200);
+          }).catch(() => {
+            urlCopyBtn.textContent = '❌';
+            setTimeout(() => { urlCopyBtn.textContent = '⎘'; }, 1200);
+          });
         });
       }
 
@@ -2181,9 +2225,13 @@ function renderScanList() {
     copyBtn.textContent = '⎘ Copy barcode';
     copyBtn.addEventListener('click', e => {
       e.stopPropagation();
-      navigator.clipboard.writeText(item.barcode);
-      copyBtn.textContent = '✅ Copied!';
-      setTimeout(() => { copyBtn.textContent = '⎘ Copy barcode'; }, 1500);
+      navigator.clipboard.writeText(item.barcode).then(() => {
+        copyBtn.textContent = '✅ Copied!';
+        setTimeout(() => { copyBtn.textContent = '⎘ Copy barcode'; }, 1500);
+      }).catch(() => {
+        copyBtn.textContent = '❌ Copy failed';
+        setTimeout(() => { copyBtn.textContent = '⎘ Copy barcode'; }, 1500);
+      });
     });
 
     const cardActionsRow = document.createElement('div');
@@ -2231,11 +2279,19 @@ function renderScanList() {
 
 function deleteScanRecord(barcodeKey, scanKey) {
   chrome.storage.local.get(['scan_log'], (result) => {
-    const log = result.scan_log || {};
-    if (log[barcodeKey]?.[scanKey]) {
-      delete log[barcodeKey][scanKey];
-      if (Object.keys(log[barcodeKey]).length === 0) delete log[barcodeKey];
-      chrome.storage.local.set({ scan_log: log }, () => loadScanHistory());
+    try {
+      if (chrome.runtime.lastError) throw new Error(chrome.runtime.lastError.message);
+      const log = result.scan_log || {};
+      if (log[barcodeKey]?.[scanKey]) {
+        delete log[barcodeKey][scanKey];
+        if (Object.keys(log[barcodeKey]).length === 0) delete log[barcodeKey];
+        chrome.storage.local.set({ scan_log: log }, () => {
+          if (chrome.runtime.lastError) console.warn('[Scan] delete save failed:', chrome.runtime.lastError.message);
+          else loadScanHistory();
+        });
+      }
+    } catch (e) {
+      console.warn('[Scan] deleteScanRecord failed:', e?.message || e);
     }
   });
 }
@@ -2275,6 +2331,10 @@ function setupScanTab() {
     clearBtn.addEventListener('click', () => {
       if (!confirm('সব scan records delete হবে। নিশ্চিত?')) return;
       chrome.storage.local.remove(['scan_log'], () => {
+        if (chrome.runtime.lastError) {
+          console.warn('[Scan] clear failed:', chrome.runtime.lastError.message);
+          return;
+        }
         scanItems = [];
         scanSearchResults = [];
         scanSearchMode = false;
@@ -2480,12 +2540,19 @@ async function loadCcBranches() {
       return;
     }
 
-    await Promise.all(ccBranchIds.map(async id => {
-      try {
-        const r = await fetch(`${FIREBASE_URL}/branches/${id}/name.json${authQuery}`);
-        ccBranchNames[id] = (await r.json()) || id;
-      } catch { ccBranchNames[id] = id; }
-    }));
+    // Branch names come from Supabase (source of truth since the branch
+    // cutover) — Firebase branches/{id}/name no longer exists, so that lookup
+    // only ever returned the id back. One REST call, not N fetches.
+    try {
+      const r = await fetch(`${SUPABASE_URL}/rest/v1/branches?select=branch_id,name`, {
+        headers: { 'apikey': SUPABASE_ANON_KEY, 'Authorization': `Bearer ${idToken}`, 'Accept': 'application/json' },
+      });
+      const rows = await r.json().catch(() => []);
+      (Array.isArray(rows) ? rows : []).forEach(b => {
+        if (b && b.branch_id) ccBranchNames[b.branch_id] = b.name || b.branch_id;
+      });
+    } catch { /* fall through to id fallback below */ }
+    ccBranchIds.forEach(id => { if (!ccBranchNames[id]) ccBranchNames[id] = id; });
 
     renderHvBranchCheckboxes();
     await renderPerfBranchDropdown();
@@ -2573,9 +2640,14 @@ async function fetchSupabaseReportRows(branchId, startIso, endIso, idToken) {
       }),
     });
     if (!res.ok) {
-      throw new Error(`Supabase report fetch failed (${res.status}) for branch "${branchId}"`);
+      const body = await res.text().catch(() => '');
+      throw new Error(`Supabase report fetch failed (${res.status}) for branch "${branchId}": ${body.slice(0, 200)}`);
     }
-    const pageRows = await res.json();
+    const data = await res.json().catch(() => []);
+    const pageRows = Array.isArray(data) ? data : [];
+    if (!Array.isArray(data)) {
+      throw new Error(`Supabase report fetch returned non-array for branch "${branchId}" — aborting paging (would loop forever)`);
+    }
     rows.push(...pageRows);
     if (pageRows.length < SUPABASE_REPORT_PAGE_SIZE) break;
     page++;
@@ -2637,6 +2709,16 @@ const BD_TIME_PARTS = new Intl.DateTimeFormat('en-US', {
 function localDateKey(isoString) {
   // en-CA formats as YYYY-MM-DD directly, already the dateKey shape used everywhere else.
   return BD_DATE_PARTS.format(new Date(isoString));
+}
+
+// Date <input> value ('YYYY-MM-DD') → Asia/Dhaka midnight as ISO. The old
+// `new Date(v + 'T00:00:00')` used the BROWSER's timezone, so on a
+// non-BD-timezone machine the queried UTC window disagreed with the
+// Asia/Dhaka grouping by up to a day. Returns null on bad input.
+function bdDateInputToIso(value) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(value || '').trim());
+  if (!m) return null;
+  return new Date(Date.UTC(+m[1], +m[2] - 1, +m[3]) - 6 * 60 * 60 * 1000).toISOString();
 }
 
 function dateKeyToDdMmYyyy(dateKey) {
@@ -2762,12 +2844,16 @@ async function generateHoldValidationReport({ skipRender = false } = {}) {
   hvSummaryFilter = 'all';
   if (!skipRender && reportEl) reportEl.innerHTML = '';
 
-  if (!fromInput.value || !toInput.value) {
+  if (!fromInput?.value || !toInput?.value) {
     setStatus('⚠ From এবং To — দুটো date-ই select করুন');
     return;
   }
-  const fromDate = new Date(fromInput.value + 'T00:00:00');
-  const toDate   = new Date(toInput.value   + 'T00:00:00');
+  const fromDate = bdDateInputToIso(fromInput.value);
+  const toDate   = bdDateInputToIso(toInput.value);
+  if (!fromDate || !toDate) {
+    setStatus('⚠ Date format ঠিক নেই');
+    return;
+  }
   if (fromDate > toDate) {
     setStatus('⚠ From date, To date-এর পরে হতে পারবে না');
     return;
@@ -2786,10 +2872,10 @@ async function generateHoldValidationReport({ skipRender = false } = {}) {
   }
 
   // Date range as ISO strings for the Edge Function (half-open: [startIso, endIso)).
-  // new Date('YYYY-MM-DDT00:00:00') uses the browser's local timezone — correct
-  // for Bangladesh (UTC+6) devices; endIso adds one full day to include the "To" date.
-  const startIso = fromDate.toISOString();
-  const endIso   = new Date(toDate.getTime() + 24 * 60 * 60 * 1000).toISOString();
+  // fromDate/toDate are already Asia/Dhaka-midnight ISOs (bdDateInputToIso) —
+  // endIso adds one full day to include the "To" date.
+  const startIso = fromDate;
+  const endIso   = new Date(new Date(toDate).getTime() + 24 * 60 * 60 * 1000).toISOString();
 
   try {
     // Step 1 — fetch all validation rows from Supabase per branch (parallel,
@@ -2798,10 +2884,20 @@ async function generateHoldValidationReport({ skipRender = false } = {}) {
     // source='WORKER' = validation request; source='CC' = CC resolution.
     setStatus('⏳ Supabase থেকে validation data আনা হচ্ছে…');
     const allRows = [];
-    await Promise.all(branchesToQuery.map(async branchId => {
+    // One branch failing (401/500) must not discard the others.
+    const settled = await Promise.allSettled(branchesToQuery.map(async branchId => {
       const rows = await fetchSupabaseReportRows(branchId, startIso, endIso, idToken);
-      allRows.push(...rows);
+      return { branchId, rows };
     }));
+    const failedBranches = [];
+    settled.forEach(r => {
+      if (r.status === 'fulfilled') allRows.push(...r.value.rows);
+      else failedBranches.push(r.reason?.message || 'fetch failed');
+    });
+    if (failedBranches.length) {
+      console.warn('[DB] report: branches failed:', failedBranches);
+      setStatus(`⚠ ${failedBranches.length} branch-এ data আসেনি — বাকিগুলো দেখানো হচ্ছে`);
+    }
 
     if (!allRows.length) {
       setStatus('এই date range/branch-এ কোনো validation data পাওয়া যায়নি');
@@ -3005,6 +3101,11 @@ function renderHvReportSummary(reportEl) {
       btn.disabled = true;
       btn.textContent = '⏳ …';
       chrome.runtime.sendMessage({ action: 'send_to_app', text: cleaned }, () => {
+        if (chrome.runtime.lastError) {
+          btn.textContent = '❌ Failed';
+          setTimeout(() => { btn.textContent = originalText; btn.disabled = false; }, 1500);
+          return;
+        }
         btn.textContent = '📞 Sent!';
         setTimeout(() => { btn.textContent = originalText; btn.disabled = false; }, 1500);
       });
@@ -3032,7 +3133,9 @@ async function fetchCcDashboardRemarkOptions(idToken) {
   let remarkLang = 'bn';
   try {
     const langRes = await fetch(`${FIREBASE_URL}/config/language/ccLang.json?auth=${idToken}`);
-    const langVal = ((await langRes.json()) || '').trim() || 'bn_en';
+    if (!langRes.ok) throw new Error(`ccLang fetch failed (${langRes.status})`);
+    const langJson = await langRes.json().catch(() => '');
+    const langVal = (typeof langJson === 'string' ? langJson.trim() : '') || 'bn_en';
     remarkLang = langVal.split('_')[0] || 'bn';
   } catch { /* default bn */ }
   const url = `${SUPABASE_URL}/rest/v1/validation_remarks` +
@@ -3274,22 +3377,26 @@ async function generateTeamPerformanceReport() {
 
   if (reportEl) reportEl.innerHTML = '';
 
-  if (!fromInput.value || !toInput.value) {
+  if (!fromInput?.value || !toInput?.value) {
     setStatus('⚠ From এবং To — দুটো date-ই select করুন');
     return;
   }
-  const fromDate = new Date(fromInput.value + 'T00:00:00');
-  const toDate   = new Date(toInput.value   + 'T00:00:00');
+  const fromDate = bdDateInputToIso(fromInput.value);
+  const toDate   = bdDateInputToIso(toInput.value);
+  if (!fromDate || !toDate) {
+    setStatus('⚠ Date format ঠিক নেই');
+    return;
+  }
   if (fromDate > toDate) {
     setStatus('⚠ From date, To date-এর পরে হতে পারবে না');
     return;
   }
-  const branchId = branchSel.value;
+  const branchId = branchSel?.value;
   if (!branchId) {
     setStatus('⚠ Branch select করো');
     return;
   }
-  const mode = modeSel.value === 'agent' ? 'agent' : 'team';
+  const mode = modeSel?.value === 'agent' ? 'agent' : 'team';
 
   const idToken = await getValidFirebaseIdToken().catch(() => null);
   if (!idToken) {
@@ -3298,10 +3405,9 @@ async function generateTeamPerformanceReport() {
   }
 
   // Half-open [startIso, endIso) — same convention generateHoldValidationReport
-  // uses; browser-local Date getters are already Bangladesh-local on this
-  // extension's target devices, so no manual UTC+6 offset needed.
-  const startIso = fromDate.toISOString();
-  const endIso   = new Date(toDate.getTime() + 24 * 60 * 60 * 1000).toISOString();
+  // uses; fromDate/toDate are Asia/Dhaka-midnight ISOs (bdDateInputToIso).
+  const startIso = fromDate;
+  const endIso   = new Date(new Date(toDate).getTime() + 24 * 60 * 60 * 1000).toISOString();
 
   try {
     setStatus('⏳ Supabase থেকে data আনা হচ্ছে…');
@@ -3421,8 +3527,13 @@ function renderPerfReport(reportEl, mode, summary, modeRows) {
 }
 
 document.addEventListener('DOMContentLoaded', init);
+// Set before closing streams so the reconnect timers in each onerror handler
+// don't reopen a stream the moment after it was closed.
+let isShuttingDown = false;
 window.addEventListener('beforeunload', () => {
+  isShuttingDown = true;
   if (sseSource) sseSource.close();
   if (containerSseSource) containerSseSource.close();
+  if (scanSseSource) scanSseSource.close();
   if (refreshInterval) clearInterval(refreshInterval);
 });

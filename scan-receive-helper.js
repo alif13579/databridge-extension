@@ -22,6 +22,14 @@
 // ══════════════════════════════════════════════════════════════════════════
 
 (function () {
+  // Consignment IDs / statuses come from sheets + Firebase (shared, attacker-
+  // reachable via a crafted barcode) and render into this page's DOM — escape.
+  function escapeHtml(str) {
+    if (str == null) return '';
+    return String(str)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  }
   'use strict';
 
   // ── SELECTORS ────────────────────────────────────────────────────────────
@@ -586,8 +594,8 @@
     el.className = 'db-toast';
     el.innerHTML = `
       <div class="db-toast-label">${label}</div>
-      <div class="db-toast-id">${id}</div>
-      <div class="db-toast-status" style="color:${color}">● ${status || 'Unknown'}</div>
+      <div class="db-toast-id">${escapeHtml(id)}</div>
+      <div class="db-toast-status" style="color:${color}">● ${escapeHtml(status) || 'Unknown'}</div>
     `;
     document.body.appendChild(el);
     requestAnimationFrame(() => el.classList.add('db-show'));
@@ -882,7 +890,7 @@
     if (!listEl) return;
     listEl.innerHTML = (ids || []).length
       ? [...ids].reverse().map(id =>
-          `<span class="db-id">${id}<span class="db-mem-del" data-remove-id="${id}" title="Remove from memory">🗑</span></span>`
+          `<span class="db-id">${escapeHtml(id)}<span class="db-mem-del" data-remove-id="${escapeHtml(id)}" title="Remove from memory">🗑</span></span>`
         ).join('')
       : '';
     listEl.querySelectorAll('[data-remove-id]').forEach(el => {
@@ -945,7 +953,7 @@
       totalCollected += d.collected;
       const amtStr = d.total ? d.total.toLocaleString() + ' ৳' : '—';
       rows += `<tr>
-        <td><span class="db-dot" style="background:${c}"></span>${status}</td>
+        <td><span class="db-dot" style="background:${c}"></span>${escapeHtml(status)}</td>
         <td class="num">${d.qty}</td>
         <td class="num">${amtStr}</td>
       </tr>`;
@@ -996,7 +1004,7 @@
             <span>● ${label}</span><span class="db-cnt">${ids.length}</span>
           </div>
           <div class="db-ids">
-            ${shown.map(id => `<span class="db-id" data-scroll-id="${id}">${id}</span>`).join('')}
+            ${shown.map(id => `<span class="db-id" data-scroll-id="${escapeHtml(id)}">${escapeHtml(id)}</span>`).join('')}
             ${extra > 0 ? `<span class="db-more" data-toggle-group="${label}">+${extra} more</span>` : ''}
             ${isExpanded && ids.length > 4 ? `<span class="db-more" data-toggle-group="${label}">Show less</span>` : ''}
           </div>
@@ -1323,7 +1331,7 @@
     const fields = detectPageInputs();
     listEl.innerHTML = fields.length
       ? fields.map((f, i) =>
-          `<div class="db-field-row${f.el === selectedFieldEl ? ' selected' : ''}" data-field-idx="${i}">${f.label}</div>`
+          `<div class="db-field-row${f.el === selectedFieldEl ? ' selected' : ''}" data-field-idx="${i}">${escapeHtml(f.label)}</div>`
         ).join('')
       : '<div class="db-field-empty">No input fields found</div>';
     listEl.querySelectorAll('[data-field-idx]').forEach((el, i) => {

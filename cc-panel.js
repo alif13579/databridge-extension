@@ -504,11 +504,13 @@
   // CC remark options catalog (ported from popup.js fetchCcDashboardRemarkOptions).
   async function fetchCcRemarkOptions() {
     if (ccRemarkOpts) return ccRemarkOpts;
-    let remarkLang = 'bn';
-    try {
-      const langRes = await fetch(`${FIREBASE_URL}/config/language/ccLang.json?auth=${ccIdToken}`);
-      remarkLang = ((((await langRes.json()) || '').trim()) || 'bn_en').split('_')[0] || 'bn';
-    } catch { /* default bn */ }
+  let remarkLang = 'bn';
+  try {
+    const langRes = await fetch(`${FIREBASE_URL}/config/language/ccLang.json?auth=${ccIdToken}`);
+    if (!langRes.ok) throw new Error(`ccLang fetch failed (${langRes.status})`);
+    const langJson = await langRes.json().catch(() => '');
+    remarkLang = (((typeof langJson === 'string' ? langJson.trim() : '') || 'bn_en').split('_')[0]) || 'bn';
+  } catch { /* default bn */ }
     const res = await fetch(`${SUPABASE_URL}/rest/v1/validation_remarks` +
       `?select=remarks_en,remarks_bn,target_status,instruction_text` +
       `&source=eq.CC&is_active=eq.true&order=priority.desc`, {
