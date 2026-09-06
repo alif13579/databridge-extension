@@ -117,6 +117,28 @@ function askContentScript(tabId) {
   });
 }
 
+// cc-panel.js (content script) can't use chrome.identity — no such API surface
+// there — so Sheets OAuth for the per-card 🔄 Sync relays through here.
+// Uses manifest oauth2 scopes (userinfo + spreadsheets): first call after the
+// update pops Google's consent, then the token is cached by Chrome.
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message?.action === 'get_sheets_token') {
+    try {
+      chrome.identity.getAuthToken({ interactive: false }, (token) => {
+        if (chrome.runtime.lastError || !token) {
+          chrome.identity.getAuthToken({ interactive: true }, (token2) => {
+            if (chrome.runtime.lastError || !token2) {
+              sendResponse({ token: null, error: chrome.runtime.lastError?.message || 'Sheets consent needed' });
+            } else sendResponse({ token: token2 });
+          });
+        } else sendResponse({ token });
+      });
+    } catch (e) {
+      sendResponse({ token: null, error: e.message });
+    }
+    return true; // async sendResponse
+  }
+});
 // cc-panel.js (a content script) has no access to chrome.tabs.* — content
 // scripts only get a limited chrome.* surface, tabs.create isn't part of
 // it — so its 📞 Call button relays the phone number here to actually

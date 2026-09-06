@@ -101,19 +101,27 @@
     return rows;
   }
 
-  // ── Branch list (ported from popup.js's loadCcBranches — id + name lookup) ──
+  // ── Branch list (branch_ids from Firebase profile + names from Supabase,
+  //    which is source of truth since the branch cutover — Firebase
+  //    branches/{id}/name no longer exists, so that lookup only ever
+  //    returned the id back) ──
   async function fetchMyBranches(uid, idToken) {
     const authQuery = idToken ? `?auth=${idToken}` : '';
     const res  = await fetch(`${FIREBASE_URL}/users/${uid}/profile/company_info/branch_ids.json${authQuery}`);
     const data = await res.json();
     const ids  = Array.isArray(data) ? data.filter(Boolean) : Object.values(data || {});
     const names = {};
-    await Promise.all(ids.map(async id => {
-      try {
-        const r = await fetch(`${FIREBASE_URL}/branches/${id}/name.json${authQuery}`);
-        names[id] = (await r.json()) || id;
-      } catch { names[id] = id; }
-    }));
+    if (!ids.length) return { ids, names };
+    try {
+      const r = await fetch(`${SUPABASE_URL}/rest/v1/branches?select=branch_id,name`, {
+        headers: { 'apikey': SUPABASE_ANON_KEY, 'Authorization': `Bearer ${idToken}`, 'Accept': 'application/json' },
+      });
+      const rows = await r.json();
+      (Array.isArray(rows) ? rows : []).forEach(b => {
+        if (b && b.branch_id) names[b.branch_id] = b.name || b.branch_id;
+      });
+    } catch { /* fall through to id fallback below */ }
+    ids.forEach(id => { if (!names[id]) names[id] = id; });
     return { ids, names };
   }
 
@@ -180,6 +188,13 @@
         border-radius: 4px; padding: 3px 8px; font-size: 10px; font-weight: 600; cursor: pointer;
         margin-left: 4px;
       }
+      .db-cc-sync-btn {
+        background: #ede9fe; color: #6d28d9; border: 1px solid #c4b5fd;
+        border-radius: 4px; padding: 3px 8px; font-size: 10px; font-weight: 600; cursor: pointer;
+        margin-left: 4px;
+      }
+      .db-cc-sync-btn:disabled { opacity: .6; cursor: default; }
+      .db-cc-sync-msg { font-size: 10px; color: #64748b; margin-top: 4px; }
       .db-cc-hist-section, .db-cc-remark-section {
         margin-top: 6px; border-top: 1px dashed #cbd5e1; padding-top: 6px;
       }
@@ -215,8 +230,29 @@
     document.head.appendChild(s);
   }
 
-  // ── PANEL: create, drag-to-move (position saved under a fixed key — this
-  //    panel isn't tied to a "run" the way the Reconcile panel is), minimize ──
+  // ── Parcel details (customer name / COD / address live on the consignment
+  //    node — the validations report only carries the phone). One parallel
+  //    batch per load; failures leave blanks, never block the panel. ──
+  async function enrichWithParcelDetails(idToken) {
+    const authQuery = idToken ? `?auth=${idToken}` : '';
+    await Promise.all(summaryRows.map(async r => {
+      try {
+        const res = await fetch(
+          `${FIREBASE_URL}/courier/consignments/${encodeURIComponent(r.cId)}.json${authQuery}`);
+        const c = await res.json() || {};
+        r.customerName = (c.recipientName || '').trim();
+        r.address = (c.recipientAddress || '').trim();
+        const cod = c.collectableAmount;
+        r.codAmount = typeof cod === 'number' ? cod : parseFloat(cod) || 0;
+        r.parcelStatus = (c.status || '').trim();
+      } catch { /* blanks stay */ }
+    }));
+  }
+
+  function fmtTaka(n) {
+    try { return '৳' + Number(Math.round(n || 0)).toLocaleString('en-US'); }
+    catch { return ''; }
+  }
   let minimized = false;
   function applyPanelPosition(panelEl) {
     try {
@@ -234,7 +270,7 @@
     panel.innerHTML = `
       <div class="db-cc-hdr" id="db-cc-hdr">
         <span>☎️ Call Center — Hold Validation</span>
-        <button id="db-cc-min" title="Minimize">−</button>
+        <span><button id="db-cc-refresh" title="Reload now">⟳</button><button id="db-cc-min" title="Minimize">−</button></span>
       </div>
       <div class="db-cc-body" id="db-cc-body">
         <div class="db-cc-status">⏳ Loading…</div>
@@ -268,7 +304,30 @@
       panel.querySelector('#db-cc-min').textContent = minimized ? '+' : '−';
     });
 
+    panel.querySelector('#db-cc-refresh').addEventListener('click', async (e) => {
+      e.stopPropagation();
+      const btn = e.currentTarget;
+      btn.textContent = '⏳';
+      try { if (ccBodyEl) await loadAndRender(ccBodyEl); }
+      finally { btn.textContent = '⟳'; }
+    });
+
     return panel;
+  }
+
+  function armAutoRefresh() {
+    if (ccRefreshTimer) return;
+    ccRefreshTimer = setInterval(() => {
+      // Skip while the tab is hidden — reload on return instead (visibility
+      // handler below). Minimized panel still refreshes so expand shows fresh.
+      if (document.hidden || !ccBodyEl) return;
+      loadAndRender(ccBodyEl).catch(e => console.warn('[DB CC Panel] auto-refresh failed:', e));
+    }, CC_REFRESH_MS);
+    document.addEventListener('visibilitychange', () => {
+      if (!document.hidden && ccBodyEl) {
+        loadAndRender(ccBodyEl).catch(e => console.warn('[DB CC Panel] visible-refresh failed:', e));
+      }
+    });
   }
 
   // ── DATA + RENDER ─────────────────────────────────────────────────────
@@ -283,6 +342,8 @@
   let ccBodyEl = null;
   let ccBranchNamesCache = {};
   let ccRemarkOpts = null;   // CC catalog, cached per page load
+  let ccRefreshTimer = null;
+  const CC_REFRESH_MS = 60_000; // auto-refresh: new parcels + called-status updates
 
   function computeSummaryRows(allRows) {
     const groups = {};
@@ -342,6 +403,8 @@
           <span>${escapeHtml(r.cId)}</span>
           <span>${escapeHtml(branchNames[r.branchId] || r.branchId)}</span>
         </div>
+        ${r.customerName ? `<div class="db-cc-row-meta">👤 ${escapeHtml(r.customerName)}${r.codAmount ? ` • ${escapeHtml(fmtTaka(r.codAmount))}` : ''}</div>` : (r.codAmount ? `<div class="db-cc-row-meta">${escapeHtml(fmtTaka(r.codAmount))}</div>` : '')}
+        ${r.address ? `<div class="db-cc-row-meta">📍 ${escapeHtml(r.address)}</div>` : ''}
         <div class="db-cc-row-remark">🙋 ${escapeHtml(r.firstWorkerRemark || '(no note)')}</div>
         ${r.lastCcRemark ? `<div class="db-cc-row-remark">↳ ${escapeHtml(r.lastCcRemark)}</div>` : ''}
         <div class="db-cc-row-bottom">
@@ -352,8 +415,10 @@
             ${r.customerPhone ? `<button type="button" class="db-cc-call-btn" data-phone="${escapeHtml(r.customerPhone)}">📞 Call</button>` : ''}
             <button type="button" class="db-cc-hist-btn" data-idx="${idx}">▼ History (${r.trail.length})</button>
             <button type="button" class="db-cc-remark-btn" data-idx="${idx}">📝 Remarks</button>
+            <button type="button" class="db-cc-sync-btn" data-idx="${idx}" title="Sheet sync — dynamic lookup দিয়ে reference খুঁজে field update">🔄 Sync</button>
           </span>
         </div>
+        <div class="db-cc-sync-msg" data-idx="${idx}" style="display:none"></div>
         <div class="db-cc-hist-section" data-idx="${idx}" style="display:none"></div>
         <div class="db-cc-remark-section" data-idx="${idx}" style="display:none"></div>
       </div>`).join('') : `<div class="db-cc-status">এই filter-এ কোনো entry নেই</div>`;
@@ -398,6 +463,9 @@
     });
     bodyEl.querySelectorAll('.db-cc-remark-btn').forEach(btn => {
       btn.addEventListener('click', () => toggleCcRemarkSection(bodyEl, filtered, +btn.dataset.idx));
+    });
+    bodyEl.querySelectorAll('.db-cc-sync-btn').forEach(btn => {
+      btn.addEventListener('click', () => syncCardToSheet(bodyEl, filtered, +btn.dataset.idx, btn));
     });
   }
 
@@ -574,11 +642,215 @@
       }));
       summaryRows = computeSummaryRows(allRows);
       ccBranchNamesCache = branchNames;
+      await enrichWithParcelDetails(idToken);
       render(bodyEl, branchNames);
     } catch (e) {
       console.error('[DB CC Panel] load failed:', e);
       bodyEl.innerHTML = '<div class="db-cc-status">⚠ Load failed — console (F12) দেখো</div>';
     }
+  }
+
+  // ── SHEET SYNC (per card) ─────────────────────────────────────────
+  // Same dynamic lookup/write rules as the app's RemarkSheetMirror (see
+  // ScannerSheetModels.kt): effective rules = stored lists, else legacy
+  // 3-field conversion. Column ref = letter ("C") or header text
+  // ("Consignment ID", matched against row 1). ALL lookups must match
+  // exactly on one row; writes go together; never appended.
+  function effectiveLookups(conn) {
+    const dyn = (conn.lookups || []).filter(r => r && String(r.colRef || '').trim());
+    if (dyn.length) return dyn.map(r => ({ colRef: String(r.colRef).trim(), kind: r.kind === 'today' ? 'today' : 'consignment' }));
+    if (!conn.dateMatchColumn) return [];
+    const out = [];
+    if (conn.matchColumn) out.push({ colRef: conn.matchColumn, kind: 'consignment' });
+    out.push({ colRef: conn.dateMatchColumn, kind: 'today' });
+    return out;
+  }
+
+  function effectiveWrites(conn) {
+    const dyn = (conn.writes || []).filter(r => r && String(r.colRef || '').trim());
+    if (dyn.length) {
+      const kinds = ['verdict', 'remark', 'note', 'status', 'today'];
+      return dyn.map(r => ({ colRef: String(r.colRef).trim(), kind: kinds.includes(r.kind) ? r.kind : 'verdict' }));
+    }
+    if (!conn.dateMatchColumn || !conn.writeColumn) return [];
+    return [{ colRef: conn.writeColumn, kind: 'verdict' }];
+  }
+
+  function isRemarkConn(conn) {
+    return effectiveLookups(conn).length > 0 && effectiveWrites(conn).length > 0;
+  }
+
+  function indexToLetter(n) { // 1-based
+    let s = '', num = n;
+    while (num > 0) { const rem = (num - 1) % 26; s = String.fromCharCode(65 + rem) + s; num = Math.floor((num - 1) / 26); }
+    return s;
+  }
+
+  const SHEET_DATE_RES = [
+    [/^(\d{4})-(\d{2})-(\d{2})$/, (m) => [m[1], m[2], m[3]]],
+    [/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/, (m) => [m[3], m[1].padStart(2, '0'), m[2].padStart(2, '0')]], // M/d/yyyy first…
+    [/^(\d{1,2})-(\d{1,2})-(\d{4})$/, (m) => [m[3], m[2].padStart(2, '0'), m[1].padStart(2, '0')]],
+    [/^(\d{4})\/(\d{2})\/(\d{2})$/, (m) => [m[1], m[2], m[3]]],
+    [/^(\d{1,2})\.(\d{1,2})\.(\d{4})$/, (m) => [m[3], m[2].padStart(2, '0'), m[1].padStart(2, '0')]],
+  ];
+  const MONTHS = { jan: '01', feb: '02', mar: '03', apr: '04', may: '05', jun: '06', jul: '07', aug: '08', sep: '09', oct: '10', nov: '11', dec: '12' };
+  function sheetCellIsToday(cell, todayKey) {
+    const raw = String(cell || '').trim();
+    if (!raw) return false;
+    for (const [re, fn] of SHEET_DATE_RES) {
+      const m = raw.match(re);
+      if (m) { const [y, mo, d] = fn(m); if (`${y}-${mo}-${d}` === todayKey) return true; }
+    }
+    // dd-MMM-yyyy / dd-MMM-yy ("03-Jul-2026", "03-Jul-26")
+    let m = raw.match(/^(\d{1,2})-([A-Za-z]{3})-(\d{2}|\d{4})$/);
+    if (m) {
+      const mo = MONTHS[m[2].toLowerCase()];
+      if (mo) {
+        const y = m[3].length === 2 ? '20' + m[3] : m[3];
+        if (`${y}-${mo}-${m[1].padStart(2, '0')}` === todayKey) return true;
+      }
+    }
+    // dd/MM/yyyy (day-first) — try when the M/d reading above didn't hit today
+    m = raw.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+    if (m) {
+      const cand = `${m[3]}-${m[2].padStart(2, '0')}-${m[1].padStart(2, '0')}`;
+      if (cand === todayKey) return true;
+    }
+    return false;
+  }
+
+  async function sheetsGet(token, url) {
+    const res = await fetch(url, { headers: { 'Authorization': `Bearer ${token}` } });
+    if (!res.ok) throw new Error(`Sheets API ${res.status}`);
+    return res.json();
+  }
+
+  async function resolveLetter(token, sheetId, tab, ref, headerCache) {
+    const t = String(ref || '').trim();
+    if (!t) return null;
+    if (/^[A-Za-z]{1,3}$/.test(t)) return t.toUpperCase();
+    if (!headerCache.values) {
+      const data = await sheetsGet(token,
+        `https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values/${encodeURIComponent(tab + '!1:1')}`);
+      const rows = data.values || [];
+      headerCache.values = rows.length ? rows[0] : [];
+    }
+    const idx = headerCache.values.findIndex(h => String(h || '').trim().toLowerCase() === t.toLowerCase());
+    return idx >= 0 ? indexToLetter(idx + 1) : null;
+  }
+
+  function getSheetsToken() {
+    return new Promise(resolve => {
+      try {
+        chrome.runtime.sendMessage({ action: 'get_sheets_token' }, res => {
+          if (chrome.runtime.lastError) return resolve({ token: null, error: chrome.runtime.lastError.message });
+          resolve({ token: res?.token || null, error: res?.error || null });
+        });
+      } catch (e) { resolve({ token: null, error: e.message }); }
+    });
+  }
+
+  async function syncCardToSheet(bodyEl, rows, idx, btn) {
+    const card = rows[idx];
+    const msgEl = bodyEl.querySelector(`.db-cc-sync-msg[data-idx="${idx}"]`);
+    const say = t => { if (msgEl) { msgEl.textContent = t; msgEl.style.display = t ? '' : 'none'; } };
+    if (!card) return;
+    btn.disabled = true;
+    const orig = btn.textContent;
+    btn.textContent = '⏳ …';
+    try {
+      if (!ccIdToken) throw new Error('login missing — extension-এ Google দিয়ে login করুন');
+      // 1. Branch's remark connections (dynamic rules live here).
+      const connRes = await fetch(
+        `${FIREBASE_URL}/config/connectors/${encodeURIComponent(card.branchId)}/current.json?auth=${ccIdToken}`);
+      const connObj = await connRes.json().catch(() => ({})) || {};
+      const conns = Object.values(connObj).filter(isRemarkConn);
+      if (!conns.length) throw new Error('এই branch-এ remark connection নেই');
+      // 2. Sheets OAuth token (background → chrome.identity; needs re-login
+      //    once after the update, since the spreadsheets scope is new).
+      const { token, error } = await getSheetsToken();
+      if (!token) throw new Error(error || 'Sheets permission নেই — extension popup থেকে re-login করুন');
+      // 3. Values from the freshest CC row (worker row fallback): verdict =
+      //    CC english remarks (or status), remark/note/status/today per kind.
+      const ccTrail = (card.trail || []).filter(t => t.source === 'CC');
+      const latestCc = ccTrail.length ? ccTrail[ccTrail.length - 1] : null;
+      const latestAny = (card.trail || []).length ? card.trail[card.trail.length - 1] : null;
+      const todayParts = todayBdDateKey().split('-'); // yyyy-MM-dd (BD)
+      const vals = {
+        verdict: (latestCc && (latestCc.remark || latestCc.status)) || (latestAny && (latestAny.remark || latestAny.status)) || '',
+        remark:  (latestCc && latestCc.remark) || (latestAny && latestAny.remark) || '',
+        note:    (latestCc && latestCc.note) || (latestAny && latestAny.note) || '',
+        status:  (latestCc && latestCc.status) || (latestAny && latestAny.status) || '',
+        today:   `${todayParts[0]}-${todayParts[1]}-${todayParts[2]}`,
+      };
+      let done = 0, lastErr = '';
+      for (const conn of conns) {
+        try {
+          const hit = await syncOneConnection(token, conn, card.cId, vals);
+          if (hit) done++;
+        } catch (e) { lastErr = e.message || 'sync failed'; }
+      }
+      if (done > 0) { btn.textContent = '✓ Synced'; say(`✓ Sheet updated (${done}/${conns.length})`); }
+      else { btn.textContent = '⚠ Failed'; say(`✕ ${lastErr || 'match পাওয়া যায়নি'}`); }
+      setTimeout(() => { btn.textContent = orig; btn.disabled = false; }, 2500);
+    } catch (e) {
+      btn.textContent = '⚠ Failed';
+      say(`✕ ${e.message || 'sync failed'}`);
+      setTimeout(() => { btn.textContent = orig; btn.disabled = false; }, 2500);
+    }
+  }
+
+  async function syncOneConnection(token, conn, consignmentId, vals) {
+    const lookups = effectiveLookups(conn);
+    const writes = effectiveWrites(conn);
+    const tab = (conn.tabPattern || 'Day {dd}').replace('{dd}', todayBdDateKey().split('-')[2]);
+    const headerCache = {};
+    const lookupCols = [];
+    for (const rule of lookups) {
+      const letter = await resolveLetter(token, conn.sheetId, tab, rule.colRef, headerCache);
+      if (!letter) throw new Error(`lookup column '${rule.colRef}' পাওয়া যায়নি`);
+      lookupCols.push({ rule, letter });
+    }
+    const writeCols = [];
+    for (const rule of writes) {
+      const letter = await resolveLetter(token, conn.sheetId, tab, rule.colRef, headerCache);
+      if (!letter) throw new Error(`write column '${rule.colRef}' পাওয়া যায়নি`);
+      writeCols.push({ rule, letter });
+    }
+    // Fetch each lookup column once.
+    const columns = {};
+    for (const { letter } of lookupCols) {
+      const data = await sheetsGet(token,
+        `https://sheets.googleapis.com/v4/spreadsheets/${conn.sheetId}/values/${encodeURIComponent(tab + '!' + letter + ':' + letter)}`);
+      const rows = data.values || [];
+      columns[letter] = rows.map(r => (r && r[0]) || '');
+    }
+    const scanned = Math.max(0, ...Object.values(columns).map(c => c.length));
+    const todayKey = todayBdDateKey();
+    const wantOf = kind => kind === 'consignment' ? consignmentId.trim() : 'আজকের তারিখ';
+    for (let i = 0; i < scanned; i++) {
+      const okAll = lookupCols.every(({ rule, letter }) => {
+        const cell = (columns[letter][i] || '').trim();
+        return rule.kind === 'consignment' ? cell === consignmentId.trim()
+          : sheetCellIsToday(cell, todayKey);
+      });
+      if (!okAll) continue;
+      // Exact row — write all rules together.
+      for (const { rule, letter } of writeCols) {
+        const v = vals[rule.kind] != null ? String(vals[rule.kind]) : '';
+        const res = await fetch(
+          `https://sheets.googleapis.com/v4/spreadsheets/${conn.sheetId}/values/${encodeURIComponent(tab + '!' + letter + (i + 1))}?valueInputOption=RAW`,
+          {
+            method: 'PUT',
+            headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ range: `${tab}!${letter}${i + 1}`, majorDimension: 'ROWS', values: [[v]] }),
+          });
+        if (!res.ok) throw new Error(`Sheets write ${res.status}`);
+      }
+      return true;
+    }
+    const wantList = lookupCols.map(({ rule }) => `${rule.colRef}='${wantOf(rule.kind)}'`).join(', ');
+    throw new Error(`exact match নেই (${wantList}) — append হয় না`);
   }
 
   // ── INIT — opt-in per page via Settings → "Call Center Panel Pages"
@@ -596,6 +868,7 @@
 
     injectStyle();
     const panel = createPanel();
+    armAutoRefresh();
     await loadAndRender(panel.querySelector('#db-cc-body'));
   }
 
