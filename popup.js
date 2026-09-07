@@ -648,6 +648,12 @@ function closeRemarks() {
 // 🔥 ফায়ারবেজ — লোড & লিসেন
 // ══════════════════════════════
 async function loadHistory(append = false) {
+  // Overlap guard: 30s interval + focus reload + 3 SSE reloads can fire
+  // together — second call while one is in flight returns early instead of
+  // double-fetching the same paths.
+  if (loadHistory.inFlight) return;
+  loadHistory.inFlight = true;
+  try {
   const { historyPath, extensionId, userId } = await getActivePaths();
   if (!extensionId && !historyPath) return;
   if (!append) historyItems = [];
@@ -765,6 +771,7 @@ async function loadHistory(append = false) {
     const loadMoreWrap = document.getElementById('load-more-wrap');
     if (loadMoreWrap) loadMoreWrap.style.display = allItems.length > historyItems.length ? '' : 'none';
   } catch (e) { console.error('Load history failed:', e); }
+  } finally { loadHistory.inFlight = false; }
 }
 
 function startSessionListener(id) {
@@ -1481,6 +1488,19 @@ function setupSettings() {
   setupAutofillUrls();
   setupCcPanelUrls();
   setupAutoCopyToggle();
+  setupShowNotificationsToggle();
+}
+
+// "Show notifications" (Settings → Notifications). Read by background.js before
+// every chrome.notifications.create — absent key means on (default checked).
+async function setupShowNotificationsToggle() {
+  const toggle = document.getElementById('show-notifications-toggle');
+  if (!toggle) return;
+  const { show_notifications } = await chrome.storage.local.get(['show_notifications']);
+  toggle.checked = show_notifications !== false;
+  toggle.addEventListener('change', () => {
+    chrome.storage.local.set({ show_notifications: toggle.checked });
+  });
 }
 
 // "Auto-copy incoming data" (Settings → App → Desktop). Read by background.js's

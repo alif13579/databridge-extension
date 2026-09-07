@@ -69,9 +69,13 @@
   function todayBdDateKey() { return BD_DATE_PARTS.format(new Date()); }
 
   function escapeHtml(str) {
-    const d = document.createElement('div');
-    d.textContent = str == null ? '' : String(str);
-    return d.innerHTML;
+    if (str == null) return '';
+    return String(str)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
   }
 
   // ── Supabase report fetch (ported from popup.js's fetchSupabaseReportRows,
@@ -236,6 +240,15 @@
         border-radius: 4px; padding: 5px; font-size: 11px; font-weight: 700; cursor: pointer;
       }
       .db-cc-save-btn:disabled { opacity: .6; cursor: default; }
+      .db-cc-more-btn {
+        width: 100%; background: #eff6ff; color: #1d4ed8; border: 1px solid #bfdbfe;
+        border-radius: 6px; padding: 7px; font-size: 11px; font-weight: 700; cursor: pointer;
+        margin: 2px 0 6px;
+      }
+      /* Narrow viewports (<720px): 340px panel would overflow — shrink + pin to edge */
+      @media (max-width: 720px) {
+        #db-cc-panel { width: calc(100vw - 16px) !important; min-width: 0 !important; right: 8px !important; }
+      }
     `;
     document.head.appendChild(s);
   }
@@ -264,14 +277,37 @@
     catch { return ''; }
   }
   let minimized = false;
+  // Max visible cards before "show more" — unbounded DOM on a big "today" set
+  // used to freeze the host page; History (20/page) was already capped, CC was not.
+  const CC_RENDER_LIMIT = 50;
+  let ccVisibleCount = CC_RENDER_LIMIT;
   function applyPanelPosition(panelEl) {
     try {
       const saved = localStorage.getItem('db-cc-panel-pos');
       if (!saved) return;
       const { left, top } = JSON.parse(saved);
-      if (left) { panelEl.style.left = left; panelEl.style.right = 'auto'; }
-      if (top)  panelEl.style.top = top;
+      const w = panelEl.offsetWidth || 340, h = panelEl.offsetHeight || 200;
+      const px = parseFloat(left), py = parseFloat(top);
+      // Validate: a pos saved on a bigger monitor can strand the panel fully
+      // off-screen on a smaller one — ignore it and fall back to CSS default.
+      if (!isNaN(px) && px > -w + 80 && px < window.innerWidth - 80) {
+        panelEl.style.left = px + 'px';
+        panelEl.style.right = 'auto';
+      }
+      if (!isNaN(py) && py > -20 && py < window.innerHeight - 40) {
+        panelEl.style.top = py + 'px';
+      }
     } catch (e) { /* ignore malformed/missing saved position */ }
+  }
+
+  function clampPanelToViewport(panel) {
+    const w = panel.offsetWidth || 340, h = panel.offsetHeight || 200;
+    let l = panel.offsetLeft, t = panel.offsetTop;
+    l = Math.min(Math.max(l, -w + 80), window.innerWidth - 80);
+    t = Math.min(Math.max(t, 0), window.innerHeight - 40);
+    panel.style.left = l + 'px';
+    panel.style.top = t + 'px';
+    panel.style.right = 'auto';
   }
 
   function createPanel() {
@@ -287,6 +323,13 @@
       </div>
     `;
     document.body.appendChild(panel);
+    // Cascade: scan-receive panel (#db-panel) defaults to the same top:0/right:375px —
+    // without this both widgets stack exactly on top of each other when both activate.
+    try {
+      if (document.getElementById('db-panel') && !localStorage.getItem('db-cc-panel-pos')) {
+        panel.style.right = '735px';
+      }
+    } catch (_) { /* non-fatal */ }
     applyPanelPosition(panel);
 
     const hdr = panel.querySelector('#db-cc-hdr');
@@ -298,14 +341,44 @@
         panel.style.left  = (startLeft + ev.clientX - startX) + 'px';
         panel.style.top   = (startTop  + ev.clientY - startY) + 'px';
         panel.style.right = 'auto';
+        clampPanelToViewport(panel);
       }
       function onUp() {
         document.removeEventListener('mousemove', onMove);
         document.removeEventListener('mouseup', onUp);
+        clampPanelToViewport(panel);
         localStorage.setItem('db-cc-panel-pos', JSON.stringify({ left: panel.style.left, top: panel.style.top }));
       }
       document.addEventListener('mousemove', onMove);
       document.addEventListener('mouseup', onUp);
+    });
+    // Touch drag + double-click header to reset a stranded position.
+    hdr.addEventListener('touchstart', e => {
+      if (e.target.closest && e.target.closest('button')) return;
+      const t = e.touches[0];
+      const startX = t.clientX, startY = t.clientY;
+      const startLeft = panel.offsetLeft, startTop = panel.offsetTop;
+      function onMove(ev) {
+        const m = ev.touches[0];
+        panel.style.left = (startLeft + m.clientX - startX) + 'px';
+        panel.style.top = (startTop + m.clientY - startY) + 'px';
+        panel.style.right = 'auto';
+        clampPanelToViewport(panel);
+        ev.preventDefault();
+      }
+      function onEnd() {
+        document.removeEventListener('touchmove', onMove);
+        document.removeEventListener('touchend', onEnd);
+        clampPanelToViewport(panel);
+        try { localStorage.setItem('db-cc-panel-pos', JSON.stringify({ left: panel.style.left, top: panel.style.top })); } catch (_) {}
+      }
+      document.addEventListener('touchmove', onMove, { passive: false });
+      document.addEventListener('touchend', onEnd);
+    }, { passive: true });
+    hdr.addEventListener('dblclick', e => {
+      if (e.target.closest && e.target.closest('button')) return;
+      try { localStorage.removeItem('db-cc-panel-pos'); } catch (_) {}
+      panel.style.left = ''; panel.style.top = ''; panel.style.right = '';
     });
 
     panel.querySelector('#db-cc-min').addEventListener('click', () => {
@@ -421,7 +494,9 @@
     const filtered = filter === 'all' ? summaryRows
       : summaryRows.filter(r => filter === 'pending' ? r.stillPending : !r.stillPending);
 
-    const rowsHtml = filtered.length ? filtered.map((r, idx) => `
+    const visible = filtered.slice(0, ccVisibleCount);
+    const hiddenCount = filtered.length - visible.length;
+    const rowsHtml = visible.length ? visible.map((r, idx) => `
       <div class="db-cc-row ${r.stillPending ? 'db-cc-row-pending' : 'db-cc-row-validated'}">
         <div class="db-cc-row-top">
           <span>${escapeHtml(r.cId)}</span>
@@ -458,13 +533,20 @@
         </div>
       </div>
       ${rowsHtml}
+      ${hiddenCount > 0 ? `<button type="button" class="db-cc-more-btn" id="db-cc-more">▼ আরও ${hiddenCount}টি দেখুন (${visible.length}/${filtered.length})</button>` : ''}
     `;
 
     bodyEl.querySelectorAll('.db-cc-stat').forEach(cell => {
       cell.addEventListener('click', () => {
         filter = cell.dataset.filter;
+        ccVisibleCount = CC_RENDER_LIMIT;
         render(bodyEl, branchNames);
       });
+    });
+    const moreBtn = bodyEl.querySelector('#db-cc-more');
+    if (moreBtn) moreBtn.addEventListener('click', () => {
+      ccVisibleCount += CC_RENDER_LIMIT;
+      render(bodyEl, branchNames);
     });
     bodyEl.querySelectorAll('.db-cc-call-btn').forEach(btn => {
       // Same as the dashboard's Hold Validation Call button: send the number to
@@ -481,10 +563,10 @@
       });
     });
     bodyEl.querySelectorAll('.db-cc-hist-btn').forEach(btn => {
-      btn.addEventListener('click', () => toggleCcHistory(bodyEl, filtered, +btn.dataset.idx, btn));
+      btn.addEventListener('click', () => toggleCcHistory(bodyEl, visible, +btn.dataset.idx, btn));
     });
     bodyEl.querySelectorAll('.db-cc-remark-btn').forEach(btn => {
-      btn.addEventListener('click', () => toggleCcRemarkSection(bodyEl, filtered, +btn.dataset.idx));
+      btn.addEventListener('click', () => toggleCcRemarkSection(bodyEl, visible, +btn.dataset.idx));
     });
   }
 
@@ -669,6 +751,7 @@
         allRows.push(...rows);
       }));
       summaryRows = computeSummaryRows(allRows);
+      ccVisibleCount = CC_RENDER_LIMIT;
       ccBranchNamesCache = branchNames;
       ccBranchIdsCache = branchIds.slice();
       ccAllReportRows = allRows;

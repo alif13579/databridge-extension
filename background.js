@@ -65,6 +65,9 @@ pollIncomingCommands();
 // summary card's "📞 Call" button to send a customer phone number to the app the same way
 // the existing context-menu/keyboard-shortcut paths above already do.
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  // Sender check: only our own pages/content scripts (same extension id) may
+  // trigger sends — a compromised web page cannot spoof `sender`.
+  if (sender.id !== chrome.runtime.id) return;
   if (message?.action === 'send_to_app' && message.text) {
     sendToFirebase(message.text).then(() => sendResponse({ ok: true }));
     return true; // keep the message channel open for the async sendResponse above
@@ -122,6 +125,7 @@ function askContentScript(tabId) {
 // Uses manifest oauth2 scopes (userinfo + spreadsheets): first call after the
 // update pops Google's consent, then the token is cached by Chrome.
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (sender.id !== chrome.runtime.id) return;
   if (message?.action === 'get_sheets_token') {
     try {
       chrome.identity.getAuthToken({ interactive: false }, (token) => {
@@ -144,7 +148,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 // it — so its 📞 Call button relays the phone number here to actually
 // open the tel: link, same reasoning popup.js's own handleDial() sidesteps
 // simply by already running in a full extension-page context.
-chrome.runtime.onMessage.addListener((message) => {
+chrome.runtime.onMessage.addListener((message, sender) => {
+  if (sender.id !== chrome.runtime.id) return;
   if (message?.action === 'db_cc_dial' && message.phone) {
     const cleaned = String(message.phone).replace(/[\s-()]/g, '');
     chrome.tabs.create({ url: `tel:${cleaned}` });
@@ -168,7 +173,7 @@ function normalizePhoneKey(text) {
   return s.replace(/\D/g, '');
 }
 
-async function sendToFirebase(text) {
+async function sendToFirebase(text, opts = {}) {
   if (!text) { console.warn('[DB] sendToFirebase: called with empty text — aborting'); return; }
 
   const { extension_id, container_id } = await new Promise(resolve =>
@@ -224,13 +229,18 @@ async function sendToFirebase(text) {
       body: JSON.stringify(timestamp)
     });
 
-    // ✅ 4. Show notification
-    chrome.notifications.create(`notif_${timestamp}`, {
-      type: "basic",
-      iconUrl: "icons/icon48.png",
-      title: "DataBridge",
-      message: isPhone ? `📞 ${text}` : `📝 ${text.substring(0, 50)}`
-    });
+    // ✅ 4. Show notification (unless user turned it off in Settings)
+    const { show_notifications } = await new Promise(resolve =>
+      chrome.storage.local.get(['show_notifications'], resolve)
+    );
+    if (show_notifications !== false) {
+      chrome.notifications.create(`notif_${timestamp}`, {
+        type: "basic",
+        iconUrl: "icons/icon48.png",
+        title: "DataBridge",
+        message: isPhone ? `📞 ${text}` : `📝 ${text.substring(0, 50)}`
+      });
+    }
 
     // ✅ 5. Bump unread badge count
     incrementUnreadBadge();
@@ -240,7 +250,47 @@ async function sendToFirebase(text) {
 
   } catch (error) {
     console.error("❌ DataBridge Error:", error);
+    // Offline queue: a failed send used to vanish silently. Stash the text so
+    // the next alarm tick retries it (flushPendingSends below) instead of losing it.
+    // skipQueue callers (the flusher itself) re-throw so the entry stays queued once.
+    if (opts.skipQueue) throw error;
+    try {
+      const { pending_sends } = await new Promise(resolve =>
+        chrome.storage.local.get(['pending_sends'], resolve)
+      );
+      const queue = Array.isArray(pending_sends) ? pending_sends : [];
+      queue.push({ text, ts: Date.now() });
+      await new Promise(resolve =>
+        chrome.storage.local.set({ pending_sends: queue.slice(-50) }, resolve)
+      );
+    } catch (_) { /* storage itself failed — nothing more we can do */ }
   }
+}
+
+// Retries queued offline sends (see catch above). Runs at the head of every
+// alarm tick so a send that failed while offline goes out on its own once the
+// network is back, oldest first.
+async function flushPendingSends() {
+  const { pending_sends } = await new Promise(resolve =>
+    chrome.storage.local.get(['pending_sends'], resolve)
+  );
+  if (!Array.isArray(pending_sends) || !pending_sends.length) return;
+  const remaining = [];
+  for (const item of pending_sends) {
+    const text = item?.text;
+    if (!text) continue;
+    try {
+      // Queue-bypass: a retry failure must throw (so we keep it queued) rather
+      // than re-queueing itself and duplicating the entry.
+      await sendToFirebase(text, { skipQueue: true });
+    } catch {
+      remaining.push(item);
+      break; // still offline — keep the rest queued, retry next tick
+    }
+  }
+  await new Promise(resolve =>
+    chrome.storage.local.set({ pending_sends: remaining.slice(-50) }, resolve)
+  );
 }
 
 function incrementUnreadBadge() {
@@ -263,6 +313,8 @@ function incrementUnreadBadge() {
 const PROCESSED_COMMANDS_CAP = 200; // bound the locally-stored id list so it can't grow forever
 
 async function pollIncomingCommands() {
+  // Retry any offline-queued sends first — same 30s tick, no extra alarm needed.
+  try { await flushPendingSends(); } catch (e) { console.warn('[DB] flushPendingSends failed:', e?.message || e); }
   const { extension_id, auto_copy_incoming, processed_command_ids } = await new Promise(resolve =>
     chrome.storage.local.get(['extension_id', 'auto_copy_incoming', 'processed_command_ids'], resolve)
   );
@@ -293,12 +345,17 @@ async function pollIncomingCommands() {
       if (auto_copy_incoming) {
         const copied = await writeToClipboardViaOffscreen(text);
         if (copied) {
-          chrome.notifications.create(`notif_incoming_${cmdId}`, {
-            type: 'basic',
-            iconUrl: 'icons/icon48.png',
-            title: 'DataBridge',
-            message: `📋 Copied: ${text.substring(0, 50)}`
-          });
+          const { show_notifications } = await new Promise(resolve =>
+            chrome.storage.local.get(['show_notifications'], resolve)
+          );
+          if (show_notifications !== false) {
+            chrome.notifications.create(`notif_incoming_${cmdId}`, {
+              type: 'basic',
+              iconUrl: 'icons/icon48.png',
+              title: 'DataBridge',
+              message: `📋 Copied: ${text.substring(0, 50)}`
+            });
+          }
         } else {
           console.warn('[DB] pollIncomingCommands: clipboard write failed for', cmdId);
         }
