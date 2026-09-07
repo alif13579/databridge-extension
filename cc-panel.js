@@ -79,6 +79,7 @@
   async function fetchSupabaseReportRows(branchId, startIso, endIso, idToken) {
     const rows = [];
     let page = 0;
+    const MAX_PAGES = 50; // safety: exact-multiple-of-page-size must not loop forever
     for (;;) {
       const res = await fetch(`${SUPABASE_URL}/functions/v1/validations`, {
         method: 'POST',
@@ -92,11 +93,21 @@
           page, page_size: SUPABASE_REPORT_PAGE_SIZE,
         }),
       });
-      const data = await res.json();
-      const pageRows = Array.isArray(data) ? data : [];
-      rows.push(...pageRows);
-      if (pageRows.length < SUPABASE_REPORT_PAGE_SIZE) break;
+      if (!res.ok) {
+        const body = await res.text().catch(() => '');
+        throw new Error(`Supabase report fetch failed (${res.status}) for branch "${branchId}": ${body.slice(0, 200)}`);
+      }
+      const data = await res.json().catch(() => []);
+      if (!Array.isArray(data)) {
+        throw new Error(`Supabase report fetch returned non-array for branch "${branchId}" — aborting paging (would loop forever)`);
+      }
+      rows.push(...data);
+      if (data.length < SUPABASE_REPORT_PAGE_SIZE) break;
       page++;
+      if (page >= MAX_PAGES) {
+        console.warn('[DB CC Panel] report paging stopped at MAX_PAGES for branch', branchId);
+        break;
+      }
     }
     return rows;
   }
@@ -325,13 +336,18 @@
     ccRefreshTimer = setInterval(() => {
       // Skip while the tab is hidden — reload on return instead (visibility
       // handler below). Minimized panel still refreshes so expand shows fresh.
-      if (document.hidden || !ccBodyEl) return;
+      // In-flight guard: manual ⟳ / post-save reload / visibility reload must
+      // not overlap into parallel Supabase+Firebase storms + out-of-order render.
+      if (document.hidden || !ccBodyEl || ccLoading) return;
       loadAndRender(ccBodyEl).catch(e => console.warn('[DB CC Panel] auto-refresh failed:', e));
     }, CC_REFRESH_MS);
     document.addEventListener('visibilitychange', () => {
-      if (!document.hidden && ccBodyEl) {
+      if (!document.hidden && ccBodyEl && !ccLoading) {
         loadAndRender(ccBodyEl).catch(e => console.warn('[DB CC Panel] visible-refresh failed:', e));
       }
+    });
+    window.addEventListener('pagehide', () => {
+      if (ccRefreshTimer) { clearInterval(ccRefreshTimer); ccRefreshTimer = null; }
     });
   }
 
@@ -350,6 +366,7 @@
   let ccAllReportRows = [];  // raw report rows for today (bulk sync consolidates CC)
   let ccRemarkOpts = null;   // CC catalog, cached per page load
   let ccRefreshTimer = null;
+  let ccLoading = false; // in-flight guard for auto/manual/visibility reloads
   const CC_REFRESH_MS = 60_000; // auto-refresh: new parcels + called-status updates
 
   function computeSummaryRows(allRows) {
@@ -625,6 +642,13 @@
   }
 
   async function loadAndRender(bodyEl) {
+    if (ccLoading) return;
+    ccLoading = true;
+    // Preserve bulk-sync status across render() — render() overwrites
+    // bodyEl.innerHTML which would otherwise destroy #db-cc-bulk-msg.
+    const prevBulkMsg = bodyEl.querySelector('#db-cc-bulk-msg')?.textContent || '';
+    const prevBulkVisible = prevBulkMsg ? bodyEl.querySelector('#db-cc-bulk-msg')?.style.display !== 'none' : false;
+    try {
     const idToken = await getValidFirebaseIdToken();
     if (!idToken) { bodyEl.innerHTML = '<div class="db-cc-status">⚠ Extension-এ Google দিয়ে login করুন প্রথমে</div>'; return; }
     ccIdToken = idToken;
@@ -639,8 +663,7 @@
     const startIso = new Date(`${dateKey}T00:00:00+06:00`).toISOString();
     const endIso   = new Date(new Date(startIso).getTime() + 24 * 60 * 60 * 1000).toISOString();
 
-    try {
-      const allRows = [];
+    const allRows = [];
       await Promise.all(branchIds.map(async id => {
         const rows = await fetchSupabaseReportRows(id, startIso, endIso, idToken);
         allRows.push(...rows);
@@ -651,9 +674,16 @@
       ccAllReportRows = allRows;
       await enrichWithParcelDetails(idToken);
       render(bodyEl, branchNames);
+      if (prevBulkMsg) bulkSay(prevBulkMsg);
+      if (prevBulkMsg && !prevBulkVisible) { const el = bulkStatusEl(); if (el) el.style.display = 'none'; }
     } catch (e) {
       console.error('[DB CC Panel] load failed:', e);
-      bodyEl.innerHTML = '<div class="db-cc-status">⚠ Load failed — console (F12) দেখো</div>';
+      if (ccBodyEl === bodyEl) {
+        bodyEl.innerHTML = '<div class="db-cc-status">⚠ Load failed — console (F12) দেখো</div>';
+        if (prevBulkMsg) bulkSay(prevBulkMsg);
+      }
+    } finally {
+      ccLoading = false;
     }
   }
 
