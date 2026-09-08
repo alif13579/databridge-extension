@@ -1176,6 +1176,54 @@
     return changed;
   }
 
+  // ── RECONCILE EXPECTED SETS WITH CURRENT PAGE STATUS ─────────────────────
+  // initState() syncs the cached expected sets from the live DOM only when
+  // rows already exist at init() time — but Hermes' Vue list usually renders
+  // AFTER our content script runs, and the retry/observer rebuild paths only
+  // fire when BOTH expected sets are empty. So a non-empty stale cache (e.g.
+  // 5 hold IDs first visit, of which the agent since delivered/returned 3)
+  // survived reloads untouched until the 72h cache expired.
+  // This closes that gap with the same conservative rule as
+  // reconcileWithPageState(): an ID is touched ONLY when the page explicitly
+  // shows it — absent rows (pagination, mid re-render) are left alone, so a
+  // partial render can never shrink the sets. Unreadable status ('') also
+  // leaves the ID untouched.
+  function reconcileExpectedWithPage(st) {
+    const rows = parcelRows();
+    if (!rows.length) return false;
+
+    const holdSet   = new Set(st.holdExpected   || []);
+    const returnSet = new Set(st.returnExpected || []);
+    let changed = false;
+
+    rows.forEach(row => {
+      const id = rowId(row);
+      if (!id || !ID_REGEX.test(id)) return;
+      const s = (rowStatus(row) || '').trim().toLowerCase();
+      if (!s) return; // status unreadable → keep as-is
+
+      if (HOLD_VALID.has(s)) {
+        if (!holdSet.has(id))    { holdSet.add(id);      changed = true; }
+        if (returnSet.has(id))   { returnSet.delete(id); changed = true; }
+      } else if (RETURN_VALID.has(s)) {
+        if (!returnSet.has(id))  { returnSet.add(id);    changed = true; }
+        if (holdSet.has(id))     { holdSet.delete(id);   changed = true; }
+      } else {
+        // Explicitly shown with a non-hold/return status (delivered etc.)
+        // → no longer pending, drop from both expected sets.
+        if (holdSet.has(id))     { holdSet.delete(id);   changed = true; }
+        if (returnSet.has(id))   { returnSet.delete(id); changed = true; }
+      }
+    });
+
+    if (changed) {
+      st.holdExpected   = [...holdSet];
+      st.returnExpected = [...returnSet];
+      persistState(st);
+    }
+    return changed;
+  }
+
   // ── SCAN INPUT HANDLER ───────────────────────────────────────────────────
   // Use capture-phase listener so we always fire before Hermes' own handlers
   // that might call stopPropagation(). Also survives React/Vue re-renders.
@@ -1461,6 +1509,7 @@
 
     applyMemoryToState(appState); // auto-apply IDs saved in popup Memory tab
     reconcileWithPageState(appState); // clean stale received IDs on load
+    reconcileExpectedWithPage(appState); // heal stale expected IDs on load
     createPanel();
     refreshPanel(appState);
     refreshBorders(appState);
@@ -1476,6 +1525,16 @@
     // Retry: re-build expected sets + re-attach listeners if Hermes
     // rendered the parcel list after init() (SPA async render).
     [1500, 3500].forEach(ms => setTimeout(() => {
+      // Late-render heal for the stale-cache case (non-empty but outdated
+      // expected sets) — the empty-only rebuild below can't cover it.
+      const expChanged = reconcileExpectedWithPage(appState);
+      if (expChanged &&
+          (appState.holdExpected.length || appState.returnExpected.length)) {
+        console.log(`[DB] Retry @${ms}ms: reconciled expected sets with live DOM`,
+          appState.holdExpected.length, 'hold /', appState.returnExpected.length, 'return');
+        refreshBorders(appState);
+        refreshPanel(appState);
+      }
       if (!appState.holdExpected.length && !appState.returnExpected.length) {
         const { holdExpected, returnExpected } = buildExpected();
         if (holdExpected.length || returnExpected.length) {
@@ -1529,6 +1588,7 @@
               clearTimeout(debounce);
               debounce = setTimeout(() => {
                 reconcileWithPageState(appState);
+                reconcileExpectedWithPage(appState);
                 refreshBorders(appState);
                 refreshPanel(appState);
               }, 100);
@@ -1553,6 +1613,7 @@
           }
         }
         reconcileWithPageState(appState);
+        reconcileExpectedWithPage(appState);
         refreshPanel(appState);
         refreshBorders(appState);
       }, 300);
