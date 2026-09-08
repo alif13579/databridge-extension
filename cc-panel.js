@@ -67,6 +67,14 @@
   function localDateKey(isoString) { return BD_DATE_PARTS.format(new Date(isoString)); }
   function dateKeyToDdMmYyyy(dateKey) { const [y, m, d] = dateKey.split('-'); return `${d}-${m}-${y}`; }
   function todayBdDateKey() { return BD_DATE_PARTS.format(new Date()); }
+  // Picked-date label: Today / Yesterday / dd-MM-yyyy.
+  function ccDateLabel(key) {
+    const today = todayBdDateKey();
+    if (key === today) return 'Today';
+    const yest = new Date(new Date(`${today}T00:00:00+06:00`).getTime() - 24 * 3600 * 1000);
+    if (key === BD_DATE_PARTS.format(yest)) return 'Yesterday';
+    return dateKeyToDdMmYyyy(key);
+  }
 
   function escapeHtml(str) {
     if (str == null) return '';
@@ -209,6 +217,13 @@
         margin-right: 4px;
       }
       #db-cc-sync-sheet:disabled { opacity: .6; cursor: default; }
+      .db-cc-datebar {
+        display: flex; align-items: center; gap: 6px;
+        padding: 5px 10px; border-bottom: 1px solid #e2e8f0;
+        font-size: 11px; color: #475569; background: #f8fafc;
+      }
+      #db-cc-date { font: inherit; font-size: 11px; color: #1e293b; border: 1px solid #cbd5e1; border-radius: 4px; padding: 1px 4px; }
+      #db-cc-date-label { font-weight: 700; }
       .db-cc-hist-section, .db-cc-remark-section {
         margin-top: 6px; border-top: 1px dashed #cbd5e1; padding-top: 6px;
       }
@@ -316,7 +331,10 @@
     panel.innerHTML = `
       <div class="db-cc-hdr" id="db-cc-hdr">
         <span>☎️ Call Center — Hold Validation</span>
-        <span><button id="db-cc-sync-sheet" title="Sync to Sheet — sheet-এর today blank + Supabase CC মিলিয়ে bulk update">⇪ Sheet</button><button id="db-cc-refresh" title="Reload now">⟳</button><button id="db-cc-min" title="Minimize">−</button></span>
+        <span><button id="db-cc-sync-sheet" title="Sync to Sheet — নির্বাচিত date-এর sheet blank + Supabase CC মিলিয়ে bulk update">⇪ Sheet</button><button id="db-cc-refresh" title="Reload now">⟳</button><button id="db-cc-min" title="Minimize">−</button></span>
+      </div>
+      <div class="db-cc-datebar">
+        <span>📅</span><input type="date" id="db-cc-date"><span id="db-cc-date-label"></span>
       </div>
       <div class="db-cc-body" id="db-cc-body">
         <div class="db-cc-status">⏳ Loading…</div>
@@ -395,6 +413,25 @@
       finally { btn.textContent = '⟳'; }
     });
 
+    // Date picker — default today; বদলালে ওই date-এর Supabase data + sync scope.
+    const dateInput = panel.querySelector('#db-cc-date');
+    function paintCcDate() {
+      dateInput.max = todayBdDateKey();
+      if (!dateInput.value) dateInput.value = ccDateKey;
+      panel.querySelector('#db-cc-date-label').textContent = ccDateLabel(dateInput.value || ccDateKey);
+    }
+    paintCcDate();
+    dateInput.addEventListener('change', async () => {
+      let v = dateInput.value || todayBdDateKey();
+      if (v > todayBdDateKey()) v = todayBdDateKey(); // future-এ data নেই
+      dateInput.value = v;
+      ccDateKey = v;
+      paintCcDate();
+      filter = 'all';
+      ccVisibleCount = CC_RENDER_LIMIT;
+      if (ccBodyEl) await loadAndRender(ccBodyEl);
+    });
+
     panel.querySelector('#db-cc-sync-sheet').addEventListener('click', async (e) => {
       e.stopPropagation();
       const btn = e.currentTarget;
@@ -411,11 +448,12 @@
       // handler below). Minimized panel still refreshes so expand shows fresh.
       // In-flight guard: manual ⟳ / post-save reload / visibility reload must
       // not overlap into parallel Supabase+Firebase storms + out-of-order render.
-      if (document.hidden || !ccBodyEl || ccLoading) return;
+      // Past dates are static — no auto-refresh (manual ⟳ still works).
+      if (document.hidden || !ccBodyEl || ccLoading || ccDateKey !== todayBdDateKey()) return;
       loadAndRender(ccBodyEl).catch(e => console.warn('[DB CC Panel] auto-refresh failed:', e));
     }, CC_REFRESH_MS);
     document.addEventListener('visibilitychange', () => {
-      if (!document.hidden && ccBodyEl && !ccLoading) {
+      if (!document.hidden && ccBodyEl && !ccLoading && ccDateKey === todayBdDateKey()) {
         loadAndRender(ccBodyEl).catch(e => console.warn('[DB CC Panel] visible-refresh failed:', e));
       }
     });
@@ -432,6 +470,7 @@
   // combined, with no date/branch pickers (no room for them here).
   let summaryRows = [];
   let filter = 'all'; // 'all' | 'pending' | 'validated'
+  let ccDateKey = todayBdDateKey(); // picked date (default today) — panel + sync scope
   let ccIdToken = null;      // set per loadAndRender — remark options + save reuse it
   let ccBodyEl = null;
   let ccBranchNamesCache = {};
@@ -741,7 +780,7 @@
     const { ids: branchIds, names: branchNames } = await fetchMyBranches(google_uid, idToken);
     if (!branchIds.length) { bodyEl.innerHTML = '<div class="db-cc-status">⚠ কোনো branch assigned নেই</div>'; return; }
 
-    const dateKey  = todayBdDateKey();
+    const dateKey  = ccDateKey || todayBdDateKey();
     const startIso = new Date(`${dateKey}T00:00:00+06:00`).toISOString();
     const endIso   = new Date(new Date(startIso).getTime() + 24 * 60 * 60 * 1000).toISOString();
 
@@ -803,22 +842,22 @@
   // Date scope: most-specific covering scope wins (range > month > global),
   // same as the app's SheetScope.selectForDate. yyyy-MM-dd strings compare
   // lexicographically, so no date parsing is needed.
-  function scopeCovers(conn, todayKey) {
+  function scopeCovers(conn, dateKey) {
     const t = conn.scopeType || 'global';
     if (t === 'month') {
       const m = String(conn.scopeMonth || '').trim();
-      return m.length >= 7 && todayKey.slice(0, 7) === m.slice(0, 7);
+      return m.length >= 7 && dateKey.slice(0, 7) === m.slice(0, 7);
     }
     if (t === 'range') {
       const f = String(conn.scopeFrom || '').trim(), to = String(conn.scopeTo || '').trim();
       if (!f || !to) return false;
-      return f <= todayKey && todayKey <= to;
+      return f <= dateKey && dateKey <= to;
     }
     return true;
   }
 
-  function selectForToday(conns, todayKey) {
-    const cov = conns.filter(c => scopeCovers(c, todayKey));
+  function selectForDate(conns, dateKey) {
+    const cov = conns.filter(c => scopeCovers(c, dateKey));
     if (!cov.length) return [];
     const rank = c => (c.scopeType === 'range' ? 0 : c.scopeType === 'month' ? 1 : 2);
     const best = Math.min(...cov.map(rank));
@@ -864,12 +903,11 @@
     return null;
   }
 
-  function sheetCellIsToday(cell, todayKey) {
-    const raw = String(cell || '').trim();
+  function sheetCellIsDate(cell, dateKey) {    const raw = String(cell || '').trim();
     if (!raw) return false;
     for (const [re, fn] of SHEET_DATE_RES) {
       const m = raw.match(re);
-      if (m) { const [y, mo, d] = fn(m); if (`${y}-${mo}-${d}` === todayKey) return true; }
+      if (m) { const [y, mo, d] = fn(m); if (`${y}-${mo}-${d}` === dateKey) return true; }
     }
     // dd-MMM-yyyy / dd-MMM-yy ("03-Jul-2026", "03-Jul-26")
     let m = raw.match(/^(\d{1,2})-([A-Za-z]{3})-(\d{2}|\d{4})$/);
@@ -877,14 +915,14 @@
       const mo = MONTHS[m[2].toLowerCase()];
       if (mo) {
         const y = m[3].length === 2 ? '20' + m[3] : m[3];
-        if (`${y}-${mo}-${m[1].padStart(2, '0')}` === todayKey) return true;
+        if (`${y}-${mo}-${m[1].padStart(2, '0')}` === dateKey) return true;
       }
     }
     // dd/MM/yyyy (day-first) — try when the M/d reading above didn't hit today
     m = raw.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
     if (m) {
       const cand = `${m[3]}-${m[2].padStart(2, '0')}-${m[1].padStart(2, '0')}`;
-      if (cand === todayKey) return true;
+      if (cand === dateKey) return true;
     }
     return false;
   }
@@ -1003,7 +1041,7 @@
   }
 
   // One connection → its own sheet. Returns counts for the summary line.
-  async function bulkSyncOneConnection(token, branchId, conn, consolidated, todayKey) {
+  async function bulkSyncOneConnection(token, branchId, conn, consolidated, dateKey) {
     const res = { scanned: 0, filled: 0, syncedRows: 0, syncedCells: 0, noCc: 0, skipped: 0 };
     const lookups = effectiveLookups(conn);
     const writes = effectiveWrites(conn).filter(r =>
@@ -1011,7 +1049,7 @@
     if (!lookups.length || !writes.length) throw new Error('lookup/write rule নেই');
     const cidRule = lookups.find(r => r.kind === 'consignment');
     if (!cidRule) throw new Error('consignment lookup নেই — কোন column দিযে মিলাবো বোঝা যাচ্ছে না');
-    const tab = (conn.tabPattern || 'Day {dd}').replace('{dd}', todayKey.split('-')[2]);
+    const tab = (conn.tabPattern || 'Day {dd}').replace('{dd}', dateKey.split('-')[2]);
     const hr = (conn.headerRow >= 1 && conn.headerRow <= 20) ? conn.headerRow : 1;
     const headerCache = {};
     const cidLetter = await resolveLetter(token, conn.sheetId, tab, cidRule, hr, headerCache);
@@ -1053,7 +1091,7 @@
       let dateOk = true;
       for (const [rule, letter] of dateLetters) {
         const cell = (dateCols.get(letter) || [])[i] || '';
-        if (!sheetCellIsToday(String(cell || '').trim(), todayKey)) { dateOk = false; break; }
+        if (!sheetCellIsDate(String(cell || '').trim(), dateKey)) { dateOk = false; break; }
       }
       if (!dateOk) continue;
       // Blank check: at least one write cell empty → needs filling.
@@ -1089,12 +1127,13 @@
         ? ccBranchIdsCache.slice()
         : [...new Set((summaryRows || []).map(r => r.branchId).filter(Boolean))];
       if (!branchIds.length) throw new Error('কোনো branch পাওয়া যায়নি — আগে reload করুন');
+      const dateKey = ccDateKey || todayBdDateKey();
+      const dateLabel = dateKeyToDdMmYyyy(dateKey);
       bulkSay('⏳ Consolidated CC বানানো হচ্ছে…');
       const consolidated = await buildConsolidatedCc();
-      if (!consolidated.size) throw new Error('Supabase-এ আজকের কোনো CC remark নেই — লেখার কিছু নেই');
+      if (!consolidated.size) throw new Error(`Supabase-এ ${dateLabel}-এর কোনো CC remark নেই — লেখার কিছু নেই`);
       const { token, error } = await getSheetsToken();
       if (!token) throw new Error(error || 'Sheets permission নেই — extension popup থেকে re-login করুন');
-      const todayKey = todayBdDateKey();
       let totConns = 0, totScanned = 0, totFilled = 0, totRows = 0, totCells = 0, totNoCc = 0;
       const errs = [];
       for (const branchId of branchIds) {
@@ -1103,9 +1142,9 @@
           const connRes = await fetch(
             `${FIREBASE_URL}/config/connectors/${encodeURIComponent(branchId)}/current.json?auth=${ccIdToken}`);
           const connObj = await connRes.json().catch(() => ({})) || {};
-          conns = selectForToday(
+          conns = selectForDate(
             Object.values(connObj).filter(isRemarkConn).filter(c => c.enabled !== false),
-            todayKey);
+            dateKey);
         } catch (e) {
           errs.push(`${branchId}: connection পড়া যায়নি`);
           continue;
@@ -1116,7 +1155,7 @@
           const label = conn.sheetName || conn.sheetId || branchId;
           bulkSay(`⏳ ${label} — sheet পড়ছে…`);
           try {
-            const r = await bulkSyncOneConnection(token, branchId, conn, consolidated, todayKey);
+            const r = await bulkSyncOneConnection(token, branchId, conn, consolidated, dateKey);
             totScanned += r.scanned; totFilled += r.filled;
             totRows += r.syncedRows; totCells += r.syncedCells; totNoCc += r.noCc;
           } catch (e) {
@@ -1124,7 +1163,7 @@
           }
         }
       }
-      if (!totConns) throw new Error('আজকের জন্য কোনো branch-এ remark connection নেই (scope দেখুন)');
+      if (!totConns) throw new Error(`${dateLabel}-এর জন্য কোনো branch-এ remark connection নেই (scope দেখুন)`);
       let msg = `✓ ${totRows} row synced (${totCells} cells) · ${totFilled} already filled · ${totNoCc} no CC yet · ${totScanned} sheet rows দেখা (${totConns} connection)`;
       if (errs.length) msg += ` · ⚠ ${errs.length} error: ${errs.slice(0, 2).join('; ')}${errs.length > 2 ? '…' : ''}`;
       bulkSay(msg);
