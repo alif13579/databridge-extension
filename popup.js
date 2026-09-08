@@ -2388,6 +2388,9 @@ function setupDashboardTab() {
   const generateHvBtn = document.getElementById('generate-hv-btn');
   if (generateHvBtn) generateHvBtn.addEventListener('click', () => generateHoldValidationReport());
 
+  const syncHvBtn = document.getElementById('sync-hv-btn');
+  if (syncHvBtn) syncHvBtn.addEventListener('click', () => syncHvToSheet());
+
   const downloadHvBtn = document.getElementById('download-hv-btn');
   if (downloadHvBtn) downloadHvBtn.addEventListener('click', async () => {
     // Direct download: fetches fresh data for whatever From/To/branch/mode is
@@ -2852,6 +2855,351 @@ function renderHvBranchCheckboxes() {
 function getSelectedHvBranchIds() {
   return [...document.querySelectorAll('.dash-hv-branch-cb:checked')].map(cb => cb.value);
 }
+
+  // ── SHEET SYNC (dashboard Hold Validation → remark sheets) ──────────────
+  // Same engine as cc-panel.js bulk sync, generalized: dashboard-এর checked
+  // branches × From–To range-এর প্রতিটা দিন — ওই দিনের consolidated CC
+  // (latest CC remark per consignment) ওই দিনের tab/date-cell-এ, blank-only.
+  const HV_SYNC_MAX_DAYS = 31;
+  const HV_SHEET_DATE_RES = [
+    [/^(\d{4})-(\d{2})-(\d{2})$/, (m) => [m[1], m[2], m[3]]],
+    [/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/, (m) => [m[3], m[1].padStart(2, '0'), m[2].padStart(2, '0')]],
+    [/^(\d{1,2})-(\d{1,2})-(\d{4})$/, (m) => [m[3], m[2].padStart(2, '0'), m[1].padStart(2, '0')]],
+    [/^(\d{4})\/(\d{2})\/(\d{2})$/, (m) => [m[1], m[2], m[3]]],
+    [/^(\d{1,2})\.(\d{1,2})\.(\d{4})$/, (m) => [m[3], m[2].padStart(2, '0'), m[1].padStart(2, '0')]],
+  ];
+  const HV_MONTHS = { jan: '01', feb: '02', mar: '03', apr: '04', may: '05', jun: '06', jul: '07', aug: '08', sep: '09', oct: '10', nov: '11', dec: '12' };
+  function hvSheetCellIsDate(cell, dateKey) {
+    const raw = String(cell || '').trim();
+    if (!raw) return false;
+    for (const [re, fn] of HV_SHEET_DATE_RES) {
+      const m = raw.match(re);
+      if (m) { const [y, mo, d] = fn(m); if (`${y}-${mo}-${d}` === dateKey) return true; }
+    }
+    let m = raw.match(/^(\d{1,2})-([A-Za-z]{3})-(\d{2}|\d{4})$/);
+    if (m) {
+      const mo = HV_MONTHS[m[2].toLowerCase()];
+      if (mo) {
+        const y = m[3].length === 2 ? '20' + m[3] : m[3];
+        if (`${y}-${mo}-${m[1].padStart(2, '0')}` === dateKey) return true;
+      }
+    }
+    m = raw.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+    if (m) {
+      const cand = `${m[3]}-${m[2].padStart(2, '0')}-${m[1].padStart(2, '0')}`;
+      if (cand === dateKey) return true;
+    }
+    return false;
+  }
+
+  async function hvSheetsGet(token, url) {
+    const res = await fetch(url, { headers: { 'Authorization': `Bearer ${token}` } });
+    if (!res.ok) throw new Error(`Sheets API ${res.status}`);
+    return res.json();
+  }
+
+  function hvIndexToLetter(n) {
+    let s = '', num = n;
+    while (num > 0) { const rem = (num - 1) % 26; s = String.fromCharCode(65 + rem) + s; num = Math.floor((num - 1) / 26); }
+    return s;
+  }
+
+  async function hvResolveLetter(token, sheetId, tab, rule, headerRow, headerCache) {
+    const t = String(rule?.colRef || '').trim();
+    if (!t) return null;
+    if (rule?.mode !== 'text') {
+      if (/^[A-Za-z]{1,3}$/.test(t)) return t.toUpperCase();
+      const n = parseInt(t, 10);
+      if (!isNaN(n) && n >= 1 && n <= 702) return hvIndexToLetter(n);
+      return null;
+    }
+    const hr = (headerRow >= 1 && headerRow <= 20) ? headerRow : 1;
+    const key = tab + '#' + hr;
+    if (!headerCache[key]) {
+      const data = await hvSheetsGet(token,
+        `https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values/${encodeURIComponent(tab + '!' + hr + ':' + hr)}`);
+      const rows = data.values || [];
+      headerCache[key] = rows.length ? rows[0] : [];
+    }
+    const idx = headerCache[key].findIndex(h => String(h || '').trim() === t);
+    return idx >= 0 ? hvIndexToLetter(idx + 1) : null;
+  }
+
+  async function hvSheetsWriteCell(token, sheetId, tab, letter, row1, value) {
+    const res = await fetch(
+      `https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values/${encodeURIComponent(tab + '!' + letter + row1)}?valueInputOption=RAW`,
+      {
+        method: 'PUT',
+        headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ range: `${tab}!${letter}${row1}`, majorDimension: 'ROWS', values: [[value]] }),
+      });
+    if (!res.ok) throw new Error(`Sheets write ${res.status}`);
+  }
+
+  function hvEffectiveRules(conn, kind) {
+    const list = kind === 'lookup' ? (conn.lookups || []) : (conn.writes || []);
+    return list.filter(r => r && String(r.colRef || '').trim())
+      .map(r => ({ colRef: String(r.colRef).trim(), kind: String(r.kind || (kind === 'lookup' ? 'consignment' : 'feedback')), mode: r.mode === 'text' ? 'text' : 'index' }));
+  }
+
+  function hvIsRemarkConn(conn) {
+    if (!conn || conn.enabled === false) return false;
+    if (conn.purpose === 'scanner') return false;
+    if (conn.purpose === 'remark') return true;
+    return hvEffectiveRules(conn, 'lookup').length > 0 && hvEffectiveRules(conn, 'write').length > 0;
+  }
+
+  function hvScopeCovers(conn, dateKey) {
+    const t = conn.scopeType || 'global';
+    if (t === 'month') {
+      const m = String(conn.scopeMonth || '').trim();
+      return m.length >= 7 && dateKey.slice(0, 7) === m.slice(0, 7);
+    }
+    if (t === 'range') {
+      const f = String(conn.scopeFrom || '').trim(), to = String(conn.scopeTo || '').trim();
+      if (!f || !to) return false;
+      return f <= dateKey && dateKey <= to;
+    }
+    return true;
+  }
+
+  function hvSelectForDate(conns, dateKey) {
+    const cov = conns.filter(c => hvScopeCovers(c, dateKey));
+    if (!cov.length) return [];
+    const rank = c => (c.scopeType === 'range' ? 0 : c.scopeType === 'month' ? 1 : 2);
+    const best = Math.min(...cov.map(rank));
+    return cov.filter(c => rank(c) === best);
+  }
+
+  function hvDeriveValidation(feedback) {
+    const f = String(feedback || '').trim();
+    if (!f) return '';
+    return f.toLowerCase() === 'willing to receive today' ? 'Invalid' : 'Valid';
+  }
+
+  let hvRemarkCatMap = null; // english remark -> category (per popup load)
+  async function hvFetchRemarkCategories(idToken) {
+    if (hvRemarkCatMap) return hvRemarkCatMap;
+    const m = new Map();
+    try {
+      const res = await fetch(`${SUPABASE_URL}/rest/v1/validation_remarks` +
+        `?select=remarks_en,category&source=eq.CC&is_active=eq.true`, {
+        headers: { 'apikey': SUPABASE_ANON_KEY, 'Authorization': `Bearer ${idToken}`, 'Accept': 'application/json' },
+      });
+      const arr = await res.json().catch(() => []);
+      (Array.isArray(arr) ? arr : []).forEach(x => {
+        const en = (x.remarks_en || '').trim();
+        if (en && x.category && !m.has(en)) m.set(en, String(x.category).trim());
+      });
+    } catch (e) { console.warn('[DB] HV sync: remark category fetch failed:', e); }
+    hvRemarkCatMap = m;
+    return m;
+  }
+
+  // ওই দিনের rows থেকে latest CC per (branch, consignment) → write values.
+  function hvBuildConsolidatedCc(allRows, dateKey, catMap) {
+    const byKey = new Map();
+    (allRows || []).forEach(r => {
+      if (!r || !r.consignment || !r.branch_id) return;
+      if (localDateKey(r.created_at) !== dateKey) return;
+      const k = `${r.branch_id}__${r.consignment}`;
+      if (!byKey.has(k)) byKey.set(k, []);
+      byKey.get(k).push(r);
+    });
+    const out = new Map();
+    byKey.forEach((rows, k) => {
+      const ccRows = rows.filter(r => r.source === 'CC')
+        .sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+      if (!ccRows.length) return;
+      const latest = ccRows[ccRows.length - 1];
+      const engKey = (latest.remarks || '').trim();
+      out.set(k, {
+        feedback: catMap.get(engKey) || '',
+        validation: hvDeriveValidation(catMap.get(engKey) || ''),
+        validator_name: ((latest.author && latest.author.name) || latest.author_system_id || '').trim(),
+        created_at: latest.created_at || '',
+      });
+    });
+    return out;
+  }
+
+  async function hvBulkSyncOneConnection(token, branchId, conn, consolidated, dateKey) {
+    const res = { scanned: 0, filled: 0, syncedRows: 0, syncedCells: 0, noCc: 0, skipped: 0 };
+    const lookups = hvEffectiveRules(conn, 'lookup');
+    const writes = hvEffectiveRules(conn, 'write').filter(r =>
+      r.kind === 'feedback' || r.kind === 'validation' || r.kind === 'validator_name');
+    if (!lookups.length || !writes.length) throw new Error('lookup/write rule নেই');
+    const cidRule = lookups.find(r => r.kind === 'consignment');
+    if (!cidRule) throw new Error('consignment lookup নেই — কোন column দিয়ে মিলাবো বোঝা যাচ্ছে না');
+    const tab = (conn.tabPattern || 'Day {dd}').replace('{dd}', dateKey.split('-')[2]);
+    const hr = (conn.headerRow >= 1 && conn.headerRow <= 20) ? conn.headerRow : 1;
+    const headerCache = {};
+    const cidLetter = await hvResolveLetter(token, conn.sheetId, tab, cidRule, hr, headerCache);
+    if (!cidLetter) throw new Error(`consignment column '${cidRule.colRef}' পাওয়া যায়নি`);
+    const dateRules = lookups.filter(r => r.kind === 'today' || r.kind === 'created_at');
+    const dateLetters = new Map();
+    for (const rule of dateRules) {
+      const letter = await hvResolveLetter(token, conn.sheetId, tab, rule, hr, headerCache);
+      if (!letter) throw new Error(`lookup column '${rule.colRef}' পাওয়া যায়নি`);
+      dateLetters.set(rule, letter);
+    }
+    const writeLetters = [];
+    for (const rule of writes) {
+      const letter = await hvResolveLetter(token, conn.sheetId, tab, rule, hr, headerCache);
+      if (!letter) throw new Error(`write column '${rule.colRef}' পাওয়া যায়নি`);
+      writeLetters.push({ rule, letter });
+    }
+    async function colValues(letter) {
+      const data = await hvSheetsGet(token,
+        `https://sheets.googleapis.com/v4/spreadsheets/${conn.sheetId}/values/${encodeURIComponent(tab + '!' + letter + ':' + letter)}`);
+      return (data.values || []).map(r => (r && r[0]) || '');
+    }
+    const cidCol = await colValues(cidLetter);
+    const dateCols = new Map();
+    for (const [, letter] of dateLetters) {
+      if (![...dateCols.values()].includes(letter)) dateCols.set(letter, await colValues(letter));
+    }
+    const writeCols = new Map();
+    for (const { letter } of writeLetters) {
+      if (!writeCols.has(letter)) writeCols.set(letter, await colValues(letter));
+    }
+    res.scanned = cidCol.length;
+    for (let i = 0; i < cidCol.length; i++) {
+      const cid = String(cidCol[i] || '').trim();
+      if (!cid) continue;
+      let dateOk = true;
+      for (const [, letter] of dateLetters) {
+        const cell = (dateCols.get(letter) || [])[i] || '';
+        if (!hvSheetCellIsDate(String(cell || '').trim(), dateKey)) { dateOk = false; break; }
+      }
+      if (!dateOk) continue;
+      const blanks = writeLetters.filter(({ letter }) =>
+        String((writeCols.get(letter) || [])[i] || '').trim() === '');
+      if (!blanks.length) { res.filled++; continue; }
+      const vals = consolidated.get(`${branchId}__${cid}`);
+      if (!vals) { res.noCc++; continue; }
+      try {
+        for (const { rule, letter } of blanks) {
+          const v = vals[rule.kind] != null ? String(vals[rule.kind]) : '';
+          await hvSheetsWriteCell(token, conn.sheetId, tab, letter, i + 1, v);
+          const col = writeCols.get(letter) || [];
+          col[i] = v;
+          res.syncedCells++;
+        }
+        res.syncedRows++;
+      } catch (e) {
+        res.skipped++;
+        console.warn('[DB] HV sync: row write failed:', cid, e);
+      }
+    }
+    return res;
+  }
+
+  function hvGetSheetsToken() {
+    return new Promise(resolve => {
+      try {
+        chrome.runtime.sendMessage({ action: 'get_sheets_token' }, res => {
+          if (chrome.runtime.lastError) return resolve({ token: null, error: chrome.runtime.lastError.message });
+          resolve({ token: res?.token || null, error: res?.error || null });
+        });
+      } catch (e) { resolve({ token: null, error: e.message }); }
+    });
+  }
+
+  async function syncHvToSheet() {
+    const statusEl  = document.getElementById('dash-hv-status');
+    const fromInput = document.getElementById('dash-hv-from');
+    const toInput   = document.getElementById('dash-hv-to');
+    const btn       = document.getElementById('sync-hv-btn');
+    const setStatus = msg => { if (statusEl) statusEl.textContent = msg; };
+    const orig      = btn ? btn.textContent : '';
+
+    if (!fromInput?.value || !toInput?.value) { setStatus('⚠ From এবং To — দুটো date-ই select করুন'); return; }
+    const fromDate = bdDateInputToIso(fromInput.value);
+    const toDate   = bdDateInputToIso(toInput.value);
+    if (!fromDate || !toDate) { setStatus('⚠ Date format ঠিক নেই'); return; }
+    if (fromDate > toDate) { setStatus('⚠ From date, To date-এর পরে হতে পারবে না'); return; }
+    const branchesToQuery = getSelectedHvBranchIds();
+    if (!branchesToQuery.length) { setStatus('⚠ অন্তত একটা branch select করো'); return; }
+
+    // Day list (Dhaka keys), capped — per-day tab + per-day consolidated CC.
+    const dayKeys = [];
+    for (let t = new Date(fromDate).getTime(); t <= new Date(toDate).getTime(); t += 24 * 3600 * 1000) {
+      dayKeys.push(localDateKey(new Date(t).toISOString()));
+      if (dayKeys.length >= HV_SYNC_MAX_DAYS) break;
+    }
+    if (new Date(toDate).getTime() - new Date(fromDate).getTime() > (HV_SYNC_MAX_DAYS - 1) * 24 * 3600 * 1000) {
+      setStatus(`⚠ Range বেশি বড় — সর্বোচ্চ ${HV_SYNC_MAX_DAYS} দিন একবারে sync করা যাবে`);
+      return;
+    }
+
+    if (btn) { btn.disabled = true; btn.textContent = '⏳ Syncing…'; }
+    try {
+      const idToken = await getValidFirebaseIdToken().catch(() => null);
+      if (!idToken) { setStatus('⚠ Login করুন প্রথমে'); return; }
+
+      setStatus('⏳ Supabase থেকে validation data আনা হচ্ছে…');
+      const startIso = fromDate;
+      const endIso   = new Date(new Date(toDate).getTime() + 24 * 3600 * 1000).toISOString();
+      const allRows = [];
+      const settled = await Promise.allSettled(branchesToQuery.map(async branchId => {
+        const rows = await fetchSupabaseReportRows(branchId, startIso, endIso, idToken);
+        return { branchId, rows };
+      }));
+      settled.forEach(r => { if (r.status === 'fulfilled') allRows.push(...r.value.rows); });
+      if (!allRows.length) { setStatus('এই date range/branch-এ কোনো validation data পাওয়া যায়নি'); return; }
+
+      const catMap = await hvFetchRemarkCategories(idToken);
+      const { token, error } = await hvGetSheetsToken();
+      if (!token) { setStatus(`⚠ ${error || 'Sheets permission নেই — re-login করুন'}`); return; }
+
+      // Connectors per branch (once), scope selected per day below.
+      const branchConns = new Map();
+      for (const branchId of branchesToQuery) {
+        try {
+          const connRes = await fetch(
+            `${FIREBASE_URL}/config/connectors/${encodeURIComponent(branchId)}/current.json?auth=${idToken}`);
+          const connObj = await connRes.json().catch(() => ({})) || {};
+          branchConns.set(branchId, Object.values(connObj).filter(hvIsRemarkConn).filter(c => c.enabled !== false));
+        } catch (e) {
+          console.warn('[DB] HV sync: connectors unreadable for', branchId, e);
+          branchConns.set(branchId, []);
+        }
+      }
+
+      let totDays = 0, totConns = 0, totScanned = 0, totFilled = 0, totRows = 0, totCells = 0, totNoCc = 0;
+      const errs = [];
+      for (const dateKey of dayKeys) {
+        const consolidated = hvBuildConsolidatedCc(allRows, dateKey, catMap);
+        if (!consolidated.size) continue;
+        totDays++;
+        for (const branchId of branchesToQuery) {
+          const conns = hvSelectForDate(branchConns.get(branchId) || [], dateKey);
+          for (const conn of conns) {
+            totConns++;
+            const label = `${conn.sheetName || conn.sheetId || branchId} (${dateKeyToDdMmYyyy(dateKey)})`;
+            setStatus(`⏳ ${label} — sheet পড়ছে…`);
+            try {
+              const r = await hvBulkSyncOneConnection(token, branchId, conn, consolidated, dateKey);
+              totScanned += r.scanned; totFilled += r.filled;
+              totRows += r.syncedRows; totCells += r.syncedCells; totNoCc += r.noCc;
+            } catch (e) {
+              errs.push(`${label}: ${e.message || 'sync failed'}`);
+            }
+          }
+        }
+      }
+      if (!totConns) { setStatus('এই range-এ কোনো branch-এ remark connection নেই (scope দেখুন)'); return; }
+      let msg = `✓ ${totDays} day(s): ${totRows} row synced (${totCells} cells) · ${totFilled} already filled · ${totNoCc} no CC yet · ${totScanned} sheet rows দেখা (${totConns} connection)`;
+      if (errs.length) msg += ` · ⚠ ${errs.length} error: ${errs.slice(0, 2).join('; ')}${errs.length > 2 ? '…' : ''}`;
+      setStatus(msg);
+    } catch (e) {
+      console.error('[DB] HV sync failed:', e);
+      setStatus(`✕ ${e.message || 'sync failed'}`);
+    } finally {
+      if (btn) { btn.disabled = false; btn.textContent = orig; }
+    }
+  }
 
 async function generateHoldValidationReport({ skipRender = false } = {}) {
   const statusEl    = document.getElementById('dash-hv-status');
