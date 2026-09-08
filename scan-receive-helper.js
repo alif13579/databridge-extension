@@ -1472,10 +1472,13 @@
   const XCHECK_RESOLVED = new Set(['delivered', 'partial delivery', 'partial', 'exchange', 'paid return']);
   const XCHECK_CHUNK = 200; // PostgREST in.(...) safety chunk (app-এর pattern)
   const XCHECK_DAYS = 7; // carryover window: গতকালের unanswered request আজও দেখাবে
-  const XCHECK_URL = CONFIG.SUPABASE_URL;
-  const XCHECK_ANON = CONFIG.SUPABASE_ANON_KEY;
-  const XCHECK_FB_URL = CONFIG.FIREBASE_URL;
-  const XCHECK_FB_KEY = CONFIG.FIREBASE_WEB_API_KEY;
+  // CONFIG comes from config.js (same content-script entry, manifest order) —
+  // guarded so a missing CONFIG can never kill the whole helper again.
+  const XCHECK_CFG = (typeof CONFIG !== 'undefined' && CONFIG) ? CONFIG : {};
+  const XCHECK_URL = XCHECK_CFG.SUPABASE_URL || '';
+  const XCHECK_ANON = XCHECK_CFG.SUPABASE_ANON_KEY || '';
+  const XCHECK_FB_URL = XCHECK_CFG.FIREBASE_URL || '';
+  const XCHECK_FB_KEY = XCHECK_CFG.FIREBASE_WEB_API_KEY || '';
   const XCHECK_DAY = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Dhaka', year: 'numeric', month: '2-digit', day: '2-digit' });
 
   const xcheck = {
