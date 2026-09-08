@@ -1490,6 +1490,31 @@ function setupSettings() {
   setupShowNotificationsToggle();
 }
 
+// "Dark mode" (Settings → Appearance). Default is light; the choice persists
+// in chrome.storage.local (db_theme) with a localStorage mirror (db_theme_ls)
+// that theme-boot.js reads synchronously to avoid a first-paint flash.
+function applyTheme(dark) {
+  document.documentElement.dataset.theme = dark ? 'dark' : 'light';
+}
+async function setupDarkModeToggle() {
+  let dark = false;
+  try {
+    const { db_theme } = await chrome.storage.local.get(['db_theme']);
+    dark = db_theme === 'dark';
+  } catch {}
+  applyTheme(dark);
+  try { localStorage.setItem('db_theme_ls', dark ? 'dark' : 'light'); } catch {}
+  const toggle = document.getElementById('dark-mode-toggle');
+  if (!toggle) return;
+  toggle.checked = dark;
+  toggle.addEventListener('change', () => {
+    const d = toggle.checked;
+    applyTheme(d);
+    try { localStorage.setItem('db_theme_ls', d ? 'dark' : 'light'); } catch {}
+    chrome.storage.local.set({ db_theme: d ? 'dark' : 'light' });
+  });
+}
+
 // "Show notifications" (Settings → Notifications). Read by background.js before
 // every chrome.notifications.create — absent key means on (default checked).
 async function setupShowNotificationsToggle() {
@@ -1671,6 +1696,7 @@ function getOrCreateExtensionID() {
 
 async function init() {
   if (isInitialized) return; // ✅ ডাবল ইনিট প্রিভেন্ট
+  setupDarkModeToggle(); // theme first — before anything paints content
   showLoading("Initializing...");
   try {
     // ✅ ১. লোকাল চেক → না থাকলে জেনারেট → স্টোরেজে সেভ
