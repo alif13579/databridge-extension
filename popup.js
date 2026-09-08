@@ -3679,6 +3679,37 @@ const PERF_STATUS_LABELS = {
   return_verified:  '↩ Return Verified',
 };
 
+// users table থেকে system_id → {name, empId} (Edge join miss হলে fallback;
+// branch-overlap RLS-এ same-branch actor-রা visible)। Chunked in.(...) query.
+async function fetchUserNamesBySystemIds(idToken, systemIds) {
+  const map = new Map();
+  const ids = [...new Set((systemIds || []).filter(s => s && s !== '—'))];
+  if (!ids.length) return map;
+  const chunks = [];
+  for (let i = 0; i < ids.length; i += 200) chunks.push(ids.slice(i, i + 200));
+  await Promise.all(chunks.map(async ch => {
+    try {
+      const res = await fetch(`${SUPABASE_URL}/rest/v1/users?select=system_id,name,employee_id&system_id=in.(${ch.map(encodeURIComponent).join(',')})`, {
+        headers: { 'apikey': SUPABASE_ANON_KEY, 'Authorization': `Bearer ${idToken}`, 'Accept': 'application/json' },
+      });
+      if (!res.ok) return;
+      const arr = await res.json().catch(() => []);
+      (Array.isArray(arr) ? arr : []).forEach(u => {
+        if (u.system_id) map.set(u.system_id, { name: (u.name || '').trim(), empId: (u.employee_id || '').trim() });
+      });
+    } catch (e) { console.warn('[DB] perf: users lookup failed:', e); }
+  }));
+  return map;
+}
+
+function perfApplyUserNames(groups, nameMap) {
+  Object.values(groups).forEach(g => {
+    const hit = nameMap.get(g.agentId);
+    if (hit && hit.name) { g.agentName = hit.name; g.agentEmpId = hit.empId; }
+    if (!g.agentName) g.agentName = g.agentId;
+  });
+}
+
 async function generateTeamPerformanceReport() {
   const statusEl  = document.getElementById('dash-perf-status');
   const fromInput = document.getElementById('dash-perf-from');
@@ -3748,38 +3779,49 @@ async function generateTeamPerformanceReport() {
     });
     const totalUnique = Object.keys(byConsignment).length;
 
-    // ── Mode table: every CC row counts (no dedupe) ──
+    // ── Mode table ──
     let modeRows;
     if (mode === 'team') {
+      // CC agent-wise, vote-once: প্রতি consignment-এর latest CC row তার
+      // author (CC agent)-কে একটা vote দেয় — কে কত hold verify করলো।
       const groups = {};
-      ccRows.forEach(r => {
-        const dateKey = localDateKey(r.created_at);
-        const agentId = r.author_system_id || '—';
-        const key = `${dateKey}__${agentId}`;
-        const g = groups[key] ||= {
-          dateKey, dateLabel: dateKeyToDdMmYyyy(dateKey),
-          agentName: r.author?.name || agentId,
-          agentEmpId: r.author?.employee_id || '',
-          count: 0,
-        };
-        g.count++;
-      });
-      modeRows = Object.values(groups).sort((a, b) =>
-        a.dateKey === b.dateKey ? b.count - a.count : b.dateKey.localeCompare(a.dateKey));
-    } else {
-      const groups = {};
-      ccRows.forEach(r => {
-        const agentId = r.author_system_id || '—';
+      Object.values(byConsignment).forEach(rows => {
+        const latest = rows.reduce((a, b) => latestMs(a) >= latestMs(b) ? a : b);
+        const agentId = latest.author_system_id || '—';
         const g = groups[agentId] ||= {
-          agentName: r.author?.name || agentId,
-          agentEmpId: r.author?.employee_id || '',
+          agentId, agentName: latest.author?.name || '', agentEmpId: latest.author?.employee_id || '',
           total: 0, delivery_request: 0, hold_verified: 0, return_verified: 0, other: 0,
         };
         g.total++;
-        const key = statusKeyOf(r);
-        if (key in g) g[key]++; else g.other++;
+        const key = statusKeyOf(latest);
+        if (key in counts) g[key]++; else g.other++;
       });
+      const missing = Object.values(groups).filter(g => !g.agentName && g.agentId !== '—').map(g => g.agentId);
+      perfApplyUserNames(groups, await fetchUserNamesBySystemIds(idToken, missing));
       modeRows = Object.values(groups).sort((a, b) => b.total - a.total);
+    } else {
+      // Delivery-agent-wise (assigned_to_system_id): distinct requested
+      // consignments (WORKER row আছে) প্রতি agent — Requested vs Validated
+      // (latest overall row CC = resolved)।
+      const byConsAll = {};
+      allRows.forEach(r => { (byConsAll[r.consignment] ||= []).push(r); });
+      const groups = {};
+      Object.values(byConsAll).forEach(rows => {
+        if (!rows.some(r => r.source === 'WORKER')) return;
+        const latest = rows.reduce((a, b) => latestMs(a) >= latestMs(b) ? a : b);
+        const agentId = latest.assigned_to_system_id || rows[0].assigned_to_system_id || '—';
+        const joinHit = latest.assigned?.name ? latest.assigned
+          : (rows.find(r => r.assigned?.name) || {}).assigned;
+        const g = groups[agentId] ||= {
+          agentId, agentName: joinHit?.name || '', agentEmpId: joinHit?.employee_id || '',
+          requested: 0, validated: 0,
+        };
+        g.requested++;
+        if (latest.source === 'CC') g.validated++;
+      });
+      const missing = Object.values(groups).filter(g => !g.agentName && g.agentId !== '—').map(g => g.agentId);
+      perfApplyUserNames(groups, await fetchUserNamesBySystemIds(idToken, missing));
+      modeRows = Object.values(groups).sort((a, b) => b.requested - a.requested || b.validated - a.validated);
     }
 
     renderPerfReport(reportEl, mode, { totalUnique, counts }, modeRows);
@@ -3819,21 +3861,21 @@ function renderPerfReport(reportEl, mode, summary, modeRows) {
     </div>`;
 
   const rowsHtml = mode === 'team'
-    ? modeRows.map(r => `
-      <div class="dash-hv-row dash-perf-row">
-        <div class="dash-hv-row-top">
-          <span class="dash-hv-row-id">${escapeHtml(r.agentName)}${r.agentEmpId ? ' (' + escapeHtml(r.agentEmpId) + ')' : ''}</span>
-          <span>${r.dateLabel}</span>
-        </div>
-        <div class="dash-hv-row-meta">${r.count}টা validation</div>
-      </div>`).join('')
-    : modeRows.map((r, i) => `
+    ? modeRows.map((r, i) => `
       <div class="dash-hv-row dash-perf-row">
         <div class="dash-hv-row-top">
           <span class="dash-hv-row-id">#${i + 1} ${escapeHtml(r.agentName)}${r.agentEmpId ? ' (' + escapeHtml(r.agentEmpId) + ')' : ''}</span>
           <span>Total ${r.total}</span>
         </div>
-        <div class="dash-hv-row-meta">${PERF_STATUS_LABELS.delivery_request} ${r.delivery_request} · ${PERF_STATUS_LABELS.hold_verified} ${r.hold_verified} · ${PERF_STATUS_LABELS.return_verified} ${r.return_verified}${r.other ? ' · ❓ ' + r.other : ''}</div>
+        <div class="dash-hv-row-meta">${PERF_STATUS_LABELS.hold_verified} ${r.hold_verified} · ${PERF_STATUS_LABELS.return_verified} ${r.return_verified} · ${PERF_STATUS_LABELS.delivery_request} ${r.delivery_request}${r.other ? ' · ❓ ' + r.other : ''}</div>
+      </div>`).join('')
+    : modeRows.map((r, i) => `
+      <div class="dash-hv-row dash-perf-row">
+        <div class="dash-hv-row-top">
+          <span class="dash-hv-row-id">#${i + 1} ${escapeHtml(r.agentName)}${r.agentEmpId ? ' (' + escapeHtml(r.agentEmpId) + ')' : ''}</span>
+          <span>Request ${r.requested}</span>
+        </div>
+        <div class="dash-hv-row-meta">✅ Validated ${r.validated} · ⏳ Pending ${r.requested - r.validated}</div>
       </div>`).join('');
 
   reportEl.innerHTML = summaryHtml + `<div class="dash-hv-list">${rowsHtml}</div>`;
