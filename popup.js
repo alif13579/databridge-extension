@@ -105,7 +105,6 @@ function setupNavigation() {
       if (tab === 'history' && isInitialized) loadHistory(false);
       if (tab === 'scan') loadScanHistory();
       if (tab === 'dashboard') {
-        renderDashboard();
         loadDashboardTabAndAutoGenerate();
         restorePerfModePreference();
       }
@@ -2379,12 +2378,6 @@ function setupScanTab() {
 // ══════════════════════════════════════════════════════════════════════
 
 function setupDashboardTab() {
-  const exportHistoryBtn = document.getElementById('export-history-btn');
-  if (exportHistoryBtn) exportHistoryBtn.addEventListener('click', () => exportHistoryToCsv());
-
-  const exportScansBtn = document.getElementById('export-scans-btn');
-  if (exportScansBtn) exportScansBtn.addEventListener('click', () => exportScansToCsv());
-
   const generateHvBtn = document.getElementById('generate-hv-btn');
   if (generateHvBtn) generateHvBtn.addEventListener('click', () => generateHoldValidationReport());
 
@@ -2435,24 +2428,6 @@ function setupDashboardTab() {
     chrome.storage.local.set({ perf_mode: perfModeSel.value }));
 }
 
-function renderDashboard() {
-  const historyEl  = document.getElementById('dash-stat-history');
-  const barcodesEl = document.getElementById('dash-stat-barcodes');
-  const todayEl    = document.getElementById('dash-stat-today');
-  if (!historyEl || !barcodesEl || !todayEl) return;
-
-  historyEl.textContent = historyItems.length;
-
-  const totalScans = scanItems.reduce((sum, item) => sum + (item.entries?.length || 0), 0);
-  barcodesEl.textContent = totalScans;
-
-  const todayStart = new Date(); todayStart.setHours(0, 0, 0, 0);
-  const todayCount = scanItems.reduce((sum, item) => {
-    return sum + (item.entries || []).filter(e => (e.createdAt || 0) >= todayStart.getTime()).length;
-  }, 0);
-  todayEl.textContent = todayCount;
-}
-
 /** Escapes a value for CSV: wraps in quotes and doubles any internal quotes
  *  whenever it contains a comma, quote, or newline (standard CSV quoting). */
 function csvCell(value) {
@@ -2472,36 +2447,6 @@ function downloadCsv(filename, rows) {
   document.body.removeChild(a);
   URL.revokeObjectURL(url);
 }
-
-function exportHistoryToCsv() {
-  const rows = [['ID', 'Text', 'Source', 'Received At']];
-  historyItems.forEach(item => {
-    rows.push([
-      item.id || '',
-      item.text || '',
-      item.source || '',
-      item.received_at ? new Date(item.received_at).toISOString() : ''
-    ]);
-  });
-  downloadCsv(`databridge-history-${Date.now()}.csv`, rows);
-}
-
-function exportScansToCsv() {
-  const rows = [['Barcode', 'Scanned By', 'Container ID', 'URL', 'Scanned At']];
-  scanItems.forEach(item => {
-    (item.entries || []).forEach(e => {
-      rows.push([
-        item.barcode || item.barcodeKey || '',
-        e.scanned_by || '',
-        e.container_id || '',
-        e.url || '',
-        e.createdAt ? new Date(e.createdAt).toISOString() : ''
-      ]);
-    });
-  });
-  downloadCsv(`databridge-scans-${Date.now()}.csv`, rows);
-}
-
 
 // ══════════════════════════════════════════════════════════════════════
 // 📞 CALL CENTER EXPORT (Dashboard)
