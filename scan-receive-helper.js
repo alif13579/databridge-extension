@@ -617,6 +617,21 @@
       .db-xc-item-warn { border-color: #fecaca; }
       .db-xc-item-ok { border-color: #bbf7d0; }
 
+      /* Confirmed one-time-copy list */
+      #db-confirmed-strip { padding: 0 10px; }
+      #db-confirmed-strip:empty { padding: 0; }
+      .db-cf-item {
+        display: inline-flex; align-items: center; gap: 6px;
+        background: #fff; border: 1px solid #bbf7d0; border-radius: 4px;
+        padding: 1px 4px; font: 10px/1.5 monospace; color: #334155;
+      }
+      .db-cf-agent { font-family: -apple-system, Segoe UI, sans-serif; color: #15803d; font-weight: 700; }
+      .db-cf-copy {
+        background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 4px;
+        cursor: pointer; font-size: 11px; padding: 0 5px; line-height: 1.5;
+      }
+      .db-cf-copy:hover { background: #dcfce7; }
+
       /* CC report modal (lives inside #db-panel so the observer skips it) */
       #db-report-backdrop {
         position: fixed; inset: 0; z-index: 2147483646;
@@ -753,6 +768,7 @@
         </button>
       </div>
       <div id="db-xcheck-strip"></div>
+      <div id="db-confirmed-strip"></div>
       <div class="db-body" id="db-body">
         <div class="db-sec" id="db-summary"></div>
         <div class="db-vdivider"></div>
@@ -781,6 +797,7 @@
           memPop.classList.add('hidden');
           document.getElementById('db-summary').style.display = '';
           document.getElementById('db-xcheck-strip').style.display = '';
+          document.getElementById('db-confirmed-strip').style.display = '';
           const vdiv = document.querySelector('.db-vdivider');
           if (vdiv) vdiv.style.display = '';
         }
@@ -828,6 +845,7 @@
       memPopover.classList.toggle('hidden');
       document.getElementById('db-summary').style.display = opening ? 'none' : '';
       document.getElementById('db-xcheck-strip').style.display = opening ? 'none' : '';
+      document.getElementById('db-confirmed-strip').style.display = opening ? 'none' : '';
       const vdiv = document.querySelector('.db-vdivider');
       if (vdiv) vdiv.style.display = opening ? 'none' : '';
       if (opening) { memInput.focus(); renderFieldList(); }
@@ -1151,6 +1169,9 @@
     // CC crosscheck: cached paint first, then signature-guarded fetch.
     renderXcheck();
     maybeRefreshXcheck(false);
+    // Confirmed one-time-copy list: same signature guard.
+    renderConfirmed();
+    maybeRefreshConfirmed(false);
   }
 
   // ── CC VALIDATION REPORT MODAL ───────────────────────────────────────────
@@ -1278,6 +1299,149 @@
       a.click();
       setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 500);
     });
+  }
+
+  // ── CONFIRMED ONE-TIME-COPY LIST ─────────────────────────────────────────
+  // Supabase-এ status CONFIRMED হওয়া consignments (worker confirm করেছে) —
+  // ID + agent name, per-ID copy button। Copy সফল হলেই list থেকে delete
+  // (one-time)। chrome.storage.local-এ per-run persist করে, তাই reload-এ
+  // uncopied গুলো থাকে; fresh fetch-এ আর confirmed নেই এমন auto-drop হয়।
+  const cfd = { sig: null, status: 'idle', items: [], inflight: false }; // items: [{id, agent}]
+
+  function cfdKey() { return `db-confirmed-${getRunId()}`; }
+
+  async function cfdLoadStored() {
+    try {
+      const todayKey = XCHECK_DAY.format(new Date());
+      const res = await chrome.storage.local.get([cfdKey()]);
+      const saved = res[cfdKey()];
+      if (saved && saved.dateKey === todayKey && Array.isArray(saved.items)) return saved.items;
+    } catch {}
+    return [];
+  }
+
+  async function cfdSave(items) {
+    try {
+      await chrome.storage.local.set({ [cfdKey()]: { dateKey: XCHECK_DAY.format(new Date()), items } });
+    } catch {}
+  }
+
+  async function cfdFetchToday(ids) {
+    const token = await xcheckIdToken();
+    const gte = dhakaMidnightIso(0); // শুধু আজ — confirmed fresh action
+    const base = `${XCHECK_URL}/rest/v1/validations` +
+      `?select=consignment,source,remarks_status,created_at,assigned_to_system_id,assigned:users!validations_assigned_to_system_id_fkey(name,employee_id)` +
+      `&remarks_status=in.(CONFIRMED,confirmed,Confirmed)` +
+      `&created_at=gte.${encodeURIComponent(gte)}` +
+      `&order=created_at.desc`;
+    const headers = { 'apikey': XCHECK_ANON, 'Authorization': `Bearer ${token}`, 'Accept': 'application/json' };
+    const out = [];
+    const chunks = [];
+    for (let i = 0; i < ids.length; i += XCHECK_CHUNK) chunks.push(ids.slice(i, i + XCHECK_CHUNK));
+    await Promise.all(chunks.map(async ch => {
+      const res = await fetch(`${base}&consignment=in.(${ch.map(encodeURIComponent).join(',')})`, { headers });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const arr = await res.json().catch(() => []);
+      if (Array.isArray(arr)) out.push(...arr);
+    }));
+    return out;
+  }
+
+  function renderConfirmed() {
+    const el = document.getElementById('db-confirmed-strip');
+    if (!el) return;
+    if (cfd.status === 'loading' && !cfd.items.length) {
+      el.innerHTML = `<div class="db-xc-bar db-xc-bar-idle"><span>🔍 Checking confirmed…</span></div>`;
+      return;
+    }
+    if (!cfd.items.length) { el.innerHTML = ''; return; }
+    el.innerHTML =
+      `<div class="db-xc-bar db-xc-bar-ok"><span>✅ Confirmed (${cfd.items.length}) — copy করলেই list থেকে যাবে</span>` +
+      `<span class="db-xc-refresh" id="db-cfd-refresh" title="Re-check now">🔄</span></div>` +
+      `<div class="db-xc-list">${cfd.items.map(e => `
+        <span class="db-cf-item">
+          <span data-scroll-id="${escapeHtml(e.id)}" style="cursor:pointer" title="Row-তে যাও">${escapeHtml(e.id)}</span>
+          <span class="db-cf-agent">${escapeHtml(e.agent || '')}</span>
+          <button class="db-cf-copy" data-copy-id="${escapeHtml(e.id)}" title="Copy ID (one-time)">📋</button>
+        </span>`).join('')}</div>`;
+    el.querySelectorAll('[data-scroll-id]').forEach(n => {
+      n.addEventListener('click', () => scrollToRow(n.dataset.scrollId));
+    });
+    const rb = document.getElementById('db-cfd-refresh');
+    if (rb) rb.addEventListener('click', e => { e.stopPropagation(); maybeRefreshConfirmed(true); });
+    el.querySelectorAll('[data-copy-id]').forEach(btn => {
+      btn.addEventListener('click', async e => {
+        e.stopPropagation();
+        const id = btn.dataset.copyId;
+        const ok = await copyToClipboard(id).catch(() => false);
+        if (ok) {
+          cfd.items = cfd.items.filter(x => x.id !== id);
+          await cfdSave(cfd.items);
+          renderConfirmed();
+          showToast('Confirmed', `📋 ${id} copied — list থেকে গেল`, false);
+        } else {
+          const orig = btn.textContent;
+          btn.textContent = '✗';
+          setTimeout(() => { btn.textContent = orig; }, 1200);
+        }
+      });
+    });
+  }
+
+  async function maybeRefreshConfirmed(force) {
+    const sig = xcheckSig();
+    if (sig === null) {
+      if (cfd.sig !== null || cfd.status !== 'idle') {
+        cfd.sig = null; cfd.status = 'idle'; cfd.items = [];
+        renderConfirmed();
+      }
+      return;
+    }
+    if (!force && (sig === cfd.sig || cfd.inflight)) return;
+    cfd.sig = sig;
+    cfd.inflight = true;
+    if (!cfd.items.length) { cfd.status = 'loading'; renderConfirmed(); }
+    try {
+      const rows = parcelRows();
+      const ids = [...new Set(rows.map(rowId).filter(id => id && ID_REGEX.test(id)))];
+      const todayRows = await cfdFetchToday(ids);
+      // Latest row per consignment decides — এখনো CONFIRMED হলেই list-এ।
+      const latest = new Map();
+      todayRows.forEach(r => {
+        const id = r && r.consignment;
+        if (!id) return;
+        const prev = latest.get(id);
+        if (!prev || (r.created_at || '') > (prev.created_at || '')) latest.set(id, r);
+      });
+      const fresh = new Map();
+      latest.forEach((r, id) => {
+        if ((r.remarks_status || '').trim().toLowerCase() !== 'confirmed') return;
+        const agent = (r.assigned && r.assigned.name ? r.assigned.name : '') ||
+          (r.assigned_to_system_id || '');
+        fresh.set(id, agent);
+      });
+      // Merge with stored one-time queue: stored-copy-হওয়াগুলো আগেই গেছে;
+      // fresh-এ নেই এমন stored auto-drop (status বদলে গেছে), নতুন fresh add।
+      const stored = await cfdLoadStored();
+      const storedMap = new Map(stored.map(x => [x.id, x.agent]));
+      const merged = [];
+      fresh.forEach((agent, id) => merged.push({ id, agent: agent || storedMap.get(id) || '' }));
+      cfd.items = merged;
+      await cfdSave(merged);
+      cfd.status = 'done';
+    } catch (err) {
+      console.warn('[DB Confirmed] fetch failed:', err);
+      // Fetch fail → stored queue-টাই দেখাও (হারাবে না)।
+      if (!cfd.items.length) {
+        const stored = await cfdLoadStored();
+        if (stored.length) { cfd.items = stored; cfd.status = 'done'; }
+        else cfd.status = 'idle';
+      }
+    } finally {
+      cfd.inflight = false;
+      renderConfirmed();
+      if (xcheckSig() !== null && xcheckSig() !== cfd.sig) maybeRefreshConfirmed(true);
+    }
   }
 
   // ── SCROLL TO ROW ───────────────────────────────────────────────────────────
