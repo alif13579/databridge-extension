@@ -387,6 +387,9 @@
         padding: 2px 5px; margin-left: 6px; vertical-align: middle;
         white-space: nowrap; letter-spacing: .2px;
       }
+      /* CC validation sign (sits next to the SCANNED tick) */
+      .db-xbadge { margin-left: 4px; cursor: help; }
+      .db-xbadge-warn { background: #dc2626; }
 
       /* Row number badge - prominent identifier */
       .db-row-badge {
@@ -1314,6 +1317,23 @@
       if (idEl) idEl.querySelectorAll('.db-tick').forEach(e => e.remove());
       row.querySelectorAll('.db-row-badge').forEach(e => e.remove());
 
+      // 0. CC validation sign — SCANNED-এর মতো, scan state থেকে independent:
+      //    mismatch না থাকলে ✓ VALIDATED (সবুজ), warning থাকলে ⚠ error (লাল)।
+      //    .db-tick class থাকায় cleanup + observer-skip auto-cover করে।
+      if (idEl) {
+        const vx = xcheck.details.get(id);
+        if (vx) {
+          const b = document.createElement('span');
+          const isWarn = vx.verdict === 'warn';
+          b.className = 'db-tick db-xbadge' + (isWarn ? ' db-xbadge-warn' : '');
+          b.textContent = isWarn ? '⚠ CC CHECK' : '✓ VALIDATED';
+          b.title = `${vx.tag} — run: ${vx.st}` +
+            (vx.remarkEn ? ` — ${vx.remarkBn || vx.remarkEn}` : '') +
+            (vx.carried ? ` (${vx.dateKey})` : '');
+          idEl.appendChild(b);
+        }
+      }
+
       if (!expected.has(id)) return;
 
       if (received.has(id)) {
@@ -1742,6 +1762,10 @@
       xcheck.inflight = false;
       renderXcheck();
       renderReport(); // no-op unless the modal is open
+      // Paint the per-row VALIDATED / error signs with the fresh data.
+      // refreshBorders' own injections (.db-tick/.db-row-badge) are observer-
+      // skipped, so this can't loop.
+      try { if (appState) refreshBorders(appState); } catch {}
       // IDs changed mid-flight → check again for the new set.
       if (xcheckSig() !== null && xcheckSig() !== xcheck.sig) maybeRefreshXcheck(true);
     }
