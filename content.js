@@ -194,3 +194,59 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
 // ── Init ──
 detectCellClick();
+
+// ══════════════════════════════
+// Auto-unhide (Settings → Auto-unhide)
+// Eye buttons matching the user's selectors get clicked EXACTLY ONCE each
+// (WeakSet guard) — eye toggles must never be double-clicked or they'd
+// re-hide, and a manual re-hide by the user is respected (already-clicked
+// buttons are never touched again). Zero-size elements are skipped (not
+// marked) so SPA-late-rendered buttons still get clicked when visible.
+// ══════════════════════════════
+(function initAutoUnhide() {
+  const clicked = new WeakSet();
+  let enabled = true;
+  let selectors = [];
+
+  async function loadCfg() {
+    try {
+      const r = await chrome.storage.local.get(['unhide_enabled', 'unhide_selectors']);
+      enabled = r.unhide_enabled !== false; // default ON
+      const list = Array.isArray(r.unhide_selectors) ? r.unhide_selectors : [];
+      selectors = list.filter(s => typeof s === 'string' && s.trim());
+    } catch { /* keep previous cfg */ }
+  }
+
+  function sweep() {
+    if (!enabled || !selectors.length) return;
+    for (const sel of selectors) {
+      let els;
+      try { els = document.querySelectorAll(sel); }
+      catch { continue; } // invalid selector slipped in — skip, don't die
+      els.forEach(el => {
+        if (clicked.has(el) || !(el instanceof HTMLElement)) return;
+        const rect = el.getBoundingClientRect();
+        if (rect.width === 0 && rect.height === 0) return; // not visible yet
+        clicked.add(el);
+        try { el.click(); } catch {}
+      });
+    }
+  }
+
+  let debounce = null;
+  function scheduleSweep() {
+    clearTimeout(debounce);
+    debounce = setTimeout(sweep, 300);
+  }
+
+  loadCfg().then(sweep);
+  try {
+    chrome.storage.onChanged.addListener((changes, area) => {
+      if (area !== 'local') return;
+      if (changes.unhide_enabled || changes.unhide_selectors) loadCfg().then(sweep);
+    });
+  } catch {}
+  try {
+    new MutationObserver(scheduleSweep).observe(document.documentElement, { childList: true, subtree: true });
+  } catch {}
+})();

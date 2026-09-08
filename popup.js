@@ -1488,6 +1488,64 @@ function setupSettings() {
   setupCcPanelUrls();
   setupAutoCopyToggle();
   setupShowNotificationsToggle();
+  setupUnhideSettings();
+}
+
+// "Auto-unhide" (Settings → Auto-unhide). content.js reads these keys:
+// unhide_enabled (default ON) + unhide_selectors (CSS selector list).
+// Selectors are validated with querySelector before saving — invalid ones
+// are rejected with a hint instead of breaking the content script later.
+async function setupUnhideSettings() {
+  const toggle = document.getElementById('unhide-enabled-toggle');
+  const input  = document.getElementById('unhide-selector-input');
+  const addBtn = document.getElementById('unhide-selector-add-btn');
+  const listEl = document.getElementById('unhide-selector-list');
+  if (!toggle || !input || !addBtn || !listEl) return;
+
+  async function loadCfg() {
+    const r = await chrome.storage.local.get(['unhide_enabled', 'unhide_selectors']);
+    return {
+      enabled: r.unhide_enabled !== false,
+      selectors: Array.isArray(r.unhide_selectors) ? r.unhide_selectors : [],
+    };
+  }
+  function validSelector(s) {
+    try { document.querySelector(s); return true; }
+    catch { return false; }
+  }
+  async function render() {
+    const { enabled, selectors } = await loadCfg();
+    toggle.checked = enabled;
+    listEl.innerHTML = selectors.length
+      ? selectors.map(s => `<div class="autofill-url-chip"><span>${escapeHtml(s)}</span><span class="url-remove" data-sel="${escapeHtml(s)}">✕</span></div>`).join('')
+      : '<div class="settings-hint">No selectors yet — nothing will be auto-clicked.</div>';
+    listEl.querySelectorAll('[data-sel]').forEach(el => {
+      el.addEventListener('click', async () => {
+        const cur = (await loadCfg()).selectors.filter(x => x !== el.dataset.sel);
+        await chrome.storage.local.set({ unhide_selectors: cur });
+        render();
+      });
+    });
+  }
+  toggle.addEventListener('change', async () => {
+    await chrome.storage.local.set({ unhide_enabled: toggle.checked });
+  });
+  addBtn.addEventListener('click', async () => {
+    const v = input.value.trim();
+    if (!v) return;
+    if (!validSelector(v)) {
+      input.value = '';
+      input.placeholder = '⚠ Invalid selector — আবার চেষ্টা করো';
+      setTimeout(() => { input.placeholder = 'e.g. .eye-btn, #show-phone'; }, 2000);
+      return;
+    }
+    const cur = (await loadCfg()).selectors;
+    if (!cur.includes(v)) await chrome.storage.local.set({ unhide_selectors: [...cur, v] });
+    input.value = '';
+    render();
+  });
+  input.addEventListener('keydown', e => { if (e.key === 'Enter') addBtn.click(); });
+  render();
 }
 
 // "Dark mode" (Settings → Appearance). Default is light; the choice persists

@@ -182,6 +182,19 @@
       </div>
     </div>
     <div class="settings-section">
+      <div class="settings-label">Auto-unhide</div>
+      <div class="settings-item">
+        <span>Auto-click eye buttons</span>
+        <label class="toggle"><input type="checkbox" id="unhide-enabled-toggle" checked><span class="toggle-slider"></span></label>
+      </div>
+      <div class="settings-hint">Eye button-এর class/id (যেকোনো CSS selector) — matching button auto-click হবে, একবার করে।</div>
+      <div class="autofill-url-row">
+        <input type="text" id="unhide-selector-input" placeholder="e.g. .eye-btn, #show-phone">
+        <button id="unhide-selector-add-btn">Add</button>
+      </div>
+      <div class="autofill-url-list" id="unhide-selector-list"></div>
+    </div>
+    <div class="settings-section">
       <div class="settings-label">Notifications</div>
       <div class="settings-item">
         <span>Show notifications</span>
