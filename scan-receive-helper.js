@@ -8,6 +8,8 @@
 //   4. On Save / Close Run click → commit scanned IDs as "received" in localStorage
 //   5. Row borders → green (received) / red (pending)  at all times
 //   6. Floating panel → Run Summary + Pending Scan list (live)
+//   7. CC crosscheck strip → today's Supabase CC requests (delivery_request /
+//      hold_verified / return_verified) vs live run status: warnings + validated
 //
 // Toast rules:
 //   Hold field   : no toast only for "On Hold". Everything else → toast.
@@ -587,6 +589,30 @@
       }
       .db-row-flash { animation: db-flash 1.8s ease forwards !important; }
       .db-done { color: #22c55e; font-weight: 600; font-size: 13px; padding: 6px 4px; }
+
+      /* CC crosscheck strip (full-width, under header) */
+      #db-xcheck-strip { padding: 0 10px; }
+      #db-xcheck-strip:empty { padding: 0; }
+      .db-xc-bar {
+        display: flex; align-items: center; gap: 6px; margin: 6px 0 0;
+        padding: 5px 8px; border-radius: 6px; font-size: 11px; font-weight: 700;
+        cursor: pointer; user-select: none;
+      }
+      .db-xc-bar-warn { background: #fef2f2; border: 1px solid #fecaca; color: #b91c1c; }
+      .db-xc-bar-ok   { background: #f0fdf4; border: 1px solid #bbf7d0; color: #15803d; }
+      .db-xc-bar-idle { background: #f8fafc; border: 1px solid #e2e8f0; color: #94a3b8; font-weight: 400; cursor: default; }
+      .db-xc-refresh { margin-left: auto; cursor: pointer; opacity: .7; }
+      .db-xc-refresh:hover { opacity: 1; }
+      .db-xc-list { display: flex; flex-wrap: wrap; gap: 4px; padding: 6px 2px 2px; max-height: 110px; overflow-y: auto; }
+      .db-xc-item {
+        display: inline-flex; align-items: center; gap: 4px;
+        background: #fff; border: 1px solid #e2e8f0; border-radius: 4px;
+        padding: 1px 4px; font: 10px/1.5 monospace; color: #334155; cursor: pointer;
+      }
+      .db-xc-item:hover { background: #e0f2fe !important; border-color: #7dd3fc !important; }
+      .db-xc-item .db-xc-st { font-family: -apple-system, Segoe UI, sans-serif; color: #64748b; }
+      .db-xc-item-warn { border-color: #fecaca; }
+      .db-xc-item-ok { border-color: #bbf7d0; }
     `;
     document.head.appendChild(s);
   }
@@ -674,6 +700,7 @@
           🧠 Auto-fill from Memory
         </button>
       </div>
+      <div id="db-xcheck-strip"></div>
       <div class="db-body" id="db-body">
         <div class="db-sec" id="db-summary"></div>
         <div class="db-vdivider"></div>
@@ -701,6 +728,7 @@
         if (memPop && !memPop.classList.contains('hidden')) {
           memPop.classList.add('hidden');
           document.getElementById('db-summary').style.display = '';
+          document.getElementById('db-xcheck-strip').style.display = '';
           const vdiv = document.querySelector('.db-vdivider');
           if (vdiv) vdiv.style.display = '';
         }
@@ -747,6 +775,7 @@
       const opening = memPopover.classList.contains('hidden');
       memPopover.classList.toggle('hidden');
       document.getElementById('db-summary').style.display = opening ? 'none' : '';
+      document.getElementById('db-xcheck-strip').style.display = opening ? 'none' : '';
       const vdiv = document.querySelector('.db-vdivider');
       if (vdiv) vdiv.style.display = opening ? 'none' : '';
       if (opening) { memInput.focus(); renderFieldList(); }
@@ -1062,6 +1091,10 @@
         refreshPanel(st);
       });
     });
+
+    // CC crosscheck: cached paint first, then signature-guarded fetch.
+    renderXcheck();
+    maybeRefreshXcheck(false);
   }
 
   // ── SCROLL TO ROW ───────────────────────────────────────────────────────────
@@ -1222,6 +1255,217 @@
       persistState(st);
     }
     return changed;
+  }
+
+  // ── CC CROSSCHECK (Supabase validations × run status) ────────────────────
+  // Run-এর সব consignment ID দিয়ে আজকের (Dhaka date) validations থেকে CC
+  // remarks আনে (delivery_request / hold_verified / return_verified), তারপর
+  // run status-এর সাথে মিলায়:
+  //   delivery_request + resolved (delivered/partial/exchange/paid return) → ✅ fulfilled
+  //   delivery_request + অন্য status                                 → ⚠️ warning
+  //   hold_verified + run On Hold                                    → ✅ validated
+  //   hold_verified + অন্য status                                    → ⚠️ mismatch
+  //   return_verified + run return-ish                               → ✅ validated
+  //   return_verified + অন্য status                                  → ⚠️ mismatch
+  // "Latest row decides" (app-এর fetchPendingDeliveryRequestsForWorker-এর
+  // মতো): worker আজ জবাব দিয়ে থাকলে latest WORKER হয় → warning ওঠে না।
+  const XCHECK_RESOLVED = new Set(['delivered', 'partial delivery', 'partial', 'exchange', 'paid return']);
+  const XCHECK_CHUNK = 200; // PostgREST in.(...) safety chunk (app-এর pattern)
+  const XCHECK_URL = CONFIG.SUPABASE_URL;
+  const XCHECK_ANON = CONFIG.SUPABASE_ANON_KEY;
+  const XCHECK_FB_URL = CONFIG.FIREBASE_URL;
+  const XCHECK_FB_KEY = CONFIG.FIREBASE_WEB_API_KEY;
+  const XCHECK_DAY = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Dhaka', year: 'numeric', month: '2-digit', day: '2-digit' });
+
+  const xcheck = {
+    sig: null, status: 'idle', // idle|loading|done|no-token|error
+    warnings: [], validated: [], note: '',
+    inflight: false, warnOpen: true, okOpen: false,
+  };
+
+  // Firebase ID token — cc-panel.js-এর port (content-script নিজে refresh
+  // করে, popup-এর সাথে chrome.storage.local key share করে)।
+  async function xcheckRefreshToken(refreshToken) {
+    const res = await fetch(
+      `https://securetoken.googleapis.com/v1/token?key=${XCHECK_FB_KEY}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({ grant_type: 'refresh_token', refresh_token: refreshToken }).toString()
+      }
+    );
+    const data = await res.json();
+    if (!res.ok || !data.id_token) throw new Error(data?.error?.message || 'Token refresh failed');
+    return {
+      idToken: data.id_token,
+      refreshToken: data.refresh_token,
+      expiresIn: parseInt(data.expires_in, 10) || 3600
+    };
+  }
+
+  async function xcheckIdToken() {
+    const stored = await chrome.storage.local.get(['google_id_token', 'google_refresh_token', 'google_token_expires_at']);
+    if (!stored.google_refresh_token) { const e = new Error('no-token'); e.code = 'no-token'; throw e; }
+    if (stored.google_id_token && Date.now() < (stored.google_token_expires_at || 0) - 5 * 60 * 1000) {
+      return stored.google_id_token;
+    }
+    try {
+      const t = await xcheckRefreshToken(stored.google_refresh_token);
+      await chrome.storage.local.set({
+        google_id_token: t.idToken,
+        google_refresh_token: t.refreshToken,
+        google_token_expires_at: Date.now() + t.expiresIn * 1000
+      });
+      return t.idToken;
+    } catch (err) {
+      console.warn('[DB XCheck] token refresh failed:', err);
+      const e = new Error('no-token'); e.code = 'no-token'; throw e;
+    }
+  }
+
+  async function xcheckFetchToday(ids) {
+    const token = await xcheckIdToken();
+    const gte = `${XCHECK_DAY.format(new Date())}T00:00:00+06:00`; // Dhaka midnight, no DST
+    const base = `${XCHECK_URL}/rest/v1/validations` +
+      `?select=consignment,source,remarks_status,remarks,note,created_at` +
+      `&source=eq.CC` +
+      `&remarks_status=in.(delivery_request,hold_verified,return_verified)` +
+      `&created_at=gte.${encodeURIComponent(gte)}` +
+      `&order=created_at.desc`;
+    const headers = { 'apikey': XCHECK_ANON, 'Authorization': `Bearer ${token}`, 'Accept': 'application/json' };
+    const out = [];
+    const chunks = [];
+    for (let i = 0; i < ids.length; i += XCHECK_CHUNK) chunks.push(ids.slice(i, i + XCHECK_CHUNK));
+    await Promise.all(chunks.map(async ch => {
+      const res = await fetch(`${base}&consignment=in.(${ch.map(encodeURIComponent).join(',')})`, { headers });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const arr = await res.json().catch(() => []);
+      if (Array.isArray(arr)) out.push(...arr);
+    }));
+    return out;
+  }
+
+  function xcheckClassify(todayRows, pageStatus) {
+    // Latest row per consignment decides (server desc per chunk, cross-chunk
+    // order not guaranteed → compare created_at client-side).
+    const latest = new Map();
+    todayRows.forEach(r => {
+      const id = r && r.consignment;
+      if (!id) return;
+      const prev = latest.get(id);
+      if (!prev || (r.created_at || '') > (prev.created_at || '')) latest.set(id, r);
+    });
+    const warnings = [], validated = [];
+    latest.forEach((row, id) => {
+      const rs = (row.remarks_status || '').trim().toLowerCase();
+      const runRaw = (pageStatus.get(id) || '').trim();
+      const run = runRaw.toLowerCase();
+      if (rs === 'delivery_request') {
+        if (XCHECK_RESOLVED.has(run)) validated.push({ id, tag: 'Delivery fulfilled', st: runRaw });
+        else warnings.push({ id, tag: 'Delivery request', st: runRaw || '?' });
+      } else if (rs === 'hold_verified') {
+        if (run === 'on hold') validated.push({ id, tag: 'Hold validated', st: runRaw });
+        else warnings.push({ id, tag: 'Hold verified ≠ run', st: runRaw || '?' });
+      } else if (rs === 'return_verified') {
+        if (RETURN_VALID.has(run)) validated.push({ id, tag: 'Return validated', st: runRaw });
+        else warnings.push({ id, tag: 'Return verified ≠ run', st: runRaw || '?' });
+      }
+    });
+    return { warnings, validated };
+  }
+
+  function xcheckSig() {
+    const rows = parcelRows();
+    if (!rows.length) return null;
+    const ids = [...new Set(rows.map(rowId).filter(id => id && ID_REGEX.test(id)))].sort();
+    return `${getRunId()}|${ids.join(',')}`;
+  }
+
+  function renderXcheck() {
+    const el = document.getElementById('db-xcheck-strip');
+    if (!el) return;
+    const refreshBtn = `<span class="db-xc-refresh" id="db-xcheck-refresh" title="Re-check now">🔄</span>`;
+    if (xcheck.status === 'idle') { el.innerHTML = ''; return; }
+    if (xcheck.status === 'loading') {
+      el.innerHTML = `<div class="db-xc-bar db-xc-bar-idle"><span>🔍 Checking today's CC requests…</span>${refreshBtn}</div>`;
+    } else if (xcheck.status === 'no-token') {
+      el.innerHTML = `<div class="db-xc-bar db-xc-bar-idle"><span>⚪ CC check off — sign in via extension popup to enable</span>${refreshBtn}</div>`;
+    } else if (xcheck.status === 'error') {
+      el.innerHTML = `<div class="db-xc-bar db-xc-bar-idle"><span>⚪ CC check failed (network/RLS) — tap 🔄 to retry</span>${refreshBtn}</div>`;
+    } else {
+      const w = xcheck.warnings, v = xcheck.validated;
+      if (!w.length && !v.length) {
+        el.innerHTML = `<div class="db-xc-bar db-xc-bar-idle"><span>✅ No pending CC requests today</span>${refreshBtn}</div>`;
+      } else {
+        const item = (e, cls) =>
+          `<span class="db-xc-item ${cls}" data-scroll-id="${escapeHtml(e.id)}" title="${escapeHtml(e.tag)} — run: ${escapeHtml(e.st)}">` +
+          `${escapeHtml(e.id)} <span class="db-xc-st">${escapeHtml(e.st)}</span></span>`;
+        el.innerHTML =
+          (w.length
+            ? `<div class="db-xc-bar db-xc-bar-warn" id="db-xc-warnbar"><span>⚠️ ${w.length} need attention — delivery/verify vs run mismatch</span>${refreshBtn}</div>` +
+              (xcheck.warnOpen ? `<div class="db-xc-list">${w.map(e => item(e, 'db-xc-item-warn')).join('')}</div>` : '')
+            : '') +
+          (v.length
+            ? `<div class="db-xc-bar db-xc-bar-ok" id="db-xc-okbar"><span>✅ ${v.length} CC-validated</span>${w.length ? '' : refreshBtn}</div>` +
+              (xcheck.okOpen ? `<div class="db-xc-list">${v.map(e => item(e, 'db-xc-item-ok')).join('')}</div>` : '')
+            : '');
+        const wb = document.getElementById('db-xc-warnbar');
+        if (wb) wb.addEventListener('click', e => {
+          if (e.target.id === 'db-xcheck-refresh') return;
+          xcheck.warnOpen = !xcheck.warnOpen; renderXcheck();
+        });
+        const ob = document.getElementById('db-xc-okbar');
+        if (ob) ob.addEventListener('click', e => {
+          if (e.target.id === 'db-xcheck-refresh') return;
+          xcheck.okOpen = !xcheck.okOpen; renderXcheck();
+        });
+      }
+    }
+    el.querySelectorAll('[data-scroll-id]').forEach(n => {
+      n.addEventListener('click', () => scrollToRow(n.dataset.scrollId));
+    });
+    const rb = document.getElementById('db-xcheck-refresh');
+    if (rb) rb.addEventListener('click', e => { e.stopPropagation(); maybeRefreshXcheck(true); });
+  }
+
+  // Signature-guarded auto-check: runs on every refreshPanel but hits the
+  // network only when the run's ID set actually changed (or forced).
+  async function maybeRefreshXcheck(force) {
+    const sig = xcheckSig();
+    if (sig === null) {
+      if (xcheck.sig !== null || xcheck.status !== 'idle') {
+        xcheck.sig = null; xcheck.status = 'idle';
+        xcheck.warnings = []; xcheck.validated = [];
+        renderXcheck();
+      }
+      return;
+    }
+    if (!force && (sig === xcheck.sig || xcheck.inflight)) return;
+    xcheck.sig = sig;
+    xcheck.inflight = true;
+    if (xcheck.status !== 'done') { xcheck.status = 'loading'; renderXcheck(); }
+    try {
+      const rows = parcelRows();
+      const ids = [...new Set(rows.map(rowId).filter(id => id && ID_REGEX.test(id)))];
+      const todayRows = await xcheckFetchToday(ids);
+      const pageStatus = new Map();
+      parcelRows().forEach(r => {
+        const id = rowId(r);
+        if (id) pageStatus.set(id, rowStatus(r) || '');
+      });
+      const { warnings, validated } = xcheckClassify(todayRows, pageStatus);
+      xcheck.warnings = warnings;
+      xcheck.validated = validated;
+      xcheck.status = 'done';
+    } catch (err) {
+      console.warn('[DB XCheck] fetch failed:', err);
+      xcheck.status = (err && err.code === 'no-token') ? 'no-token' : 'error';
+    } finally {
+      xcheck.inflight = false;
+      renderXcheck();
+      // IDs changed mid-flight → check again for the new set.
+      if (xcheckSig() !== null && xcheckSig() !== xcheck.sig) maybeRefreshXcheck(true);
+    }
   }
 
   // ── SCAN INPUT HANDLER ───────────────────────────────────────────────────
