@@ -178,7 +178,15 @@
 
   function rowId(row) {
     const el = rowIdEl(row);
-    return el ? el.textContent.trim() : '';
+    if (!el) return '';
+    // Strip our own injected nodes (e.g. the "✓ SCANNED" .db-tick appended
+    // into this same div on receive) — otherwise textContent comes back as
+    // "ABC123✓ SCANNED" and leaks into Copy-for-Sheet TSV, expected-set
+    // builds, and findRowById() matching. Clone first so the live DOM
+    // (tick visibility) is untouched.
+    const clone = el.cloneNode(true);
+    clone.querySelectorAll('.db-tick').forEach(n => n.remove());
+    return clone.textContent.trim();
   }
 
   function rowStatus(row) {
