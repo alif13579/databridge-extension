@@ -613,6 +613,54 @@
       .db-xc-item .db-xc-st { font-family: -apple-system, Segoe UI, sans-serif; color: #64748b; }
       .db-xc-item-warn { border-color: #fecaca; }
       .db-xc-item-ok { border-color: #bbf7d0; }
+
+      /* CC report modal (lives inside #db-panel so the observer skips it) */
+      #db-report-backdrop {
+        position: fixed; inset: 0; z-index: 2147483646;
+        background: rgba(15,23,42,.45); display: flex;
+        align-items: center; justify-content: center;
+      }
+      #db-report-modal {
+        background: #fff; border-radius: 10px; width: min(560px, 92vw);
+        max-height: 84vh; display: flex; flex-direction: column;
+        box-shadow: 0 10px 40px rgba(0,0,0,.35); font-size: 12px; color: #1e293b;
+      }
+      .db-rp-hdr {
+        display: flex; align-items: center; padding: 10px 12px;
+        font-weight: 800; font-size: 13px; border-bottom: 1px solid #e2e8f0;
+      }
+      .db-rp-close { margin-left: auto; cursor: pointer; opacity: .6; padding: 2px 6px; }
+      .db-rp-close:hover { opacity: 1; }
+      .db-rp-sub { padding: 6px 12px; color: #64748b; font-size: 11px; display: flex; gap: 8px; align-items: center; }
+      .db-rp-chips { display: flex; gap: 6px; padding: 4px 12px 8px; flex-wrap: wrap; }
+      .db-rp-chip {
+        border: 1px solid #e2e8f0; background: #f8fafc; border-radius: 12px;
+        padding: 2px 10px; font-size: 11px; font-weight: 700; cursor: pointer; color: #475569;
+      }
+      .db-rp-chip.on { background: #1e293b; color: #fff; border-color: #1e293b; }
+      .db-rp-table { overflow-y: auto; padding: 0 12px; flex: 1; min-height: 60px; }
+      .db-rp-row {
+        display: flex; gap: 8px; align-items: baseline; padding: 6px 0;
+        border-top: 1px solid #f1f5f9; cursor: pointer;
+      }
+      .db-rp-row:hover { background: #f8fafc; }
+      .db-rp-id { font-family: monospace; font-size: 11px; white-space: nowrap; }
+      .db-rp-st { color: #64748b; font-size: 11px; white-space: nowrap; margin-left: auto; text-align: right; }
+      .db-rp-remark { color: #334155; font-size: 11px; }
+      .db-rp-note { color: #94a3b8; font-size: 10px; }
+      .db-rp-badge {
+        font-size: 10px; font-weight: 800; border-radius: 4px; padding: 1px 6px; white-space: nowrap;
+      }
+      .db-rp-badge-warn { background: #fef2f2; color: #b91c1c; border: 1px solid #fecaca; }
+      .db-rp-badge-ok { background: #f0fdf4; color: #15803d; border: 1px solid #bbf7d0; }
+      .db-rp-badge-mute { background: #f8fafc; color: #94a3b8; border: 1px solid #e2e8f0; }
+      .db-rp-day { font-size: 10px; color: #94a3b8; white-space: nowrap; }
+      .db-rp-ftr { display: flex; gap: 8px; padding: 10px 12px; border-top: 1px solid #e2e8f0; flex-wrap: wrap; }
+      .db-rp-btn {
+        border: 1px solid #cbd5e1; background: #f8fafc; border-radius: 6px;
+        padding: 5px 10px; font-size: 11px; font-weight: 700; cursor: pointer; color: #334155;
+      }
+      .db-rp-btn:hover { background: #e2e8f0; }
     `;
     document.head.appendChild(s);
   }
@@ -678,6 +726,7 @@
         <span>📦 DataBridge Reconcile</span>
         <div class="db-hdr-actions">
           <button id="db-sheet-copy-btn" title="Copy Delivered/Hold/Return IDs for pasting into a sheet">📋</button>
+          <button id="db-report-btn" title="CC Validation Report">📊</button>
           <button id="db-memory-toggle" title="Save to Memory">🧠</button>
           <button id="db-min">−</button>
         </div>
@@ -831,6 +880,10 @@
         showToast('Copy for Sheet', `Copied — ${unmatched} ID(s) had an unrecognized status and were skipped`, true);
       }
     });
+
+    // CC Validation Report — header 📊 button opens the report modal.
+    const reportBtn = document.getElementById('db-report-btn');
+    if (reportBtn) reportBtn.addEventListener('click', e => { e.stopPropagation(); openReport(); });
 
     // Draggable — position is saved to localStorage per run URL on mouseup
     // so the panel remembers where it was left the next time the same run
@@ -1097,6 +1150,133 @@
     maybeRefreshXcheck(false);
   }
 
+  // ── CC VALIDATION REPORT MODAL ───────────────────────────────────────────
+  function reportEntries() {
+    const f = xcheck.reportFilter;
+    const all = [...xcheck.warnings, ...xcheck.validated];
+    if (f === 'warn') return all.filter(e => e.verdict === 'warn');
+    if (f === 'ok')   return all.filter(e => e.verdict === 'ok');
+    if (f === 'none') {
+      const seen = new Set(all.map(e => e.id));
+      const rows = parcelRows();
+      const ids = [...new Set(rows.map(rowId).filter(id => id && ID_REGEX.test(id) && !seen.has(id)))].sort();
+      const stMap = new Map();
+      rows.forEach(r => { const id = rowId(r); if (id && !stMap.has(id)) stMap.set(id, rowStatus(r) || ''); });
+      return ids.map(id => ({ id, verdict: 'mute', tag: 'No CC request', st: stMap.get(id) || '?', remarkEn: '', remarkBn: '', note: '', dateKey: '', carried: false }));
+    }
+    return all;
+  }
+
+  function openReport() {
+    if (!panel) return;
+    if (xcheck.status !== 'done') maybeRefreshXcheck(true);
+    let bd = document.getElementById('db-report-backdrop');
+    if (!bd) {
+      bd = document.createElement('div');
+      bd.id = 'db-report-backdrop';
+      panel.appendChild(bd);
+      bd.addEventListener('click', e => { if (e.target === bd) closeReport(); });
+      if (!xcheck.escBound) {
+        xcheck.escBound = true;
+        document.addEventListener('keydown', e => { if (e.key === 'Escape') closeReport(); });
+      }
+    }
+    bd.style.display = '';
+    renderReport();
+  }
+
+  function closeReport() {
+    const bd = document.getElementById('db-report-backdrop');
+    if (bd) bd.style.display = 'none';
+  }
+
+  function renderReport() {
+    const bd = document.getElementById('db-report-backdrop');
+    if (!bd || bd.style.display === 'none') return;
+    const w = xcheck.warnings.length, v = xcheck.validated.length;
+    const all = [...xcheck.warnings, ...xcheck.validated];
+    const noneCount = (() => {
+      try {
+        const seen = new Set(all.map(e => e.id));
+        return [...new Set(parcelRows().map(rowId).filter(id => id && ID_REGEX.test(id) && !seen.has(id)))].length;
+      } catch { return 0; }
+    })();
+    const f = xcheck.reportFilter;
+    const chip = (key, label) =>
+      `<span class="db-rp-chip${f === key ? ' on' : ''}" data-rp-filter="${key}">${label}</span>`;
+    const entries = reportEntries();
+    const badgeCls = e => e.verdict === 'warn' ? 'db-rp-badge-warn' : e.verdict === 'ok' ? 'db-rp-badge-ok' : 'db-rp-badge-mute';
+    const dayBadge = e => !e.dateKey ? '' : e.carried
+      ? `<span class="db-rp-day">📅 ${escapeHtml(e.dateKey)}</span>`
+      : `<span class="db-rp-day">আজ</span>`;
+    const dot = e => `<span class="db-dot" style="background:${statusColor(e.st === '?' ? '' : e.st)}"></span>`;
+    bd.innerHTML = `
+      <div id="db-report-modal">
+        <div class="db-rp-hdr"><span>📊 CC Validation — Run ${escapeHtml(getRunId())}</span><span class="db-rp-close" id="db-rp-close">✕</span></div>
+        <div class="db-rp-sub">
+          <span>✅ ${v} validated</span><span>⚠️ ${w} attention</span><span>➖ ${noneCount} no CC request</span>
+          ${xcheck.checkedAt ? `<span style="margin-left:auto">checked ${escapeHtml(xcheckCheckedTime())}</span>` : ''}
+        </div>
+        <div class="db-rp-chips">
+          ${chip('all', `All (${all.length})`)}
+          ${chip('warn', `⚠️ Warnings (${w})`)}
+          ${chip('ok', `✅ Validated (${v})`)}
+          ${chip('none', `➖ No activity (${noneCount})`)}
+          <span class="db-rp-chip" id="db-rp-refresh" title="Re-check now">🔄</span>
+        </div>
+        <div class="db-rp-table">${
+          xcheck.status === 'loading' ? '<div class="db-rp-note" style="padding:8px 0">🔍 Checking…</div>'
+          : !entries.length ? '<div class="db-rp-note" style="padding:8px 0">কিছু নেই</div>'
+          : entries.map(e => `
+            <div class="db-rp-row" data-scroll-id="${escapeHtml(e.id)}">
+              <span class="db-rp-badge ${badgeCls(e)}">${escapeHtml(e.tag)}</span>
+              <span>
+                <div class="db-rp-id">${escapeHtml(e.id)}</div>
+                <div class="db-rp-remark">${escapeHtml(xcheckRemark(e))}</div>
+                ${e.note ? `<div class="db-rp-note">📝 ${escapeHtml(e.note)}</div>` : ''}
+              </span>
+              <span class="db-rp-st">${dot(e)}${escapeHtml(e.st)}<br>${dayBadge(e)}</span>
+            </div>`).join('')
+        }</div>
+        <div class="db-rp-ftr">
+          <button class="db-rp-btn" id="db-rp-copy-tsv">📋 Copy TSV</button>
+          <button class="db-rp-btn" id="db-rp-share">💬 Share text</button>
+          <button class="db-rp-btn" id="db-rp-csv">⬇️ CSV</button>
+        </div>
+      </div>`;
+    document.getElementById('db-rp-close').addEventListener('click', closeReport);
+    bd.querySelectorAll('[data-rp-filter]').forEach(c => {
+      c.addEventListener('click', () => { xcheck.reportFilter = c.dataset.rpFilter; renderReport(); });
+    });
+    document.getElementById('db-rp-refresh').addEventListener('click', () => maybeRefreshXcheck(true));
+    bd.querySelectorAll('[data-scroll-id]').forEach(n => {
+      n.addEventListener('click', () => scrollToRow(n.dataset.scrollId));
+    });
+    const flashBtn = async (id, fn) => {
+      const b = document.getElementById(id);
+      if (!b) return;
+      const ok = await fn().catch(() => false);
+      const orig = b.textContent;
+      b.textContent = ok ? '✓ Copied' : '✗ Failed';
+      setTimeout(() => { b.textContent = orig; }, 1500);
+    };
+    document.getElementById('db-rp-copy-tsv').addEventListener('click', () =>
+      flashBtn('db-rp-copy-tsv', () => copyToClipboard(xcheckReportTsv(entries))));
+    document.getElementById('db-rp-share').addEventListener('click', () =>
+      flashBtn('db-rp-share', () => copyToClipboard(
+        xcheckShareText(getRunId(), XCHECK_DAY.format(new Date()), xcheck.warnings, xcheck.validated))));
+    document.getElementById('db-rp-csv').addEventListener('click', () => {
+      const csv = xcheckReportTsv(entries).split('\n')
+        .map(l => l.split('\t').map(c => `"${c.replace(/"/g, '""')}"`).join(',')).join('\n');
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(new Blob(['\ufeff' + csv], { type: 'text/csv;charset=utf-8' }));
+      a.download = `cc-report-run-${getRunId()}.csv`;
+      document.body.appendChild(a);
+      a.click();
+      setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 500);
+    });
+  }
+
   // ── SCROLL TO ROW ───────────────────────────────────────────────────────────
   function scrollToRow(id) {
     const row = findRowById(id);
@@ -1271,6 +1451,7 @@
   // মতো): worker আজ জবাব দিয়ে থাকলে latest WORKER হয় → warning ওঠে না।
   const XCHECK_RESOLVED = new Set(['delivered', 'partial delivery', 'partial', 'exchange', 'paid return']);
   const XCHECK_CHUNK = 200; // PostgREST in.(...) safety chunk (app-এর pattern)
+  const XCHECK_DAYS = 7; // carryover window: গতকালের unanswered request আজও দেখাবে
   const XCHECK_URL = CONFIG.SUPABASE_URL;
   const XCHECK_ANON = CONFIG.SUPABASE_ANON_KEY;
   const XCHECK_FB_URL = CONFIG.FIREBASE_URL;
@@ -1279,8 +1460,10 @@
 
   const xcheck = {
     sig: null, status: 'idle', // idle|loading|done|no-token|error
-    warnings: [], validated: [], note: '',
+    warnings: [], validated: [], details: new Map(), note: '',
+    bnMap: null, checkedAt: 0,
     inflight: false, warnOpen: true, okOpen: false,
+    reportFilter: 'all', escBound: false,
   };
 
   // Firebase ID token — cc-panel.js-এর port (content-script নিজে refresh
@@ -1323,9 +1506,19 @@
     }
   }
 
+  // Dhaka midnight N days ago as UTC ISO (Dhaka = +06:00, no DST).
+  function dhakaMidnightIso(daysAgo) {
+    const now = new Date();
+    const dhaka = new Date(now.getTime() + (360 + now.getTimezoneOffset()) * 60000);
+    dhaka.setHours(0, 0, 0, 0);
+    dhaka.setDate(dhaka.getDate() - daysAgo);
+    return dhaka.toISOString();
+  }
+  function xcheckDayKey(iso) { try { return XCHECK_DAY.format(new Date(iso)); } catch { return ''; } }
+
   async function xcheckFetchToday(ids) {
     const token = await xcheckIdToken();
-    const gte = `${XCHECK_DAY.format(new Date())}T00:00:00+06:00`; // Dhaka midnight, no DST
+    const gte = dhakaMidnightIso(XCHECK_DAYS);
     const base = `${XCHECK_URL}/rest/v1/validations` +
       `?select=consignment,source,remarks_status,remarks,note,created_at` +
       `&source=eq.CC` +
@@ -1355,23 +1548,97 @@
       const prev = latest.get(id);
       if (!prev || (r.created_at || '') > (prev.created_at || '')) latest.set(id, r);
     });
-    const warnings = [], validated = [];
+    const todayKey = XCHECK_DAY.format(new Date());
+    const warnings = [], validated = [], details = new Map();
+    const entry = (id, row, verdict, tag, runRaw) => {
+      const dateKey = xcheckDayKey(row.created_at);
+      const e = {
+        id, verdict, tag, st: runRaw || '?',
+        remarkEn: (row.remarks || '').trim(),
+        remarkBn: '',
+        note: (row.note || '').trim(),
+        dateKey, carried: !!dateKey && dateKey !== todayKey,
+      };
+      (verdict === 'warn' ? warnings : validated).push(e);
+      details.set(id, e);
+      return e;
+    };
     latest.forEach((row, id) => {
       const rs = (row.remarks_status || '').trim().toLowerCase();
       const runRaw = (pageStatus.get(id) || '').trim();
       const run = runRaw.toLowerCase();
       if (rs === 'delivery_request') {
-        if (XCHECK_RESOLVED.has(run)) validated.push({ id, tag: 'Delivery fulfilled', st: runRaw });
-        else warnings.push({ id, tag: 'Delivery request', st: runRaw || '?' });
+        if (XCHECK_RESOLVED.has(run)) entry(id, row, 'ok', 'Delivery fulfilled', runRaw);
+        else entry(id, row, 'warn', 'Delivery request', runRaw);
       } else if (rs === 'hold_verified') {
-        if (run === 'on hold') validated.push({ id, tag: 'Hold validated', st: runRaw });
-        else warnings.push({ id, tag: 'Hold verified ≠ run', st: runRaw || '?' });
+        if (run === 'on hold') entry(id, row, 'ok', 'Hold validated', runRaw);
+        else entry(id, row, 'warn', 'Hold verified ≠ run', runRaw);
       } else if (rs === 'return_verified') {
-        if (RETURN_VALID.has(run)) validated.push({ id, tag: 'Return validated', st: runRaw });
-        else warnings.push({ id, tag: 'Return verified ≠ run', st: runRaw || '?' });
+        if (RETURN_VALID.has(run)) entry(id, row, 'ok', 'Return validated', runRaw);
+        else entry(id, row, 'warn', 'Return verified ≠ run', runRaw);
       }
     });
-    return { warnings, validated };
+    return { warnings, validated, details };
+  }
+
+  // Bangla remark labels (validation_remarks catalog, CC) — cached per load.
+  async function xcheckBnMap() {
+    if (xcheck.bnMap) return xcheck.bnMap;
+    const m = new Map();
+    try {
+      const token = await xcheckIdToken();
+      const res = await fetch(
+        `${XCHECK_URL}/rest/v1/validation_remarks?select=remarks_en,remarks_bn&source=eq.CC`,
+        { headers: { 'apikey': XCHECK_ANON, 'Authorization': `Bearer ${token}`, 'Accept': 'application/json' } }
+      );
+      const arr = await res.json().catch(() => []);
+      (Array.isArray(arr) ? arr : []).forEach(x => {
+        const en = (x.remarks_en || '').trim().toLowerCase();
+        const bn = (x.remarks_bn || '').trim();
+        if (en && bn && !m.has(en)) m.set(en, bn);
+      });
+    } catch (err) {
+      console.warn('[DB XCheck] remark catalog fetch failed:', err);
+    }
+    xcheck.bnMap = m;
+    return m;
+  }
+
+  function xcheckRemark(e) {
+    return (e.remarkBn || e.remarkEn || '—');
+  }
+
+  function xcheckCheckedTime() {
+    if (!xcheck.checkedAt) return '';
+    try {
+      return new Date(xcheck.checkedAt).toLocaleTimeString('en-GB', { timeZone: 'Asia/Dhaka', hour: '2-digit', minute: '2-digit' });
+    } catch { return ''; }
+  }
+
+  // ── REPORT BUILDERS (pure — unit-tested below via node) ──────────────────
+  function xcheckReportTsv(entries) {
+    const esc = v => String(v == null ? '' : v).replace(/\t/g, ' ').replace(/\r?\n/g, ' / ');
+    const lines = ['Consignment\tRun status\tVerdict\tCC remark\tDate'];
+    entries.forEach(e => {
+      lines.push([e.id, e.st, e.tag, xcheckRemark(e), e.dateKey || ''].map(esc).join('\t'));
+    });
+    return lines.join('\n');
+  }
+
+  function xcheckShareText(runId, dateKey, warnings, validated) {
+    const [y, m, d] = (dateKey || '').split('-');
+    const L = [];
+    L.push(`📦 Run ${runId} — CC Validation (${d && m && y ? `${d}-${m}-${y}` : dateKey || ''})`);
+    L.push(`✅ Validated: ${validated.length} | ⚠️ Attention: ${warnings.length}`);
+    if (warnings.length) {
+      L.push('⚠️ দেখতে হবে:');
+      warnings.forEach(e => L.push(`• ${e.id} — ${e.tag}, run: ${e.st}`));
+    }
+    if (validated.length) {
+      L.push('✅ ঠিক আছে:');
+      validated.forEach(e => L.push(`• ${e.id} — ${e.tag}`));
+    }
+    return L.join('\n');
   }
 
   function xcheckSig() {
@@ -1387,7 +1654,7 @@
     const refreshBtn = `<span class="db-xc-refresh" id="db-xcheck-refresh" title="Re-check now">🔄</span>`;
     if (xcheck.status === 'idle') { el.innerHTML = ''; return; }
     if (xcheck.status === 'loading') {
-      el.innerHTML = `<div class="db-xc-bar db-xc-bar-idle"><span>🔍 Checking today's CC requests…</span>${refreshBtn}</div>`;
+      el.innerHTML = `<div class="db-xc-bar db-xc-bar-idle"><span>🔍 Checking CC requests…</span>${refreshBtn}</div>`;
     } else if (xcheck.status === 'no-token') {
       el.innerHTML = `<div class="db-xc-bar db-xc-bar-idle"><span>⚪ CC check off — sign in via extension popup to enable</span>${refreshBtn}</div>`;
     } else if (xcheck.status === 'error') {
@@ -1395,7 +1662,7 @@
     } else {
       const w = xcheck.warnings, v = xcheck.validated;
       if (!w.length && !v.length) {
-        el.innerHTML = `<div class="db-xc-bar db-xc-bar-idle"><span>✅ No pending CC requests today</span>${refreshBtn}</div>`;
+        el.innerHTML = `<div class="db-xc-bar db-xc-bar-idle"><span>✅ No pending CC requests (last 7 days)</span>${refreshBtn}</div>`;
       } else {
         const item = (e, cls) =>
           `<span class="db-xc-item ${cls}" data-scroll-id="${escapeHtml(e.id)}" title="${escapeHtml(e.tag)} — run: ${escapeHtml(e.st)}">` +
@@ -1435,7 +1702,9 @@
     if (sig === null) {
       if (xcheck.sig !== null || xcheck.status !== 'idle') {
         xcheck.sig = null; xcheck.status = 'idle';
-        xcheck.warnings = []; xcheck.validated = [];
+        xcheck.warnings = []; xcheck.validated = []; xcheck.details = new Map();
+        xcheck.checkedAt = 0;
+        closeReport();
         renderXcheck();
       }
       return;
@@ -1453,9 +1722,18 @@
         const id = rowId(r);
         if (id) pageStatus.set(id, rowStatus(r) || '');
       });
-      const { warnings, validated } = xcheckClassify(todayRows, pageStatus);
+      const { warnings, validated, details } = xcheckClassify(todayRows, pageStatus);
+      try {
+        const bn = await xcheckBnMap();
+        details.forEach(e => {
+          const hit = bn.get((e.remarkEn || '').toLowerCase());
+          if (hit) e.remarkBn = hit;
+        });
+      } catch {}
       xcheck.warnings = warnings;
       xcheck.validated = validated;
+      xcheck.details = details;
+      xcheck.checkedAt = Date.now();
       xcheck.status = 'done';
     } catch (err) {
       console.warn('[DB XCheck] fetch failed:', err);
@@ -1463,6 +1741,7 @@
     } finally {
       xcheck.inflight = false;
       renderXcheck();
+      renderReport(); // no-op unless the modal is open
       // IDs changed mid-flight → check again for the new set.
       if (xcheckSig() !== null && xcheckSig() !== xcheck.sig) maybeRefreshXcheck(true);
     }
