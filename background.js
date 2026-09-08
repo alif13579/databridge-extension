@@ -311,8 +311,15 @@ function incrementUnreadBadge() {
 // so no new Firebase path or security rule is needed on either side.
 // Shape: { text, created_at, status: "pending" | "done" }
 const PROCESSED_COMMANDS_CAP = 200; // bound the locally-stored id list so it can't grow forever
+let pollNetDown = false; // throttle offline spam: log once down, once recovered
 
 async function pollIncomingCommands() {
+  // Offline → skip quietly (next 30s tick retries). Without this every poll
+  // throws TypeError: Failed to fetch and spams the console while offline.
+  if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+    if (!pollNetDown) { pollNetDown = true; console.warn('[DB] pollIncomingCommands: offline, retrying quietly'); }
+    return;
+  }
   // Retry any offline-queued sends first — same 30s tick, no extra alarm needed.
   try { await flushPendingSends(); } catch (e) { console.warn('[DB] flushPendingSends failed:', e?.message || e); }
   const { extension_id, auto_copy_incoming, processed_command_ids } = await new Promise(resolve =>
@@ -324,8 +331,14 @@ async function pollIncomingCommands() {
   try {
     const res = await fetch(`${FIREBASE_URL}/sessions/${extension_id}/commands.json?orderBy="status"&equalTo="pending"`);
     commands = await res.json();
+    if (pollNetDown) { pollNetDown = false; console.log('[DB] pollIncomingCommands: back online'); }
   } catch (err) {
-    console.error('[DB] pollIncomingCommands: fetch failed:', err);
+    // Network-level failure (offline/DNS/firewall) — not an app bug.
+    // Log once, then stay quiet until recovery to avoid 30s console spam.
+    if (!pollNetDown) {
+      pollNetDown = true;
+      console.warn('[DB] pollIncomingCommands: fetch failed (network), will retry quietly:', err?.message || err);
+    }
     return;
   }
   if (!commands) return; // node empty/absent — nothing pending
