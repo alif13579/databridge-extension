@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "DataBridge",
-  "version": "2.80",
+  "version": "2.81",
   "author": "Alif Hossain",
   "description": "Seamless data transfer between platforms.",
   "permissions": [
@@ -68,6 +68,15 @@
         "config.js",
         "cc-panel.js"
       ]
+    },
+    {
+      "matches": [
+        "https://hermes.pathaointernal.com/*"
+      ],
+      "js": [
+        "hermes-api.js"
+      ],
+      "run_at": "document_idle"
     }
   ],
   "action": {
