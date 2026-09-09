@@ -834,7 +834,7 @@
 
   function isRemarkConn(conn) {
     if (!conn || conn.enabled === false) return false;
-    if (conn.purpose === 'scanner') return false;
+    if (conn.purpose === 'scanner' || conn.purpose === 'routing') return false;
     if (conn.purpose === 'remark') return true;
     return effectiveLookups(conn).length > 0 && effectiveWrites(conn).length > 0;
   }
