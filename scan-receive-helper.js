@@ -1982,18 +1982,32 @@
       if (!res.ok) throw new Error((data && data.error) || `HTTP ${res.status}`);
       runSync.at = Date.now();
       runSync.last = `+${data.updated || 0} ~${data.unchanged || 0} ?${data.missing || 0}`;
+      runSync.err = '';
       console.log(`[DB RunSync] run ${getRunId()}:`, runSync.last);
       try { renderReport(); } catch {}
+      try { renderXcheck(); } catch {}
     } catch (err) {
       // Not signed in via popup yet → retry on a later refresh (cheap local
       // storage read each time, no network until the token exists).
       if (err && err.code === 'no-token') runSync.sig = null;
-      else console.warn('[DB RunSync] sync failed:', err);
+      else {
+        console.warn('[DB RunSync] sync failed:', err);
+        runSync.err = (err && err.message) ? String(err.message).slice(0, 120) : 'sync failed';
+        try { renderXcheck(); } catch {}
+      }
     } finally {
       runSync.inflight = false;
       // Status changed mid-flight → sync again for the new set.
       if (runSyncSig() !== null && runSyncSig() !== runSync.sig) maybeSyncRunStatus();
     }
+  }
+
+  function runSyncBar() {
+    // Supabase write status — run khulle latest status update holo kina.
+    // +updated ~unchanged ?missing (missing = oi din-er validation row nei).
+    if (runSync.err) return `<div class="db-xc-bar db-xc-bar-idle"><span title="${escapeHtml(runSync.err)}">⚪ Supabase update failed — ${escapeHtml(runSync.err)}</span></div>`;
+    if (!runSync.at) return '';
+    return `<div class="db-xc-bar db-xc-bar-idle"><span title="Run status → Supabase validations.consignment_status">🔄 Supabase update: ${escapeHtml(runSync.last)}</span></div>`;
   }
 
   function renderXcheck() {
@@ -2030,7 +2044,7 @@
         (xcheck.ccOpen && cc.length ? `<div class="db-xc-list">${cc.map(ccItem).join('')}</div>` : '') +
         (!cc.length ? `<div class="db-xc-list"><span style="opacity:.65">আজকের date-এ এই run-এর কোনো CC remark নেই</span></div>` : '');
       if (!w.length && !v.length) {
-        el.innerHTML = drBar + ccBar;
+        el.innerHTML = drBar + ccBar + runSyncBar();
         const db = document.getElementById('db-xc-drbar');
         if (db) db.addEventListener('click', e => {
           if (e.target.id === 'db-xcheck-refresh') return;
@@ -2055,7 +2069,8 @@
             ? `<div class="db-xc-bar db-xc-bar-ok" id="db-xc-okbar"><span>✅ ${v.length} CC-validated</span>${(!dr.length && !w.length) ? refreshBtn : ''}</div>` +
               (xcheck.okOpen ? `<div class="db-xc-list">${v.map(e => item(e, 'db-xc-item-ok')).join('')}</div>` : '')
             : '') +
-          ccBar;
+          ccBar +
+          runSyncBar();
         const db = document.getElementById('db-xc-drbar');
         if (db) db.addEventListener('click', e => {
           if (e.target.id === 'db-xcheck-refresh') return;
