@@ -178,6 +178,15 @@
     return idDiv;
   }
 
+  function cleanConsignment(text) {
+    // Hermes ID column can carry extra labels ("Consign ID:", Age/Attempt
+    // badges) depending on page/markup — always extract the pure 14-char
+    // ID so Supabase `consignment=in.(...)` matches the column exactly.
+    // A dirty string passes ID_REGEX.test but never matches the DB.
+    const m = String(text || '').toUpperCase().match(ID_REGEX);
+    return m ? m[0] : '';
+  }
+
   function rowId(row) {
     const el = rowIdEl(row);
     if (!el) return '';
@@ -188,8 +197,19 @@
     // (tick visibility) is untouched.
     const clone = el.cloneNode(true);
     clone.querySelectorAll('.db-tick').forEach(n => n.remove());
-    return clone.textContent.trim();
+    return cleanConsignment(clone.textContent);
   }
+
+  // Hermes parcel statuses seen on run-routes (lowercase). Used to pick the
+  // real status badge out of Age/Attempt/COD chips that share .pt-label-btn.
+  // (XCHECK_RESOLVED values are already covered by the maps/sets below.)
+  const KNOWN_RUN_STATUSES = new Set([
+    ...Object.keys(STATUS_COLOR),
+    ...Object.keys(SHEET_STATUS_BUCKET),
+    ...HOLD_VALID, ...RETURN_VALID,
+    'assigned', 'in transit', 'intransit', 'pending', 'on hold',
+    'return', 'delivered', 'cancelled', 'canceled', 'lost',
+  ]);
 
   function rowStatus(row) {
     // Status is in a .pt-label-btn inside the FIRST .w-1/6 column
@@ -200,18 +220,25 @@
     if (!idCol) return null;
 
     // Get all .pt-label-btn elements in the ID column
-    const allBtns = idCol.querySelectorAll('.pt-label-btn');
-
-    // Find the one that contains a status-like text (has letters, not just numbers)
+    const allBtns = [...idCol.querySelectorAll('.pt-label-btn')];
+    const candidates = [];
     for (const btn of allBtns) {
       const text = btn.textContent.trim();
+      if (!text) continue;
       // Skip if it's just a number (attempt count) or just "COD"
       if (/^\d+$/.test(text)) continue;  // Skip pure numbers
       if (text.toLowerCase() === 'cod') continue;  // Skip COD
-      // This should be the status
-      return text;
+      // Skip Age:/Attempt: meta chips ("Age: 3 day", "Attempt: 2") — these
+      // share .pt-label-btn but are never the parcel status.
+      if (text.includes(':')) continue;
+      const low = text.toLowerCase();
+      if (/^(age|attempt)\b/.test(low)) continue;
+      candidates.push(text);
     }
-    return null;
+    if (!candidates.length) return null;
+    // Prefer a known parcel status; fall back to the first surviving chip
+    // so unknown future statuses still sync instead of vanishing.
+    return candidates.find(t => KNOWN_RUN_STATUSES.has(t.toLowerCase())) || candidates[0];
   }
 
   function rowAmount(row) {
@@ -1179,6 +1206,13 @@
   // ── CC VALIDATION REPORT MODAL ───────────────────────────────────────────
   function reportEntries() {
     const f = xcheck.reportFilter;
+    if (f === 'cc') {
+      return (xcheck.todayCc || []).map(c => ({
+        id: c.id, verdict: 'cc', tag: c.remarksStatus || 'CC remark',
+        st: c.st, remarkEn: c.remarkEn, remarkBn: c.remarkBn,
+        note: c.note, dateKey: c.dateKey, carried: false,
+      }));
+    }
     const all = [...xcheck.warnings, ...xcheck.validated];
     if (f === 'warn') return all.filter(e => e.verdict === 'warn');
     if (f === 'ok')   return all.filter(e => e.verdict === 'ok');
@@ -1220,6 +1254,7 @@
     const bd = document.getElementById('db-report-backdrop');
     if (!bd || bd.style.display === 'none') return;
     const w = xcheck.warnings.length, v = xcheck.validated.length;
+    const ccN = (xcheck.todayCc || []).length;
     const all = [...xcheck.warnings, ...xcheck.validated];
     const noneCount = (() => {
       try {
@@ -1231,7 +1266,7 @@
     const chip = (key, label) =>
       `<span class="db-rp-chip${f === key ? ' on' : ''}" data-rp-filter="${key}">${label}</span>`;
     const entries = reportEntries();
-    const badgeCls = e => e.verdict === 'warn' ? 'db-rp-badge-warn' : e.verdict === 'ok' ? 'db-rp-badge-ok' : 'db-rp-badge-mute';
+    const badgeCls = e => e.verdict === 'warn' ? 'db-rp-badge-warn' : e.verdict === 'ok' ? 'db-rp-badge-ok' : e.verdict === 'cc' ? 'db-rp-badge-ok' : 'db-rp-badge-mute';
     const dayBadge = e => !e.dateKey ? '' : e.carried
       ? `<span class="db-rp-day">📅 ${escapeHtml(e.dateKey)}</span>`
       : `<span class="db-rp-day">আজ</span>`;
@@ -1240,7 +1275,7 @@
       <div id="db-report-modal">
         <div class="db-rp-hdr"><span>📊 CC Validation — Run ${escapeHtml(getRunId())}</span><span class="db-rp-close" id="db-rp-close">✕</span></div>
         <div class="db-rp-sub">
-          <span>✅ ${v} validated</span><span>⚠️ ${w} attention</span><span>➖ ${noneCount} no CC request</span>
+          <span>✅ ${v} validated</span><span>⚠️ ${w} attention</span><span>📋 ${ccN} today CC</span><span>➖ ${noneCount} no CC request</span>
           ${xcheck.checkedAt ? `<span style="margin-left:auto">checked ${escapeHtml(xcheckCheckedTime())}</span>` : ''}
           ${runSync.at ? `<span title="Run status → validations sync">🔄 ${escapeHtml(runSync.last)}</span>` : ''}
         </div>
@@ -1248,6 +1283,7 @@
           ${chip('all', `All (${all.length})`)}
           ${chip('warn', `⚠️ Warnings (${w})`)}
           ${chip('ok', `✅ Validated (${v})`)}
+          ${chip('cc', `📋 Today CC (${ccN})`)}
           ${chip('none', `➖ No activity (${noneCount})`)}
           <span class="db-rp-chip" id="db-rp-refresh" title="Re-check now">🔄</span>
         </div>
@@ -1498,6 +1534,19 @@
             (vx.remarkEn ? ` — ${vx.remarkBn || vx.remarkEn}` : '') +
             (vx.carried ? ` (${vx.dateKey})` : '');
           idEl.appendChild(b);
+        } else {
+          // Verify-status না হলেও আজকের যেকোনো CC remark থাকলে 📋 CC mark —
+          // যাতে "validation mark korche na" না লাগে।
+          const cc = xcheck.todayCcById && xcheck.todayCcById.get(id);
+          if (cc) {
+            const b = document.createElement('span');
+            b.className = 'db-tick db-xbadge';
+            b.style.background = '#2563eb';
+            b.textContent = '📋 CC';
+            const lbl = cc.remarksStatus || cc.remarkEn || 'CC remark';
+            b.title = `Today CC — ${lbl}${cc.remarkEn && cc.remarkEn !== lbl ? ` — ${cc.remarkBn || cc.remarkEn}` : ''} — run: ${cc.st}`;
+            idEl.appendChild(b);
+          }
         }
       }
 
@@ -1651,6 +1700,7 @@
   const xcheck = {
     sig: null, status: 'idle', // idle|loading|done|no-token|error
     warnings: [], validated: [], details: new Map(), note: '',
+    todayCc: [], todayCcById: new Map(), ccOpen: true,
     bnMap: null, checkedAt: 0,
     inflight: false, warnOpen: true, okOpen: false,
     reportFilter: 'all', escBound: false,
@@ -1707,12 +1757,17 @@
   function xcheckDayKey(iso) { try { return XCHECK_DAY.format(new Date(iso)); } catch { return ''; } }
 
   async function xcheckFetchToday(ids) {
+    // Run-এর সব consignment ID দিয়ে Supabase থেকে CC remarks আনে:
+    // 7-day window (carryover warnings-এর জন্য) + আজকের সব CC row
+    // (যেকোনো remarks_status — delivery_request/hold_verified/
+    // return_verified শুধু নয়)। Status filter তুলে দেওয়ার কারণ: CC-এর
+    // আজকের remark যেকোনো target_status হতে পারে (Delivered/On Hold/…),
+    // শুধু 3 verify-status filter করলে "No pending" দেখাতো যদিও row আছে।
     const token = await xcheckIdToken();
     const gte = dhakaMidnightIso(XCHECK_DAYS);
     const base = `${XCHECK_URL}/rest/v1/validations` +
       `?select=consignment,source,remarks_status,remarks,note,created_at` +
       `&source=eq.CC` +
-      `&remarks_status=in.(delivery_request,hold_verified,return_verified)` +
       `&created_at=gte.${encodeURIComponent(gte)}` +
       `&order=created_at.desc`;
     const headers = { 'apikey': XCHECK_ANON, 'Authorization': `Bearer ${token}`, 'Accept': 'application/json' };
@@ -1740,12 +1795,14 @@
     });
     const todayKey = XCHECK_DAY.format(new Date());
     const warnings = [], validated = [], details = new Map();
+    const todayCc = [], todayCcById = new Map();
     const entry = (id, row, verdict, tag, runRaw) => {
       const dateKey = xcheckDayKey(row.created_at);
       const e = {
         id, verdict, tag, st: runRaw || '?',
         remarkEn: (row.remarks || '').trim(),
         remarkBn: '',
+        remarksStatus: (row.remarks_status || '').trim(),
         note: (row.note || '').trim(),
         dateKey, carried: !!dateKey && dateKey !== todayKey,
       };
@@ -1757,6 +1814,20 @@
       const rs = (row.remarks_status || '').trim().toLowerCase();
       const runRaw = (pageStatus.get(id) || '').trim();
       const run = runRaw.toLowerCase();
+      // আজকের সব CC remark (যেকোনো status) — run page-এর list-এর জন্য।
+      const dateKey = xcheckDayKey(row.created_at);
+      if (dateKey && dateKey === todayKey) {
+        const c = {
+          id, st: runRaw || '?',
+          remarksStatus: (row.remarks_status || '').trim(),
+          remarkEn: (row.remarks || '').trim(),
+          remarkBn: '',
+          note: (row.note || '').trim(),
+          dateKey,
+        };
+        todayCc.push(c);
+        todayCcById.set(id, c);
+      }
       if (rs === 'delivery_request') {
         if (XCHECK_RESOLVED.has(run)) entry(id, row, 'ok', 'Delivery fulfilled', runRaw);
         else entry(id, row, 'warn', 'Delivery request', runRaw);
@@ -1768,7 +1839,8 @@
         else entry(id, row, 'warn', 'Return verified ≠ run', runRaw);
       }
     });
-    return { warnings, validated, details };
+    todayCc.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+    return { warnings, validated, details, todayCc, todayCcById };
   }
 
   // Bangla remark labels (validation_remarks catalog, CC) — cached per load.
@@ -1921,8 +1993,24 @@
       el.innerHTML = `<div class="db-xc-bar db-xc-bar-idle"><span>⚪ CC check failed (network/RLS) — tap 🔄 to retry</span>${refreshBtn}</div>`;
     } else {
       const w = xcheck.warnings, v = xcheck.validated;
+      const cc = xcheck.todayCc || [];
+      const ccItem = (c) => {
+        const label = c.remarksStatus || c.remarkEn || 'CC remark';
+        const title = `${label}${c.remarkEn && c.remarkEn !== label ? ` — ${c.remarkBn || c.remarkEn}` : (c.remarkBn ? ` — ${c.remarkBn}` : '')} — run: ${c.st}${c.note ? ` — 📝 ${c.note}` : ''}`;
+        return `<span class="db-xc-item" data-scroll-id="${escapeHtml(c.id)}" title="${escapeHtml(title)}">` +
+          `${escapeHtml(c.id)} <span class="db-xc-st">${escapeHtml(label)}</span></span>`;
+      };
+      const ccBar =
+        `<div class="db-xc-bar db-xc-bar-ok" id="db-xc-ccbar"><span>📋 Today CC remarks: ${cc.length}</span>${(!w.length && !v.length) ? refreshBtn : ''}</div>` +
+        (xcheck.ccOpen && cc.length ? `<div class="db-xc-list">${cc.map(ccItem).join('')}</div>` : '') +
+        (!cc.length ? `<div class="db-xc-list"><span style="opacity:.65">আজকের date-এ এই run-এর কোনো CC remark নেই</span></div>` : '');
       if (!w.length && !v.length) {
-        el.innerHTML = `<div class="db-xc-bar db-xc-bar-idle"><span>✅ No pending CC requests (last 7 days)</span>${refreshBtn}</div>`;
+        el.innerHTML = ccBar;
+        const cb = document.getElementById('db-xc-ccbar');
+        if (cb) cb.addEventListener('click', e => {
+          if (e.target.id === 'db-xcheck-refresh') return;
+          xcheck.ccOpen = !xcheck.ccOpen; renderXcheck();
+        });
       } else {
         const item = (e, cls) =>
           `<span class="db-xc-item ${cls}" data-scroll-id="${escapeHtml(e.id)}" title="${escapeHtml(e.tag)} — run: ${escapeHtml(e.st)}">` +
@@ -1935,7 +2023,8 @@
           (v.length
             ? `<div class="db-xc-bar db-xc-bar-ok" id="db-xc-okbar"><span>✅ ${v.length} CC-validated</span>${w.length ? '' : refreshBtn}</div>` +
               (xcheck.okOpen ? `<div class="db-xc-list">${v.map(e => item(e, 'db-xc-item-ok')).join('')}</div>` : '')
-            : '');
+            : '') +
+          ccBar;
         const wb = document.getElementById('db-xc-warnbar');
         if (wb) wb.addEventListener('click', e => {
           if (e.target.id === 'db-xcheck-refresh') return;
@@ -1945,6 +2034,11 @@
         if (ob) ob.addEventListener('click', e => {
           if (e.target.id === 'db-xcheck-refresh') return;
           xcheck.okOpen = !xcheck.okOpen; renderXcheck();
+        });
+        const cb = document.getElementById('db-xc-ccbar');
+        if (cb) cb.addEventListener('click', e => {
+          if (e.target.id === 'db-xcheck-refresh') return;
+          xcheck.ccOpen = !xcheck.ccOpen; renderXcheck();
         });
       }
     }
@@ -1963,6 +2057,7 @@
       if (xcheck.sig !== null || xcheck.status !== 'idle') {
         xcheck.sig = null; xcheck.status = 'idle';
         xcheck.warnings = []; xcheck.validated = []; xcheck.details = new Map();
+        xcheck.todayCc = []; xcheck.todayCcById = new Map();
         xcheck.checkedAt = 0;
         closeReport();
         renderXcheck();
@@ -1982,17 +2077,24 @@
         const id = rowId(r);
         if (id) pageStatus.set(id, rowStatus(r) || '');
       });
-      const { warnings, validated, details } = xcheckClassify(todayRows, pageStatus);
+      const { warnings, validated, details, todayCc, todayCcById } = xcheckClassify(todayRows, pageStatus);
       try {
         const bn = await xcheckBnMap();
         details.forEach(e => {
           const hit = bn.get((e.remarkEn || '').toLowerCase());
           if (hit) e.remarkBn = hit;
         });
+        (todayCc || []).forEach(c => {
+          const hit = bn.get((c.remarkEn || '').toLowerCase());
+          if (hit) c.remarkBn = hit;
+        });
       } catch {}
       xcheck.warnings = warnings;
       xcheck.validated = validated;
       xcheck.details = details;
+      xcheck.todayCc = todayCc || [];
+      xcheck.todayCcById = todayCcById || new Map();
+      console.log(`[DB XCheck] run ${getRunId()}: ${ids.length} IDs → ${todayRows.length} CC rows (7d), today CC ${xcheck.todayCc.length}, warn ${warnings.length}, ok ${validated.length}`);
       xcheck.checkedAt = Date.now();
       xcheck.status = 'done';
     } catch (err) {
@@ -2031,13 +2133,13 @@
       // Capture-phase listener — fires before Hermes bubble-phase handlers
       input.addEventListener('keydown', e => {
         if (e.key !== 'Enter') return;
-        let raw = (input.value || '').trim().toUpperCase();
-        // Strip pipe suffix (e.g. DB160726JFWRVN|120 → DB160726JFWRVN)
-        const pipeIdx = raw.lastIndexOf('|');
-        const id = pipeIdx !== -1 ? raw.substring(0, pipeIdx) : raw;
+        const raw = (input.value || '').trim().toUpperCase();
+        // Extract pure 14-char ID (handles pipe suffix "ID|120" + pasted
+        // "Consign ID: ..." labels) — never send a dirty string to Supabase.
+        const id = cleanConsignment(raw);
         console.log('[DB] SCAN in', inputId, '→ raw:', raw, '→ parsed ID:', id);
-        if (!ID_REGEX.test(id)) {
-          console.warn('[DB] ID rejected by regex:', id);
+        if (!id) {
+          console.warn('[DB] ID rejected by regex:', raw);
           return;
         }
         // Replace input value with clean ID so Hermes also receives the parsed ID
