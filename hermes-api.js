@@ -211,6 +211,13 @@
       html += '<div data-role="msg" style="color:#64748b;margin-bottom:6px">'
         + 'Capture: browser-level (CSP-proof) — site-ti normal use koro '
         + '(orders search, run-route), call gulo ekhane live jombe.</div>';
+      html += '<div style="display:flex;gap:6px;margin:8px 0">'
+        + '<input data-role="probe-id" placeholder="Consignment ID (jemon DR070926TXSTGS)" '
+        + 'style="flex:1;border:1px solid #cbd5e1;border-radius:6px;padding:4px 6px;font-size:12px"/>'
+        + '<button data-act="probe">Details ano</button></div>'
+        + '<div data-role="probe-out" style="display:none;max-height:160px;overflow:auto;'
+        + 'background:#f8fafc;border:1px solid #e2e8f0;border-radius:6px;padding:6px;'
+        + 'white-space:pre-wrap;word-break:break-all;font-size:11px"></div>';
       if (!list.length) {
         html += '<div style="color:#94a3b8">Ekhono kichu capture hoyni.</div>';
       } else {
@@ -244,6 +251,23 @@
         var put = {}; put[SNIFF_KEY] = [];
         chrome.storage.local.set(put, function () { renderChip(0); togglePanel(); togglePanel(); });
       });
+      // Probe: consignment details via captured endpoint, using the live
+      // login session. Shows top-level keys + truncated JSON for verify.
+      panelEl.querySelector('[data-act="probe"]').addEventListener('click', function () {
+        var id = panelEl.querySelector('[data-role="probe-id"]').value.trim();
+        var out = panelEl.querySelector('[data-role="probe-out"]');
+        if (!id) { out.style.display = ''; out.textContent = 'Age Consignment ID likho.'; return; }
+        out.style.display = '';
+        out.textContent = 'Fetching details…';
+        window.HermesApi.orderDetails(id).then(function (r) {
+          var keys = (r.data && typeof r.data === 'object') ? Object.keys(r.data).join(', ') : typeof r.data;
+          var dump = '';
+          try { dump = JSON.stringify(r.data).slice(0, 1500); } catch (e) { dump = String(r.data).slice(0, 1500); }
+          out.textContent = 'status: ' + r.status + '\nkeys: ' + keys + '\n\n' + dump;
+        }).catch(function (e) {
+          out.textContent = '✕ Failed: ' + (e && e.message);
+        });
+      });
     });
   }
 
@@ -271,6 +295,20 @@
     get: apiFetch,
     user: readUser,
     permissions: readPermissions,
-    ping: function () { return apiFetch(PING_PATH); }
+    ping: function () { return apiFetch(PING_PATH); },
+    // ── Captured endpoint helpers (from live sniffing, Sep 2026) ──────
+    orderDetails: function (consignmentId) {
+      return apiFetch(API_PREFIX + 'v1/orders/' + encodeURIComponent(consignmentId) + '/details');
+    },
+    orderSearch: function (consignmentId) {
+      return apiFetch(API_PREFIX + 'v1/orders/all?consignment_id='
+        + encodeURIComponent(consignmentId) + '&all_order_page=true');
+    },
+    relatedConsIds: function (consignmentId) {
+      return apiFetch(API_PREFIX + 'v1/orders/' + encodeURIComponent(consignmentId) + '/related-cons-ids');
+    },
+    runRoute: function (runId) {
+      return apiFetch(API_PREFIX + 'v1/run-routes/' + encodeURIComponent(runId));
+    }
   };
 })();
