@@ -1169,6 +1169,8 @@
     // CC crosscheck: cached paint first, then signature-guarded fetch.
     renderXcheck();
     maybeRefreshXcheck(false);
+    // Run → validations status sync: same signature guard, status-inclusive.
+    maybeSyncRunStatus();
     // Confirmed one-time-copy list: same signature guard.
     renderConfirmed();
     maybeRefreshConfirmed(false);
@@ -1240,6 +1242,7 @@
         <div class="db-rp-sub">
           <span>✅ ${v} validated</span><span>⚠️ ${w} attention</span><span>➖ ${noneCount} no CC request</span>
           ${xcheck.checkedAt ? `<span style="margin-left:auto">checked ${escapeHtml(xcheckCheckedTime())}</span>` : ''}
+          ${runSync.at ? `<span title="Run status → validations sync">🔄 ${escapeHtml(runSync.last)}</span>` : ''}
         </div>
         <div class="db-rp-chips">
           ${chip('all', `All (${all.length})`)}
@@ -1835,6 +1838,70 @@
     return `${getRunId()}|${ids.join(',')}`;
   }
 
+  // ── RUN STATUS SYNC (run → Supabase validations.consignment_status) ──
+  // Run page-এর live status দিয়ে প্রতিটা consignment-এর LATEST validation
+  // row-এর consignment_status update হয় (Edge `sync_run_status` action —
+  // service_role দিয়ে লেখে, কারণ RLS-এ UPDATE policy নেই)।
+  // Status-inclusive signature guard: ID set same থাকলেও status বদলালে sync
+  // হয়; unchanged run-এ network call-ই হয় না (server-ও zero-write)।
+  const runSync = { sig: null, inflight: false, at: 0, last: '' };
+
+  function runSyncSig() {
+    const rows = parcelRows();
+    if (!rows.length) return null;
+    const pairs = [];
+    rows.forEach(r => {
+      const id = rowId(r);
+      if (id && ID_REGEX.test(id)) pairs.push(`${id}:${rowStatus(r) || ''}`);
+    });
+    if (!pairs.length) return null;
+    return `${getRunId()}|${pairs.sort().join(',')}`;
+  }
+
+  async function maybeSyncRunStatus() {
+    const sig = runSyncSig();
+    if (sig === null || sig === runSync.sig || runSync.inflight) return;
+    runSync.sig = sig;
+    runSync.inflight = true;
+    try {
+      const token = await xcheckIdToken();
+      const items = [];
+      const seen = new Set();
+      parcelRows().forEach(r => {
+        const id = rowId(r);
+        const st = (rowStatus(r) || '').trim();
+        if (!id || !ID_REGEX.test(id) || !st || seen.has(id)) return;
+        seen.add(id);
+        items.push({ consignment: id, status: st });
+      });
+      if (!items.length) return;
+      const res = await fetch(`${XCHECK_URL}/functions/v1/validations`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'apikey': XCHECK_ANON,
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({ action: 'sync_run_status', items })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error((data && data.error) || `HTTP ${res.status}`);
+      runSync.at = Date.now();
+      runSync.last = `+${data.updated || 0} ~${data.unchanged || 0} ?${data.missing || 0}`;
+      console.log(`[DB RunSync] run ${getRunId()}:`, runSync.last);
+      try { renderReport(); } catch {}
+    } catch (err) {
+      // Not signed in via popup yet → retry on a later refresh (cheap local
+      // storage read each time, no network until the token exists).
+      if (err && err.code === 'no-token') runSync.sig = null;
+      else console.warn('[DB RunSync] sync failed:', err);
+    } finally {
+      runSync.inflight = false;
+      // Status changed mid-flight → sync again for the new set.
+      if (runSyncSig() !== null && runSyncSig() !== runSync.sig) maybeSyncRunStatus();
+    }
+  }
+
   function renderXcheck() {
     const el = document.getElementById('db-xcheck-strip');
     if (!el) return;
@@ -1929,6 +1996,7 @@
       xcheck.inflight = false;
       renderXcheck();
       renderReport(); // no-op unless the modal is open
+      try { maybeSyncRunStatus(); } catch {}
       // Paint the per-row VALIDATED / error signs with the fresh data.
       // refreshBorders' own injections (.db-tick/.db-row-badge) are observer-
       // skipped, so this can't loop.
