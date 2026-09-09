@@ -271,6 +271,143 @@
     });
   }
 
+  // ── Orders/all auto-history (consignment → phone → full history) ───
+  // orders/all-এ Consignment Id দিলে single parcel আসে। Agent-এর আসল দরকার
+  // oi customer-এর সব parcel (previous address + last-mile hub দেখে routing
+  // error ধরা)। Hermes-এর receiver_phone param full history দেয় — তাই single
+  // result এলে phone auto-fill + re-search করে দিই। Guard: phone box ভরা
+  // থাকলে বা same ID-তে একবার চালালে আর fire হয় না (loop-proof)।
+  var histLastAutoFor = '';
+
+  function toLocalPhone(digits) {
+    var d = String(digits || '').replace(/\D/g, '');
+    if (/^8801[3-9]\d{8}$/.test(d)) return '0' + d.slice(3);
+    if (/^01[3-9]\d{8}$/.test(d)) return d;
+    return '';
+  }
+
+  function firstPhoneIn(data) {
+    var KEYS = ['receiver_phone', 'recipient_phone', 'phone', 'customer_phone', 'consignee_phone', 'mobile'];
+    var found = [];
+    (function walk(o) {
+      if (!o || found.length >= 5) return;
+      if (Array.isArray(o)) { for (var i = 0; i < o.length && found.length < 5; i++) walk(o[i]); return; }
+      if (typeof o !== 'object') return;
+      var keys = Object.keys(o);
+      for (var k = 0; k < keys.length; k++) {
+        var v = o[keys[k]];
+        if (typeof v === 'string' && KEYS.indexOf(keys[k].toLowerCase()) !== -1) {
+          var local = toLocalPhone(v);
+          if (local) { found.push(local); return; }
+        }
+      }
+      for (var j = 0; j < keys.length && found.length < 5; j++) walk(o[keys[j]]);
+    })(data);
+    if (found.length) return found[0];
+    try {
+      var m = JSON.stringify(data).match(/0?1[3-9]\d{8}/);
+      if (m) return toLocalPhone(m[0]);
+    } catch (e) {}
+    return '';
+  }
+
+  function consignmentInput() {
+    return document.querySelector('input[placeholder="Consignment Id"]');
+  }
+
+  function receiverPhoneInput() {
+    return document.querySelector('input[placeholder="Receiver Phone"]');
+  }
+
+  function resultRows() {
+    try {
+      return document.querySelectorAll('.pt-list .pt-list-item:not(.pt-list-item-header)');
+    } catch (e) { return []; }
+  }
+
+  function setVueInput(el, val) {
+    try {
+      var proto = window.HTMLInputElement && window.HTMLInputElement.prototype;
+      var desc = proto && Object.getOwnPropertyDescriptor(proto, 'value');
+      if (desc && desc.set) desc.set.call(el, val);
+      else el.value = val;
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+      el.dispatchEvent(new Event('change', { bubbles: true }));
+      el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true }));
+    } catch (e) {
+      try { el.value = val; } catch (_) {}
+    }
+  }
+
+  function clickSearchButton() {
+    try {
+      var btns = document.querySelectorAll('button');
+      for (var i = 0; i < btns.length; i++) {
+        var t = (btns[i].textContent || '').trim().toLowerCase();
+        if (t === 'search' || t.indexOf('search') === 0) { btns[i].click(); return true; }
+      }
+    } catch (e) {}
+    return false;
+  }
+
+  function toast(msg) {
+    try {
+      var el = document.getElementById('db-hermes-hist-toast');
+      if (!el) {
+        el = document.createElement('div');
+        el.id = 'db-hermes-hist-toast';
+        el.setAttribute('style', [
+          'position:fixed', 'left:50%', 'bottom:16px', 'transform:translateX(-50%)',
+          'z-index:2147483647', 'background:#0f172a', 'color:#fff',
+          'font:12px/1.4 system-ui,sans-serif', 'padding:8px 14px',
+          'border-radius:16px', 'box-shadow:0 2px 8px rgba(0,0,0,.35)'
+        ].join(';'));
+        document.documentElement.appendChild(el);
+      }
+      el.textContent = msg;
+      el.style.display = '';
+      clearTimeout(el.__t);
+      el.__t = setTimeout(function () { el.style.display = 'none'; }, 3500);
+    } catch (e) {}
+  }
+
+  function maybeAutoHistory() {
+    try {
+      if (location.pathname.indexOf('/orders/all') !== 0) return;
+      var cEl = consignmentInput(), pEl = receiverPhoneInput();
+      if (!cEl || !pEl) return;
+      if (!cEl.__dbHistBound) {
+        cEl.__dbHistBound = true;
+        cEl.addEventListener('input', function () { histLastAutoFor = ''; });
+      }
+      var cid = (cEl.value || '').trim();
+      var phoneVal = (pEl.value || '').trim();
+      if (cid.length < 10 || phoneVal) {
+        if (!cid) histLastAutoFor = '';
+        return;
+      }
+      if (histLastAutoFor === cid) return;
+      if (resultRows().length !== 1) return;
+      histLastAutoFor = cid; // set BEFORE fetch — double-fire proof
+      toast('📞 ' + cid + ' → customer history anchi…');
+      window.HermesApi.orderSearch(cid).then(function (r) {
+        var phone = (r && r.ok) ? firstPhoneIn(r.data) : '';
+        if (!phone) { toast('⚠ Number pelam na — phone box-e manually daw'); return; }
+        setVueInput(pEl, phone);
+        clickSearchButton();
+        toast('📞 ' + phone + ' — sob parcel asche');
+      }).catch(function () {
+        toast('⚠ History ana jayni — phone box-e manually daw');
+      });
+    } catch (e) { /* never break host page */ }
+  }
+
+  var histDebounce = null;
+  function scheduleAutoHistory() {
+    clearTimeout(histDebounce);
+    histDebounce = setTimeout(maybeAutoHistory, 800);
+  }
+
   // ── Boot (Hermes pages only) ─────────────────────────────────────────
   try {
     if (location.hostname === 'hermes.pathaointernal.com') {
@@ -288,6 +425,21 @@
           }
         });
       } catch (e) {}
+  // orders/all auto-history: consignment → phone → full history.
+      // (Boot runs at document_start, so bind lazily — inputs may not
+      // exist on the very first pass.)
+      try {
+        var cEl0 = consignmentInput();
+        if (cEl0 && !cEl0.__dbHistBound) {
+          cEl0.__dbHistBound = true;
+          cEl0.addEventListener('input', function () { histLastAutoFor = ''; });
+        }
+      } catch (e) {}
+      try {
+        new MutationObserver(scheduleAutoHistory).observe(
+          document.documentElement, { childList: true, subtree: true });
+      } catch (e) {}
+      scheduleAutoHistory();
     }
   } catch (e) { /* never break the host page */ }
 
