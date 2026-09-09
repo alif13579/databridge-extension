@@ -391,6 +391,42 @@ async function pollIncomingCommands() {
   chrome.storage.local.set({ processed_command_ids: trimmed });
 }
 
+// ── Hermes API sniffer (browser-level, CSP-proof) ───────────────────────
+// hermes-api.js's page-world fetch/XHR hook is blocked by Hermes's CSP
+// (inline scripts), so capture happens here instead: chrome.webRequest sees
+// every request regardless of page CSP. URL-only (method + path), cap 200.
+var HERMES_SNIFF_KEY = 'hermes_api_sniffed';
+var HERMES_SNIFF_CAP = 200;
+try {
+  chrome.storage.local.set({ hermes_sniff_mode: 'webrequest' });
+  chrome.webRequest.onCompleted.addListener(
+    function (details) {
+      try {
+        if (!details || !details.url || details.url.indexOf('/api/') === -1) return;
+        var u = new URL(details.url);
+        var path = u.pathname + (u.search || '');
+        var method = (details.method || 'GET').toUpperCase();
+        chrome.storage.local.get(HERMES_SNIFF_KEY, function (store) {
+          try {
+            var list = (store && store[HERMES_SNIFF_KEY]) || [];
+            var dup = list.some(function (e) { return e.m === method && e.u === path; });
+            if (!dup) {
+              list.unshift({ m: method, u: path, t: Date.now() });
+              if (list.length > HERMES_SNIFF_CAP) list.length = HERMES_SNIFF_CAP;
+              var put = {};
+              put[HERMES_SNIFF_KEY] = list;
+              chrome.storage.local.set(put);
+            }
+          } catch (e) { /* never break background */ }
+        });
+      } catch (e) { /* never break background */ }
+    },
+    { urls: ['https://hermes.pathaointernal.com/api/*'] }
+  );
+} catch (e) {
+  console.error('[DB] hermes webRequest sniffer failed:', e);
+}
+
 // Service workers have no clipboard/DOM access, so this hands the actual write off
 // to a short-lived offscreen document (see offscreen.html/js) via chrome.runtime
 // messaging — the only API surface offscreen documents support.

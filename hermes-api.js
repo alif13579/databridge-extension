@@ -209,8 +209,8 @@
         + '<button data-act="copy" style="flex:1">Copy all</button>'
         + '<button data-act="clear">Clear</button></div>';
       html += '<div data-role="msg" style="color:#64748b;margin-bottom:6px">'
-        + 'Hook: ' + (window.__dbHookStatus || 'starting…')
-        + ' — site-ti normal use koro (orders search, run-route), call gulo ekhane jombe.</div>';
+        + 'Capture: browser-level (CSP-proof) — site-ti normal use koro '
+        + '(orders search, run-route), call gulo ekhane live jombe.</div>';
       if (!list.length) {
         html += '<div style="color:#94a3b8">Ekhono kichu capture hoyni.</div>';
       } else {
@@ -255,6 +255,15 @@
       chrome.storage.local.get(SNIFF_KEY, function (store) {
         renderChip(((store && store[SNIFF_KEY]) || []).length);
       });
+      // Browser-level capture (background webRequest) lands in the same
+      // key — refresh the chip live so the count moves without reopening.
+      try {
+        chrome.storage.onChanged.addListener(function (changes, area) {
+          if (area === 'local' && changes[SNIFF_KEY]) {
+            renderChip((changes[SNIFF_KEY].newValue || []).length);
+          }
+        });
+      } catch (e) {}
     }
   } catch (e) { /* never break the host page */ }
 

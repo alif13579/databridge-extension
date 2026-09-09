@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "DataBridge",
-  "version": "2.82",
+  "version": "2.83",
   "author": "Alif Hossain",
   "description": "Seamless data transfer between platforms.",
   "permissions": [
@@ -12,9 +12,11 @@
     "notifications",
     "identity",
     "alarms",
-    "offscreen"
+    "offscreen",
+    "webRequest"
   ],
   "host_permissions": [
+    "https://hermes.pathaointernal.com/*",
     "https://databridgebd-default-rtdb.asia-southeast1.firebasedatabase.app/*",
     "https://identitytoolkit.googleapis.com/*",
     "https://securetoken.googleapis.com/*",
