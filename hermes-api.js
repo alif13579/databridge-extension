@@ -408,6 +408,207 @@
     histDebounce = setTimeout(maybeAutoHistory, 800);
   }
 
+  // ── Ticket popup (kobiraj my-feed — amar pending tickets) ──────────
+  // my-feed = amar jonno pending tickets. 60s poll-e notun ticket ele
+  // laptop-e sound + ticket-info toast + badge. Click → ticket khule.
+  // First load-e ja ache segulo silent-known (sound storm hobena) —
+  // tarpor theke sudhu genuinely-notun gulo alert hoy.
+  var TICKET_FEED = '/api/internal/v1/kobiraj/issue/my-feed' +
+    '?sla_breached=0&is_reappeared=0&page=1&per_page=20&need_follow_up=1';
+  var TICKET_KNOWN_KEY = 'hermes_ticket_known';
+  var TICKET_POLL_MS = 60000;
+  var ticketKnown = null; // Set<string> — null until first load
+  var ticketList = [];
+  var ticketTimer = null;
+  var ticketChipEl = null, ticketPanelEl = null;
+
+  function ticketListFrom(data) {
+    try {
+      var d = data && data.data !== undefined ? data.data : data;
+      if (Array.isArray(d)) return d;
+      if (d && Array.isArray(d.data)) return d.data;
+      if (d && Array.isArray(d.items)) return d.items;
+      if (d && Array.isArray(d.issues)) return d.issues;
+    } catch (e) {}
+    return [];
+  }
+
+  function normTicket(o) {
+    o = o || {};
+    var id = o.id || o.issue_id || o.ticket_id || o.uuid || '';
+    var team = '';
+    try { team = (o.team && o.team.name) || o.team_name || ''; } catch (e) {}
+    return {
+      id: String(id),
+      title: o.subject || o.title || o.issue_title || o.category_name || o.sub_category || String(id),
+      cat: o.category || o.category_name || o.sub_category || '',
+      team: team,
+      sla: o.sla_breached ? 'SLA breached' : (o.sla_status || o.sla || '')
+    };
+  }
+
+  function beep(times) {
+    try {
+      var C = window.AudioContext || window.webkitAudioContext;
+      if (!C) return;
+      var i = 0;
+      (function one() {
+        try {
+          var ctx = new C();
+          var o = ctx.createOscillator(), g = ctx.createGain();
+          o.connect(g); g.connect(ctx.destination);
+          o.type = 'sine'; o.frequency.value = 880;
+          g.gain.setValueAtTime(0.001, ctx.currentTime);
+          g.gain.exponentialRampToValueAtTime(0.4, ctx.currentTime + 0.05);
+          g.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.5);
+          o.start(); o.stop(ctx.currentTime + 0.55);
+          setTimeout(function () { try { ctx.close(); } catch (e) {} }, 700);
+        } catch (e) {}
+        if (++i < (times || 1)) setTimeout(one, 350);
+      })();
+    } catch (e) {}
+  }
+
+  function ensureTicketUi() {
+    if (ticketChipEl) return;
+    ticketChipEl = document.createElement('div');
+    ticketChipEl.textContent = '🎫 Tickets';
+    ticketChipEl.title = 'DataBridge — amar pending tickets';
+    ticketChipEl.setAttribute('style', [
+      'position:fixed', 'right:12px', 'bottom:48px', 'z-index:2147483647',
+      'background:#7c3aed', 'color:#fff', 'font:12px/1.4 system-ui,sans-serif',
+      'padding:6px 10px', 'border-radius:16px', 'cursor:pointer',
+      'box-shadow:0 2px 8px rgba(0,0,0,.35)', 'user-select:none'
+    ].join(';'));
+    ticketChipEl.addEventListener('click', toggleTicketPanel);
+    document.documentElement.appendChild(ticketChipEl);
+
+    ticketPanelEl = document.createElement('div');
+    ticketPanelEl.setAttribute('style', [
+      'position:fixed', 'right:12px', 'bottom:84px', 'z-index:2147483647',
+      'width:360px', 'max-height:340px', 'overflow:auto',
+      'background:#fff', 'color:#111', 'font:12px/1.5 system-ui,sans-serif',
+      'border:1px solid #cbd5e1', 'border-radius:10px',
+      'box-shadow:0 8px 28px rgba(0,0,0,.25)', 'padding:10px', 'display:none'
+    ].join(';'));
+    document.documentElement.appendChild(ticketPanelEl);
+  }
+
+  function renderTicketChip() {
+    ensureTicketUi();
+    ticketChipEl.textContent = '🎫 Tickets' + (ticketList.length ? ' (' + ticketList.length + ')' : '');
+  }
+
+  function toggleTicketPanel() {
+    ensureTicketUi();
+    if (ticketPanelEl.style.display !== 'none') { ticketPanelEl.style.display = 'none'; return; }
+    ticketPanelEl.style.display = '';
+    renderTicketList();
+  }
+
+  function renderTicketList() {
+    var html = '<div style="font-weight:700;margin-bottom:6px">🎫 Amar pending tickets</div>';
+    if (!ticketList.length) {
+      html += '<div style="color:#94a3b8">Pending ticket nei. 🎉</div>';
+    } else {
+      html += ticketList.map(function (t) {
+        var meta = [t.cat, t.team, t.sla].filter(Boolean).join(' • ');
+        return '<div data-tid="' + String(t.id).replace(/"/g, '') + '" '
+          + 'style="padding:6px 4px;border-top:1px solid #f1f5f9;cursor:pointer">'
+          + '<div style="font-weight:600">' + String(t.title).replace(/</g, '&lt;') + '</div>'
+          + '<div style="color:#64748b;font-size:11px">#' + String(t.id).replace(/</g, '&lt;')
+          + (meta ? ' • ' + meta.replace(/</g, '&lt;') : '') + '</div></div>';
+      }).join('');
+    }
+    ticketPanelEl.innerHTML = html;
+    ticketPanelEl.querySelectorAll('[data-tid]').forEach(function (n) {
+      n.addEventListener('click', function () {
+        try { window.open('/issues/' + encodeURIComponent(n.dataset.tid), '_blank'); } catch (e) {}
+      });
+    });
+  }
+
+  function ticketToast(t) {
+    try {
+      var el = document.getElementById('db-hermes-ticket-toast');
+      if (!el) {
+        el = document.createElement('div');
+        el.id = 'db-hermes-ticket-toast';
+        el.setAttribute('style', [
+          'position:fixed', 'left:12px', 'bottom:16px', 'z-index:2147483647',
+          'max-width:340px', 'background:#1e1b4b', 'color:#fff',
+          'font:12px/1.5 system-ui,sans-serif', 'padding:10px 14px',
+          'border-radius:10px', 'box-shadow:0 4px 16px rgba(0,0,0,.4)',
+          'cursor:pointer'
+        ].join(';'));
+        el.addEventListener('click', function () {
+          el.style.display = 'none';
+          toggleTicketPanel();
+          if (ticketPanelEl.style.display === 'none') toggleTicketPanel();
+        });
+        document.documentElement.appendChild(el);
+      }
+      el.innerHTML = '<b>🎫 Notun ticket</b><br>' + String(t.title).replace(/</g, '&lt;')
+        + '<br><span style="color:#c4b5fd;font-size:11px">#' + String(t.id).replace(/</g, '&lt;')
+        + (t.cat ? ' • ' + String(t.cat).replace(/</g, '&lt;') : '') + '</span>';
+      el.style.display = '';
+      clearTimeout(el.__t);
+      el.__t = setTimeout(function () { el.style.display = 'none'; }, 12000);
+    } catch (e) {}
+  }
+
+  function loadTicketKnown(done) {
+    try {
+      chrome.storage.local.get(TICKET_KNOWN_KEY, function (store) {
+        try {
+          var arr = (store && store[TICKET_KNOWN_KEY]) || [];
+          ticketKnown = new Set(arr);
+        } catch (e) { ticketKnown = new Set(); }
+        done();
+      });
+    } catch (e) { ticketKnown = new Set(); done(); }
+  }
+
+  function saveTicketKnown() {
+    try {
+      var put = {}; put[TICKET_KNOWN_KEY] = Array.from(ticketKnown).slice(-200);
+      chrome.storage.local.set(put);
+    } catch (e) {}
+  }
+
+  function pollTickets(first) {
+    try {
+      apiFetch(TICKET_FEED).then(function (r) {
+        if (!r || !r.ok) return;
+        var fresh = ticketListFrom(r.data).map(normTicket).filter(function (t) { return t.id; });
+        ticketList = fresh;
+        renderTicketChip();
+        if (ticketPanelEl && ticketPanelEl.style.display !== 'none') renderTicketList();
+        if (ticketKnown === null) return;
+        var isFirst = first && ticketKnown.size === 0;
+        var news = fresh.filter(function (t) { return !ticketKnown.has(t.id); });
+        fresh.forEach(function (t) { ticketKnown.add(t.id); });
+        saveTicketKnown();
+        if (isFirst || !news.length) return; // first sighting = silent baseline
+        beep(2);
+        news.slice(0, 3).forEach(ticketToast);
+        if (news.length > 3) toast('🎫 ' + news.length + ' ta notun ticket!');
+      }).catch(function () { /* next tick retries */ });
+    } catch (e) { /* never break host page */ }
+  }
+
+  function startTicketPoll() {
+    if (ticketTimer) return;
+    renderTicketChip();
+    loadTicketKnown(function () { pollTickets(true); });
+    try {
+      ticketTimer = setInterval(function () { pollTickets(false); }, TICKET_POLL_MS);
+      document.addEventListener('visibilitychange', function () {
+        if (!document.hidden) pollTickets(false);
+      });
+    } catch (e) {}
+  }
+
   // ── Boot (Hermes pages only) ─────────────────────────────────────────
   try {
     if (location.hostname === 'hermes.pathaointernal.com') {
@@ -440,6 +641,8 @@
           document.documentElement, { childList: true, subtree: true });
       } catch (e) {}
       scheduleAutoHistory();
+      // Ticket popup + new-ticket sound/toast.
+      try { startTicketPoll(); } catch (e) {}
     }
   } catch (e) { /* never break the host page */ }
 
