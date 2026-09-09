@@ -1281,14 +1281,13 @@
       <div id="db-report-modal">
         <div class="db-rp-hdr"><span>📊 CC Validation — Run ${escapeHtml(getRunId())}</span><span class="db-rp-close" id="db-rp-close">✕</span></div>
         <div class="db-rp-sub">
-          <span>🚫 ${drN} undelivered</span><span>✅ ${v} validated</span><span>⚠️ ${w} attention</span><span>📋 ${ccN} today CC</span><span>➖ ${noneCount} no CC request</span>
+          <span>🚫 ${drN} undelivered</span><span>✅ ${v} validated</span><span>📋 ${ccN} today CC</span><span>➖ ${noneCount} no CC request</span>
           ${xcheck.checkedAt ? `<span style="margin-left:auto">checked ${escapeHtml(xcheckCheckedTime())}</span>` : ''}
           ${runSync.at ? `<span title="Run status → validations sync">🔄 ${escapeHtml(runSync.last)}</span>` : ''}
         </div>
         <div class="db-rp-chips">
           ${chip('all', `All (${all.length})`)}
           ${chip('dr', `🚫 Undelivered (${drN})`)}
-          ${chip('warn', `⚠️ Warnings (${w})`)}
           ${chip('ok', `✅ Validated (${v})`)}
           ${chip('cc', `📋 Today CC (${ccN})`)}
           ${chip('none', `➖ No activity (${noneCount})`)}
@@ -1687,12 +1686,11 @@
   //   RETURN family:   Return, Return Requested, Reattempt Request (+aliases)
   //   OPEN family:     On Hold, Assigned for Delivery, On the way to last
   //                    mile hub, Received at last mile hub (+aliases)
-  //   hold_verified (HOLD_VERIFIED) + open                    → ✅ no issue
-  //   hold_verified + delivery/return                          → ⚠️ mismatch
-  //   delivery_request (DELIVERY_REQUEST) + delivery           → ✅ fulfilled
-  //   delivery_request + open/return                           → ⚠️ error
-  //   return_verified (RETURN_VERIFIED) + return               → ✅ validated
-  //   return_verified + open/delivery                          → ⚠️ mismatch
+  //   hold_verified (HOLD_VERIFIED) + যেকোনো family (open/delivery/return) → ✅
+  //   return_verified (RETURN_VERIFIED) + যেকোনো family              → ✅
+  //   delivery_request (DELIVERY_REQUEST) + delivery                → ✅ fulfilled
+  //   delivery_request + open/return                                → ⚠️ THE ONLY warning
+  //   (agent delivery na kore chole asche — koyta emon ache setai count হয়)
   // Supabase remarks_status (validation_remarks, source=CC): HOLD_VERIFIED,
   // RETURN_VERIFIED, DELIVERY_REQUEST — "Latest row decides".
   const XCHECK_DELIVERY = new Set(['delivered', 'partial delivery', 'partial', 'paid return', 'exchange']);
@@ -1847,11 +1845,9 @@
         if (XCHECK_DELIVERY.has(run)) entry(id, row, 'ok', 'Delivery fulfilled', runRaw);
         else drUndelivered.push(entry(id, row, 'warn', 'Delivery request ≠ run', runRaw));
       } else if (rs === 'hold_verified') {
-        if (XCHECK_OPEN.has(run)) entry(id, row, 'ok', 'Hold validated', runRaw);
-        else entry(id, row, 'warn', 'Hold verified ≠ run', runRaw);
+        entry(id, row, 'ok', 'Hold validated', runRaw);
       } else if (rs === 'return_verified') {
-        if (XCHECK_RETURN.has(run)) entry(id, row, 'ok', 'Return validated', runRaw);
-        else entry(id, row, 'warn', 'Return verified ≠ run', runRaw);
+        entry(id, row, 'ok', 'Return validated', runRaw);
       }
     });
     todayCc.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
@@ -2025,12 +2021,15 @@
       const w = xcheck.warnings, v = xcheck.validated;
       const cc = xcheck.todayCc || [];
       const dr = xcheck.drUndelivered || [];
+      // warnings এখন শুধু delivery_request mismatch (dr-এর same refs) —
+      // generic warn bar শুধু non-delivery warn থাকলে দেখাবে, নাহলে 🚫 bar-ই warning।
+      const otherWarn = w.filter(e => dr.indexOf(e) === -1);
       const drItem = (e) =>
         `<span class="db-xc-item db-xc-item-warn" data-scroll-id="${escapeHtml(e.id)}" title="Delivery request — run: ${escapeHtml(e.st)}${e.remarkEn ? ` — ${escapeHtml(e.remarkBn || e.remarkEn)}` : ''}">` +
         `${escapeHtml(e.id)} <span class="db-xc-st">${escapeHtml(e.st)}</span></span>`;
       // Agent delivery na kore chole asche — sobcheye গুরুত্বপূর্ণ bar, সবার উপরে।
       const drBar = dr.length
-        ? `<div class="db-xc-bar db-xc-bar-warn" id="db-xc-drbar"><span>🚫 ${dr.length} delivery request undelivered — agent delivery na kore eseche</span>${(!w.length && !v.length) ? refreshBtn : ''}</div>` +
+        ? `<div class="db-xc-bar db-xc-bar-warn" id="db-xc-drbar"><span>🚫 ${dr.length} delivery request undelivered — agent delivery na kore eseche</span>${(!otherWarn.length && !v.length) ? refreshBtn : ''}</div>` +
           (xcheck.drOpen ? `<div class="db-xc-list">${dr.map(drItem).join('')}</div>` : '')
         : '';
       const ccItem = (c) => {
@@ -2043,7 +2042,7 @@
         `<div class="db-xc-bar db-xc-bar-ok" id="db-xc-ccbar"><span>📋 Today CC remarks: ${cc.length}</span>${(!w.length && !v.length) ? refreshBtn : ''}</div>` +
         (xcheck.ccOpen && cc.length ? `<div class="db-xc-list">${cc.map(ccItem).join('')}</div>` : '') +
         (!cc.length ? `<div class="db-xc-list"><span style="opacity:.65">আজকের date-এ এই run-এর কোনো CC remark নেই</span></div>` : '');
-      if (!w.length && !v.length) {
+      if (!dr.length && !otherWarn.length && !v.length) {
         el.innerHTML = drBar + ccBar + runSyncBar();
         const db = document.getElementById('db-xc-drbar');
         if (db) db.addEventListener('click', e => {
@@ -2061,12 +2060,12 @@
           `${escapeHtml(e.id)} <span class="db-xc-st">${escapeHtml(e.st)}</span></span>`;
         el.innerHTML =
           drBar +
-          (w.length
-            ? `<div class="db-xc-bar db-xc-bar-warn" id="db-xc-warnbar"><span>⚠️ ${w.length} need attention — delivery/verify vs run mismatch</span>${(!dr.length) ? refreshBtn : ''}</div>` +
-              (xcheck.warnOpen ? `<div class="db-xc-list">${w.map(e => item(e, 'db-xc-item-warn')).join('')}</div>` : '')
+          (otherWarn.length
+            ? `<div class="db-xc-bar db-xc-bar-warn" id="db-xc-warnbar"><span>⚠️ ${otherWarn.length} need attention — delivery/verify vs run mismatch</span>${(!dr.length) ? refreshBtn : ''}</div>` +
+              (xcheck.warnOpen ? `<div class="db-xc-list">${otherWarn.map(e => item(e, 'db-xc-item-warn')).join('')}</div>` : '')
             : '') +
           (v.length
-            ? `<div class="db-xc-bar db-xc-bar-ok" id="db-xc-okbar"><span>✅ ${v.length} CC-validated</span>${(!dr.length && !w.length) ? refreshBtn : ''}</div>` +
+            ? `<div class="db-xc-bar db-xc-bar-ok" id="db-xc-okbar"><span>✅ ${v.length} CC-validated</span>${(!dr.length && !otherWarn.length) ? refreshBtn : ''}</div>` +
               (xcheck.okOpen ? `<div class="db-xc-list">${v.map(e => item(e, 'db-xc-item-ok')).join('')}</div>` : '')
             : '') +
           ccBar +
