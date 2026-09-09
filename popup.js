@@ -2976,6 +2976,7 @@ function getSelectedHvBranchIds() {
 
   function hvIsRemarkConn(conn) {
     if (!conn || conn.enabled === false) return false;
+    if (conn.isLibrary) return false; // neutral libraries bind per-fragment (app 🔌); kinds carry no meaning
     if (conn.purpose === 'scanner' || conn.purpose === 'routing') return false;
     if (conn.purpose === 'remark') return true;
     return hvEffectiveRules(conn, 'lookup').length > 0 && hvEffectiveRules(conn, 'write').length > 0;
