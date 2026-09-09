@@ -207,8 +207,12 @@
     ...Object.keys(STATUS_COLOR),
     ...Object.keys(SHEET_STATUS_BUCKET),
     ...HOLD_VALID, ...RETURN_VALID,
-    'assigned', 'in transit', 'intransit', 'pending', 'on hold',
-    'return', 'delivered', 'cancelled', 'canceled', 'lost',
+    'assigned', 'assigned for delivery', 'in transit', 'intransit',
+    'on the way to last mile hub', 'received at last mile hub',
+    'pending', 'on hold',
+    'return', 'return requested', 'reattempt request',
+    'delivered', 'partial delivery', 'paid return', 'exchange',
+    'cancelled', 'canceled', 'lost',
   ]);
 
   function rowStatus(row) {
@@ -1674,18 +1678,24 @@
   }
 
   // ── CC CROSSCHECK (Supabase validations × run status) ────────────────────
-  // Run-এর সব consignment ID দিয়ে আজকের (Dhaka date) validations থেকে CC
-  // remarks আনে (delivery_request / hold_verified / return_verified), তারপর
-  // run status-এর সাথে মিলায়:
-  //   delivery_request + resolved (delivered/partial/exchange/paid return) → ✅ fulfilled
-  //   delivery_request + অন্য status                                 → ⚠️ warning
-  //   hold_verified + run On Hold                                    → ✅ validated
-  //   hold_verified + অন্য status                                    → ⚠️ mismatch
-  //   return_verified + run return-ish                               → ✅ validated
-  //   return_verified + অন্য status                                  → ⚠️ mismatch
-  // "Latest row decides" (app-এর fetchPendingDeliveryRequestsForWorker-এর
-  // মতো): worker আজ জবাব দিয়ে থাকলে latest WORKER হয় → warning ওঠে না।
-  const XCHECK_RESOLVED = new Set(['delivered', 'partial delivery', 'partial', 'exchange', 'paid return']);
+  // Run-এর সব consignment ID দিয়ে CC remarks আনে, তারপর run status-এর
+  // সাথে FAMILY দিয়ে মিলায় (Hermes run statuses):
+  //   DELIVERY family: Delivered, Partial Delivery, Paid Return, Exchange
+  //   RETURN family:   Return, Return Requested, Reattempt Request (+aliases)
+  //   OPEN family:     On Hold, Assigned for Delivery, On the way to last
+  //                    mile hub, Received at last mile hub (+aliases)
+  //   hold_verified (HOLD_VERIFIED) + open                    → ✅ no issue
+  //   hold_verified + delivery/return                          → ⚠️ mismatch
+  //   delivery_request (DELIVERY_REQUEST) + delivery           → ✅ fulfilled
+  //   delivery_request + open/return                           → ⚠️ error
+  //   return_verified (RETURN_VERIFIED) + return               → ✅ validated
+  //   return_verified + open/delivery                          → ⚠️ mismatch
+  // Supabase remarks_status (validation_remarks, source=CC): HOLD_VERIFIED,
+  // RETURN_VERIFIED, DELIVERY_REQUEST — "Latest row decides".
+  const XCHECK_DELIVERY = new Set(['delivered', 'partial delivery', 'partial', 'paid return', 'exchange']);
+  const XCHECK_RETURN = new Set(['return', 'return requested', 'return request', 'reattempt request', 'reattempt requested']);
+  const XCHECK_OPEN = new Set(['on hold', 'assigned for delivery', 'assigned', 'on the way to last mile hub', 'received at last mile hub', 'pending', 'in transit', 'intransit']);
+  const XCHECK_RESOLVED = XCHECK_DELIVERY; // alias: delivery_request fulfilled only by delivery family
   const XCHECK_CHUNK = 200; // PostgREST in.(...) safety chunk (app-এর pattern)
   const XCHECK_DAYS = 7; // carryover window: গতকালের unanswered request আজও দেখাবে
   // CONFIG comes from config.js (same content-script entry, manifest order) —
@@ -1829,13 +1839,13 @@
         todayCcById.set(id, c);
       }
       if (rs === 'delivery_request') {
-        if (XCHECK_RESOLVED.has(run)) entry(id, row, 'ok', 'Delivery fulfilled', runRaw);
-        else entry(id, row, 'warn', 'Delivery request', runRaw);
+        if (XCHECK_DELIVERY.has(run)) entry(id, row, 'ok', 'Delivery fulfilled', runRaw);
+        else entry(id, row, 'warn', 'Delivery request ≠ run', runRaw);
       } else if (rs === 'hold_verified') {
-        if (run === 'on hold') entry(id, row, 'ok', 'Hold validated', runRaw);
+        if (XCHECK_OPEN.has(run)) entry(id, row, 'ok', 'Hold validated', runRaw);
         else entry(id, row, 'warn', 'Hold verified ≠ run', runRaw);
       } else if (rs === 'return_verified') {
-        if (RETURN_VALID.has(run)) entry(id, row, 'ok', 'Return validated', runRaw);
+        if (XCHECK_RETURN.has(run)) entry(id, row, 'ok', 'Return validated', runRaw);
         else entry(id, row, 'warn', 'Return verified ≠ run', runRaw);
       }
     });
