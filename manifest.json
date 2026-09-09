@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "DataBridge",
-  "version": "2.81",
+  "version": "2.82",
   "author": "Alif Hossain",
   "description": "Seamless data transfer between platforms.",
   "permissions": [
@@ -76,7 +76,7 @@
       "js": [
         "hermes-api.js"
       ],
-      "run_at": "document_idle"
+      "run_at": "document_start"
     }
   ],
   "action": {

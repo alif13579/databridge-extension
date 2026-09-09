@@ -69,6 +69,9 @@
   // ── Sniffer (page-world hook, URL-only) ──────────────────────────────
   // Content scripts live in an isolated JS world, so the page's own
   // fetch/XHR must be observed from a script injected into page context.
+  // NOTE: this file runs at document_start (see manifest) so the hook is
+  // installed BEFORE the Hermes SPA bundle executes — at document_idle
+  // the initial page-load calls would already be missed.
   function startSniff() {
     if (window.__dbHermesSniffing) return;
     window.__dbHermesSniffing = true;
@@ -93,6 +96,9 @@
     });
 
     var hookSrc = '(' + function () {
+      // Reachable-from-DOM flag so the content script can verify the hook
+      // actually installed (inline page scripts may be blocked by CSP).
+      try { document.documentElement.setAttribute('data-db-hook', 'pending'); } catch (e) {}
       function emit(method, url) {
         try {
           if (url && String(url).indexOf('/api/') !== -1) {
@@ -120,6 +126,7 @@
           return origOpen.apply(this, arguments);
         };
       } catch (e) {}
+      try { document.documentElement.setAttribute('data-db-hook', 'active'); } catch (e) {}
     } + ')();';
 
     try {
@@ -127,7 +134,14 @@
       s.textContent = hookSrc;
       (document.documentElement || document.head).appendChild(s);
       s.remove();
-    } catch (e) { /* CSP may block inline page scripts — sniffer stays off */ }
+      // Verify one tick later whether the page-world script ran at all.
+      setTimeout(function () {
+        try {
+          var st = document.documentElement.getAttribute('data-db-hook');
+          window.__dbHookStatus = (st === 'active') ? 'active' : 'blocked-csp';
+        } catch (e) { window.__dbHookStatus = 'unknown'; }
+      }, 1000);
+    } catch (e) { window.__dbHookStatus = 'blocked-csp'; /* CSP may block inline page scripts — sniffer stays off */ }
   }
 
   // ── Floating chip (capture list + session test) ──────────────────────
@@ -195,7 +209,8 @@
         + '<button data-act="copy" style="flex:1">Copy all</button>'
         + '<button data-act="clear">Clear</button></div>';
       html += '<div data-role="msg" style="color:#64748b;margin-bottom:6px">'
-        + 'Site-ti normal use koro (orders, run-route) — call gulo ekhane jombe.</div>';
+        + 'Hook: ' + (window.__dbHookStatus || 'starting…')
+        + ' — site-ti normal use koro (orders search, run-route), call gulo ekhane jombe.</div>';
       if (!list.length) {
         html += '<div style="color:#94a3b8">Ekhono kichu capture hoyni.</div>';
       } else {
