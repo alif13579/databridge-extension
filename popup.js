@@ -98,12 +98,13 @@ function switchTab(tab) {
   if (navEl) navEl.classList.add('active');
 }
 function setupNavigation() {
-  ['history', 'scan', 'dashboard', 'connect', 'settings'].forEach(tab => {
+  ['history', 'scan', 'dashboard', 'routing', 'connect', 'settings'].forEach(tab => {
     const el = document.getElementById(`nav-${tab}`);
     if (el) el.addEventListener('click', () => {
       switchTab(tab);
       if (tab === 'history' && isInitialized) loadHistory(false);
       if (tab === 'scan') loadScanHistory();
+      if (tab === 'routing') loadRoutingTab();
       if (tab === 'dashboard') {
         loadDashboardTabAndAutoGenerate();
         restorePerfModePreference();
@@ -3967,6 +3968,114 @@ function renderPerfReport(reportEl, mode, summary, modeRows) {
 }
 
 document.addEventListener('DOMContentLoaded', init);
+// ══════════════════════════════
+// 🛣️ Routing Approval (DEMO — wiring later)
+// Flow (future): sheet rows fetch → Hermes info per consignment → render.
+// Decision click → sheet-এ save (এখন local demo store).
+// ══════════════════════════════
+const ROUTING_DEMO_ROWS = [
+  { id: 'DP0509263HNLMG', customer: 'Ms.Sadia', phone: '01810304154',
+    sheetAddress: 'Bailor Shantibazar, Sonargaon, Narayanganj',
+    hermesAddress: 'Bailor Shantibazar, Sonargaon, Narayanganj',
+    hermesStatus: 'Return Requested', hub: 'Madanpur', lastMile: 'Madanpur',
+    cod: 1300, merchant: 'PaikariGhor' },
+  { id: 'DT070926KF9C6U', customer: 'Noor Hossain', phone: '01855550121',
+    sheetAddress: 'Chairman bari, South Bakoliya',
+    hermesAddress: 'Ali star building, 19 no ward, South Bakoliya',
+    hermesStatus: 'Assigned for Delivery', hub: 'Madanpur', lastMile: 'Madanpur',
+    cod: 850, merchant: 'DailyBazar' },
+  { id: 'DM050926NAYR86', customer: 'Karim Sheikh', phone: '01719348451',
+    sheetAddress: 'House 12, Mograpara Bazar',
+    hermesAddress: 'House 12, Mograpara Bazar',
+    hermesStatus: 'On Hold', hub: 'Sonargaon', lastMile: 'Madanpur',
+    cod: 2200, merchant: 'TechPoint' },
+  { id: 'DB060926W7PHSJ', customer: 'Rina Akter', phone: '01890235366',
+    sheetAddress: 'Jatrabari, Dhaka',
+    hermesAddress: 'Jatrabari, Dhaka',
+    hermesStatus: 'Delivered', hub: 'Madanpur', lastMile: 'Madanpur',
+    cod: 499, merchant: 'StyleHub' },
+];
+const ROUTING_DECISIONS_KEY = 'routing_decisions_demo';
+
+async function loadRoutingTab() {
+  const listEl = document.getElementById('routing-list');
+  const statusEl = document.getElementById('routing-status');
+  const summaryEl = document.getElementById('routing-summary');
+  if (!listEl) return;
+  let decisions = {};
+  try {
+    const r = await chrome.storage.local.get([ROUTING_DECISIONS_KEY]);
+    decisions = r[ROUTING_DECISIONS_KEY] || {};
+  } catch { /* demo proceeds without saved state */ }
+  const addrMismatch = (row) => (row.sheetAddress || '').trim() !== (row.hermesAddress || '').trim();
+  listEl.innerHTML = ROUTING_DEMO_ROWS.map((row) => {
+    const d = decisions[row.id];
+    const stateLine = d
+      ? `<div class="routing-decided">✓ ${escapeHtml(d.label)} · ${new Date(d.at).toLocaleString()}${d.extra ? ' · ' + escapeHtml(d.extra) : ''}</div>`
+      : '';
+    return `<div class="history-card routing-card">
+      <div class="card-main">
+        <div class="card-text">${escapeHtml(row.id)} <span class="routing-cod">৳${row.cod}</span></div>
+        <div class="card-meta">${escapeHtml(row.customer)} · ${escapeHtml(row.phone)} · ${escapeHtml(row.merchant)}</div>
+        <div class="routing-addr">📄 Sheet: ${escapeHtml(row.sheetAddress || '—')}</div>
+        <div class="routing-addr">🏢 Hermes: ${escapeHtml(row.hermesAddress || '—')}${addrMismatch(row) ? ' <span class="routing-diff">≠ mismatch</span>' : ''}</div>
+        <div class="card-meta">Status: <b>${escapeHtml(row.hermesStatus)}</b> · Hub: ${escapeHtml(row.hub)} → Last mile: ${escapeHtml(row.lastMile)}${row.hub !== row.lastMile ? ' <span class="routing-diff">≠ hub mismatch</span>' : ''}</div>
+        ${stateLine}
+        <div class="card-actions">
+          <button class="action-btn" data-route-act="approved" data-route-id="${escapeHtml(row.id)}">✅ Approved</button>
+          <button class="action-btn" data-route-act="wrong_hub" data-route-id="${escapeHtml(row.id)}">🏢 Wrong Hub</button>
+          <button class="action-btn" data-route-act="update_address" data-route-id="${escapeHtml(row.id)}">📝 Update Address</button>
+        </div>
+      </div>
+    </div>`;
+  }).join('');
+  const counts = { approved: 0, wrong_hub: 0, update_address: 0 };
+  Object.values(decisions).forEach((d) => { if (counts[d.act] !== undefined) counts[d.act]++; });
+  const decided = Object.keys(decisions).length;
+  if (summaryEl) summaryEl.textContent = `Decided ${decided}/${ROUTING_DEMO_ROWS.length} — ✅ ${counts.approved} · 🏢 ${counts.wrong_hub} · 📝 ${counts.update_address}`;
+  if (statusEl) statusEl.textContent = 'Sheet + Hermes connect hole live data asbe — ekhon demo data।';
+  listEl.querySelectorAll('[data-route-act]').forEach((btn) => {
+    btn.addEventListener('click', () => decideRouting(btn.dataset.routeId, btn.dataset.routeAct, btn));
+  });
+  const reloadBtn = document.getElementById('routing-refresh-btn');
+  if (reloadBtn && !reloadBtn.__dbBound) {
+    reloadBtn.__dbBound = true;
+    reloadBtn.addEventListener('click', () => loadRoutingTab());
+  }
+}
+
+async function decideRouting(id, act, btn) {
+  const labels = { approved: 'Approved', wrong_hub: 'Wrong Hub', update_address: 'Update Address' };
+  let extra = '';
+  if (act === 'update_address') {
+    const row = ROUTING_DEMO_ROWS.find((r) => r.id === id);
+    const cur = (row && row.hermesAddress) || '';
+    const val = prompt('Notun address likho:', cur);
+    if (val === null) return; // cancelled
+    extra = (val || '').trim();
+    if (!extra) return;
+  }
+  const orig = btn ? btn.textContent : '';
+  if (btn) btn.textContent = '⏳…';
+  try {
+    await saveRoutingDecision(id, act, labels[act] || act, extra);
+  } catch (e) {
+    if (btn) btn.textContent = orig;
+    return;
+  }
+  loadRoutingTab();
+}
+
+// TODO(wire-up): sheet write goes here — connectors sheet (write column per
+// consignment row, same blank-slot rule as ScannerSheetRepository) instead of
+// chrome.storage.local. Hermes fetch goes into loadRoutingTab (orderSearch /
+// details per ID). Button/UI code above stays unchanged.
+async function saveRoutingDecision(id, act, label, extra) {
+  const r = await chrome.storage.local.get([ROUTING_DECISIONS_KEY]);
+  const decisions = r[ROUTING_DECISIONS_KEY] || {};
+  decisions[id] = { act, label, extra: extra || '', at: Date.now() };
+  await chrome.storage.local.set({ [ROUTING_DECISIONS_KEY]: decisions });
+}
 // Set before closing streams so the reconnect timers in each onerror handler
 // don't reopen a stream the moment after it was closed.
 let isShuttingDown = false;

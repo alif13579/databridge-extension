@@ -1132,3 +1132,14 @@ html[data-theme="light"] .dash-hv-cancel-btn { color: #64748b; border-color: #cb
 html[data-theme="light"] .dash-hv-status { color: #64748b; }
 html[data-theme="light"] .dash-hv-badge-pending { background: #fef3c7; color: #92400e; }
 html[data-theme="light"] .dash-hv-badge-validated { background: #dcfce7; color: #15803d; }
+
+/* ── Routing Approval (demo) ── */
+.routing-demo-tag { font-size: 10px; background: #475569; color: #fff; border-radius: 4px; padding: 1px 6px; vertical-align: middle; }
+.routing-card .card-actions { display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
+.routing-cod { color: #00d4ff; font-weight: bold; }
+.routing-addr { font-size: 12px; margin-top: 2px; }
+.routing-diff { background: #7f1d1d; color: #fecaca; border-radius: 4px; padding: 0 5px; font-size: 11px; font-weight: bold; }
+.routing-decided { margin-top: 6px; font-size: 12px; color: #4ade80; font-weight: bold; }
+html[data-theme="light"] .routing-cod { color: #0284c7; }
+html[data-theme="light"] .routing-diff { background: #fee2e2; color: #b91c1c; }
+html[data-theme="light"] .routing-decided { color: #15803d; }
