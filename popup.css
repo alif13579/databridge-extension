@@ -1143,3 +1143,9 @@ html[data-theme="light"] .dash-hv-badge-validated { background: #dcfce7; color: 
 html[data-theme="light"] .routing-cod { color: #0284c7; }
 html[data-theme="light"] .routing-diff { background: #fee2e2; color: #b91c1c; }
 html[data-theme="light"] .routing-decided { color: #15803d; }
+
+.routing-hist-toggle { background: none; border: none; color: #00d4ff; font-size: 12px; font-weight: bold; cursor: pointer; padding: 6px 0 0; }
+.routing-hist-list { margin-top: 4px; border-left: 2px solid #475569; padding-left: 8px; }
+.routing-hist-row { display: flex; gap: 6px; padding: 4px 0; font-size: 12px; border-top: 1px solid rgba(148,163,184,.15); }
+.routing-sign { min-width: 18px; text-align: center; }
+html[data-theme="light"] .routing-hist-toggle { color: #0284c7; }
