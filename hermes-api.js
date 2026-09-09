@@ -610,6 +610,25 @@
   }
 
   // ── Boot (Hermes pages only) ─────────────────────────────────────────
+  // First: one automatic session check (cookie-auth proof). Chip shows
+  // ✓ when Hermes data calls work, ✕ when login is missing — no click
+  // needed, the answer is visible immediately after reload.
+  function autoSessionCheck() {
+    try {
+      apiFetch(PING_PATH).then(function (r) {
+        window.__dbHermesSession = !!(r && r.ok);
+        ensureUi();
+        var base = chipEl ? chipEl.textContent.replace(/ • [✓✕] session$/, '') : '🔌 Hermes API';
+        if (chipEl) chipEl.textContent = base + (r && r.ok ? ' • ✓ session' : ' • ✕ login');
+        console.log('[DB HermesApi] session check:', r && r.status, r && r.ok ? 'OK — data access kaj korche' : 'FAIL — login lagbe');
+      }).catch(function (e) {
+        window.__dbHermesSession = false;
+        ensureUi();
+        if (chipEl && chipEl.textContent.indexOf('✕') === -1) chipEl.textContent += ' • ✕ login';
+        console.log('[DB HermesApi] session check failed:', e && e.message);
+      });
+    } catch (e) {}
+  }
   try {
     if (location.hostname === 'hermes.pathaointernal.com') {
       startSniff();
@@ -643,6 +662,8 @@
       scheduleAutoHistory();
       // Ticket popup + new-ticket sound/toast.
       try { startTicketPoll(); } catch (e) {}
+      // Session proof first — everything else depends on it.
+      try { autoSessionCheck(); } catch (e) {}
     }
   } catch (e) { /* never break the host page */ }
 
