@@ -1839,12 +1839,17 @@
   }
 
   // ── RUN STATUS SYNC (run → Supabase validations.consignment_status) ──
-  // Run page-এর live status দিয়ে প্রতিটা consignment-এর LATEST validation
-  // row-এর consignment_status update হয় (Edge `sync_run_status` action —
-  // service_role দিয়ে লেখে, কারণ RLS-এ UPDATE policy নেই)।
+  // Run page-এর live status দিয়ে OI DIN-er (run kholar din, Dhaka bounds)
+  // same consignment-এর SOB validation row-এর consignment_status update হয়
+  // (Edge `sync_run_status` action — service_role দিয়ে লেখে, কারণ RLS-এ
+  // UPDATE policy নেই)।
   // Status-inclusive signature guard: ID set same থাকলেও status বদলালে sync
   // হয়; unchanged run-এ network call-ই হয় না (server-ও zero-write)।
   const runSync = { sig: null, inflight: false, at: 0, last: '' };
+
+  function runSyncDay() {
+    return { start: dhakaMidnightIso(0), end: dhakaMidnightIso(-1) };
+  }
 
   function runSyncSig() {
     const rows = parcelRows();
@@ -1855,7 +1860,7 @@
       if (id && ID_REGEX.test(id)) pairs.push(`${id}:${rowStatus(r) || ''}`);
     });
     if (!pairs.length) return null;
-    return `${getRunId()}|${pairs.sort().join(',')}`;
+    return `${getRunId()}|${runSyncDay().start}|${pairs.sort().join(',')}`;
   }
 
   async function maybeSyncRunStatus() {
@@ -1875,6 +1880,7 @@
         items.push({ consignment: id, status: st });
       });
       if (!items.length) return;
+      const day = runSyncDay();
       const res = await fetch(`${XCHECK_URL}/functions/v1/validations`, {
         method: 'POST',
         headers: {
@@ -1882,7 +1888,7 @@
           'apikey': XCHECK_ANON,
           'Authorization': `Bearer ${token}`
         },
-        body: JSON.stringify({ action: 'sync_run_status', items })
+        body: JSON.stringify({ action: 'sync_run_status', items, day_start: day.start, day_end: day.end })
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error((data && data.error) || `HTTP ${res.status}`);
