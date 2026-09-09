@@ -739,6 +739,12 @@
   // ── FLOATING PANEL ───────────────────────────────────────────────────────
   let panel = null;
   let minimized = false;
+  // CC report strips (xcheck + confirmed) live behind a header toggle button,
+  // Memory-popover style — click to show/hide. Default HIDDEN so the tall
+  // report bars don't push Run Summary / Pending out of the panel; the
+  // toggle itself shows the count (🚫N / ✅ / 📋). Choice persists across runs.
+  let xcheckOpen = false;
+  try { xcheckOpen = localStorage.getItem('db-xcheck-open') === '1'; } catch (_) {}
   let selectedFieldEl = null; // manually-picked auto-fill target (see detectPageInputs/selectField)
 
   /** Reads the saved panel position for the current run URL from localStorage
@@ -767,6 +773,35 @@
     } catch (_) {}
   }
 
+  // CC report visibility — header toggle (Memory-style). Both strips hide
+  // together; memory popover open → also hidden (it needs the space).
+  function applyXcheckVisibility() {
+    let memOpen = false;
+    try {
+      const p = document.getElementById('db-memory-popover');
+      memOpen = !!(p && !p.classList.contains('hidden'));
+    } catch (_) {}
+    const show = xcheckOpen && !memOpen;
+    ['db-xcheck-strip', 'db-confirmed-strip'].forEach(id => {
+      const el = document.getElementById(id);
+      if (el) el.style.display = show ? '' : 'none';
+    });
+  }
+
+  // Header toggle badge: worst state wins so attention items are visible
+  // even while the strips are collapsed.
+  function paintXcheckToggle() {
+    const b = document.getElementById('db-xcheck-toggle');
+    if (!b) return;
+    const dr = (xcheck.drUndelivered || []).length;
+    const v = (xcheck.validated || []).length;
+    if (xcheck.status !== 'done') b.textContent = '📋';
+    else if (dr > 0) b.textContent = `🚫${dr > 9 ? '9+' : dr}`;
+    else if (v > 0) b.textContent = '✅';
+    else b.textContent = '📋';
+    b.title = `CC validation report (${dr ? dr + ' undelivered' : v ? v + ' validated' : 'no activity'}) — click to show/hide`;
+  }
+
   function createPanel() {
     panel = document.createElement('div');
     panel.id = 'db-panel';
@@ -775,6 +810,7 @@
         <span>📦 DataBridge Reconcile</span>
         <div class="db-hdr-actions">
           <button id="db-sheet-copy-btn" title="Copy Delivered/Hold/Return IDs for pasting into a sheet">📋</button>
+          <button id="db-xcheck-toggle" title="CC validation report — click to show/hide">📋</button>
           <button id="db-report-btn" title="CC Validation Report">📊</button>
           <button id="db-memory-toggle" title="Save to Memory">🧠</button>
           <button id="db-min">−</button>
@@ -827,8 +863,7 @@
         if (memPop && !memPop.classList.contains('hidden')) {
           memPop.classList.add('hidden');
           document.getElementById('db-summary').style.display = '';
-          document.getElementById('db-xcheck-strip').style.display = '';
-          document.getElementById('db-confirmed-strip').style.display = '';
+          applyXcheckVisibility();
           const vdiv = document.querySelector('.db-vdivider');
           if (vdiv) vdiv.style.display = '';
         }
@@ -875,8 +910,7 @@
       const opening = memPopover.classList.contains('hidden');
       memPopover.classList.toggle('hidden');
       document.getElementById('db-summary').style.display = opening ? 'none' : '';
-      document.getElementById('db-xcheck-strip').style.display = opening ? 'none' : '';
-      document.getElementById('db-confirmed-strip').style.display = opening ? 'none' : '';
+      applyXcheckVisibility();
       const vdiv = document.querySelector('.db-vdivider');
       if (vdiv) vdiv.style.display = opening ? 'none' : '';
       if (opening) { memInput.focus(); renderFieldList(); }
@@ -936,6 +970,18 @@
     // CC Validation Report — header 📊 button opens the report modal.
     const reportBtn = document.getElementById('db-report-btn');
     if (reportBtn) reportBtn.addEventListener('click', e => { e.stopPropagation(); openReport(); });
+
+    // CC report strips toggle — Memory-style icon. Collapse keeps Run
+    // Summary visible; the icon badge (🚫N/✅/📋) still shows the state.
+    const xcToggle = document.getElementById('db-xcheck-toggle');
+    if (xcToggle) xcToggle.addEventListener('click', e => {
+      e.stopPropagation();
+      xcheckOpen = !xcheckOpen;
+      try { localStorage.setItem('db-xcheck-open', xcheckOpen ? '1' : '0'); } catch (_) {}
+      applyXcheckVisibility();
+    });
+    applyXcheckVisibility();
+    paintXcheckToggle();
 
     // Draggable — position is saved to localStorage per run URL on mouseup
     // so the panel remembers where it was left the next time the same run
@@ -1397,6 +1443,7 @@
     if (!el) return;
     if (cfd.status === 'loading' && !cfd.items.length) {
       el.innerHTML = `<div class="db-xc-bar db-xc-bar-idle"><span>🔍 Checking confirmed…</span></div>`;
+      applyXcheckVisibility();
       return;
     }
     if (!cfd.items.length) { el.innerHTML = ''; return; }
@@ -1431,6 +1478,7 @@
         }
       });
     });
+    applyXcheckVisibility();
   }
 
   async function maybeRefreshConfirmed(force) {
@@ -2140,6 +2188,8 @@
     });
     const rb = document.getElementById('db-xcheck-refresh');
     if (rb) rb.addEventListener('click', e => { e.stopPropagation(); maybeRefreshXcheck(true); });
+    applyXcheckVisibility();
+    paintXcheckToggle();
   }
 
   // Signature-guarded auto-check: runs on every refreshPanel but hits the
