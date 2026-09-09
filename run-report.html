@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Run Validation Details</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: Arial, sans-serif; background: #1a1a2e; color: #eee; padding: 12px; font-size: 12px; }
+    .rr-hdr { display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px; }
+    .rr-title { color: #00d4ff; font-size: 14px; font-weight: 700; }
+    .rr-sub { font-size: 11px; color: #888; margin-bottom: 10px; }
+    .rr-tools { display: flex; gap: 6px; margin-bottom: 10px; }
+    .rr-btn { flex: 1; background: #00d4ff22; color: #00d4ff; border: 1px solid #00d4ff55; border-radius: 6px; padding: 6px 10px; font-size: 11px; font-weight: 600; cursor: pointer; }
+    .rr-btn:hover { background: #00d4ff33; }
+    .rr-group { margin-bottom: 12px; }
+    .rr-group-hdr { font-size: 12px; font-weight: 700; color: #c9d8ec; background: #16213e; border: 1px solid #0f3460; border-radius: 6px; padding: 6px 8px; margin-bottom: 4px; }
+    .rr-row { background: #16213e; border: 1px solid #0f3460; border-radius: 6px; padding: 6px 8px; margin-bottom: 4px; }
+    .rr-id { font-family: monospace; font-weight: 700; color: #fff; }
+    .rr-badge { display: inline-block; font-size: 10px; font-weight: 700; border-radius: 4px; padding: 1px 6px; margin-left: 6px; }
+    .rr-badge-ok { background: #064e3b; color: #6ee7b7; }
+    .rr-badge-warn { background: #7f1d1d; color: #fecaca; }
+    .rr-badge-cc { background: #1e3a8a; color: #bfdbfe; }
+    .rr-badge-none { background: #334155; color: #cbd5e1; }
+    .rr-remark { margin-top: 3px; color: #c9d8ec; }
+    .rr-meta { margin-top: 2px; font-size: 10px; color: #888; }
+    .rr-empty { text-align: center; color: #888; padding: 24px 0; }
+  </style>
+</head>
+<body>
+  <div class="rr-hdr">
+    <div class="rr-title" id="rr-title">🔍 Run details</div>
+  </div>
+  <div class="rr-sub" id="rr-sub"></div>
+  <div class="rr-tools">
+    <button class="rr-btn" id="rr-copy-btn">📋 Copy TSV</button>
+    <button class="rr-btn" id="rr-close-btn">✕ Close</button>
+  </div>
+  <div id="rr-list"></div>
+  <script src="run-report.js"></script>
+</body>
+</html>

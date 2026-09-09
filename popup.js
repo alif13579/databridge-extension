@@ -98,12 +98,13 @@ function switchTab(tab) {
   if (navEl) navEl.classList.add('active');
 }
 function setupNavigation() {
-  ['history', 'scan', 'dashboard', 'routing', 'connect', 'settings'].forEach(tab => {
+  ['history', 'scan', 'dashboard', 'run', 'routing', 'connect', 'settings'].forEach(tab => {
     const el = document.getElementById(`nav-${tab}`);
     if (el) el.addEventListener('click', () => {
       switchTab(tab);
       if (tab === 'history' && isInitialized) loadHistory(false);
       if (tab === 'scan') loadScanHistory();
+      if (tab === 'run') loadRunReport(false);
       if (tab === 'routing') loadRoutingTab();
       if (tab === 'dashboard') {
         loadDashboardTabAndAutoGenerate();
@@ -4111,6 +4112,117 @@ async function decideRouting(id, act, btn) {
     return;
   }
   loadRoutingTab();
+}
+
+// ══════════════════════════════
+// 🚚 RUN VALIDATION REPORT TAB
+// ══════════════════════════════
+// Hermes run-route tab-er content script (scan-receive-helper.js) theke
+// snapshot: run-এর total parcel, ajke Supabase-te pawa validation,
+// validated + warning qty — table akare. Click → alada details popup
+// (run-report.html), status-wise remarks soho.
+const RUN_REPORT_SNAP_KEY = 'db-run-report-snapshot';
+let runReportCache = null;
+
+async function findHermesRunTab() {
+  try {
+    const tabs = await chrome.tabs.query({ url: 'https://hermes.pathaointernal.com/run-routes/*' });
+    if (!tabs || !tabs.length) return null;
+    return tabs.find(t => t.active) || tabs[0];
+  } catch { return null; }
+}
+
+function openRunDetails(query) {
+  chrome.windows.create({
+    url: chrome.runtime.getURL('run-report.html') + (query || ''),
+    type: 'popup', width: 560, height: 640,
+  }).catch(e => console.warn('[DB] run details window failed:', e?.message || e));
+}
+
+async function loadRunReport(force) {
+  const statusEl = document.getElementById('run-report-status');
+  const sumEl = document.getElementById('run-report-summary');
+  const byStEl = document.getElementById('run-report-bystatus');
+  const setStatus = (t) => { if (statusEl) statusEl.textContent = t; };
+  const tab = await findHermesRunTab();
+  if (!tab) {
+    setStatus('Kono Hermes run-route tab khola nei — run khule abar Load daw।');
+    if (sumEl) sumEl.innerHTML = '';
+    if (byStEl) byStEl.innerHTML = '';
+    return;
+  }
+  const m = (tab.url || '').match(/run-routes\/(\d+)/);
+  setStatus(`Run ${m ? m[1] : ''} theke report ana hocche…`);
+  let res;
+  try {
+    res = await chrome.tabs.sendMessage(tab.id, { action: 'db_run_report', force: !!force });
+  } catch (e) {
+    setStatus('Run tab-e connect holo na — extension reload kore Hermes tab refresh daw, tarpor abar try koro।');
+    return;
+  }
+  if (!res || !res.ok || !res.report) {
+    setStatus('Report pelam na (' + ((res && res.error) || 'no response') + ') — Hermes tab refresh kore abar try koro।');
+    return;
+  }
+  runReportCache = res.report;
+  try { await chrome.storage.local.set({ [RUN_REPORT_SNAP_KEY]: res.report }); } catch {}
+  renderRunReport(res.report);
+}
+
+function renderRunReport(rep) {
+  const statusEl = document.getElementById('run-report-status');
+  const sumEl = document.getElementById('run-report-summary');
+  const byStEl = document.getElementById('run-report-bystatus');
+  if (!sumEl || !byStEl) return;
+  const rows = Array.isArray(rep.rows) ? rep.rows : [];
+  const c = rep.counts || {};
+  const okN = rows.filter(r => r.verdict === 'ok').length;
+  const warnN = rows.filter(r => r.verdict === 'warn').length;
+  const ccN = c.todayCc || 0;
+  const noN = rows.filter(r => r.verdict === 'none').length;
+  const checked = rep.checkedAt
+    ? new Date(rep.checkedAt).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })
+    : '—';
+  if (statusEl) statusEl.textContent =
+    `Run ${rep.runId} · ${rep.total} parcels · checked ${checked}` + (rep.sync ? ` · 🔄 ${rep.sync}` : '');
+  const sumRow = (icon, label, n, q) =>
+    `<tr class="run-sum-click" data-run-q="${q}"><td>${icon} ${label}</td><td class="num">${n}</td><td class="num">›</td></tr>`;
+  sumEl.innerHTML = `<table class="run-sum-table">` +
+    sumRow('📦', 'Run parcels (total)', rep.total || 0, '?view=all') +
+    sumRow('📋', 'Validations found today', ccN, '?view=today') +
+    sumRow('✅', 'Validated', okN, '?verdict=ok') +
+    sumRow('🚫', 'Warning / error', warnN, '?verdict=warn') +
+    sumRow('➖', 'No CC request', noN, '?verdict=none') +
+    `</table>`;
+  sumEl.querySelectorAll('[data-run-q]').forEach(tr => {
+    tr.addEventListener('click', () => openRunDetails(tr.dataset.runQ));
+  });
+  // Status-wise breakdown: protita run status-e koyta parcel, koyta
+  // validated / warning — Details click-e oi status-er remarks.
+  const bySt = new Map();
+  rows.forEach(r => {
+    const key = (r.st || '?').trim() || '?';
+    let g = bySt.get(key);
+    if (!g) { g = { st: key, total: 0, ok: 0, warn: 0 }; bySt.set(key, g); }
+    g.total++;
+    if (r.verdict === 'ok') g.ok++;
+    else if (r.verdict === 'warn') g.warn++;
+  });
+  const groups = [...bySt.values()].sort((a, b) => b.total - a.total);
+  byStEl.innerHTML = groups.length ? groups.map(g =>
+    `<div class="run-st-row">
+      <span class="run-st-name">${escapeHtml(g.st)}</span>
+      <span class="run-st-counts">${g.total} · <b class="ok">✅${g.ok}</b> · <b class="warn">🚫${g.warn}</b></span>
+      <button class="run-eye-btn" data-run-st="${escapeHtml(g.st)}">👁</button>
+    </div>`).join('')
+    : '<div class="dash-cc-status">Kono parcel nei।</div>';
+  byStEl.querySelectorAll('[data-run-st]').forEach(btn => {
+    btn.addEventListener('click', () => openRunDetails('?status=' + encodeURIComponent(btn.dataset.runSt)));
+  });
+  const allBtn = document.getElementById('run-report-details-btn');
+  if (allBtn) allBtn.onclick = () => openRunDetails('?view=all');
+  const loadBtn = document.getElementById('run-report-load-btn');
+  if (loadBtn) loadBtn.onclick = () => loadRunReport(true);
 }
 
 // TODO(wire-up): sheet write goes here — connectors sheet (write column per

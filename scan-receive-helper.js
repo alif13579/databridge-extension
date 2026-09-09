@@ -1922,6 +1922,49 @@
     return `${getRunId()}|${ids.join(',')}`;
   }
 
+  // ── POPUP RUN REPORT (snapshot for popup Run tab + details window) ───────
+  // Run-এর sob parcel (ID + live run status) + protitar CC verdict/remark —
+  // verdict: ok (validated) / warn (delivery_request undelivered) /
+  // cc (ajker onno CC remark) / none (CC request nei).
+  function buildRunReport() {
+    const seen = new Set();
+    const rows = [];
+    parcelRows().forEach(r => {
+      const id = rowId(r);
+      if (!id || seen.has(id)) return;
+      seen.add(id);
+      const st = rowStatus(r) || '';
+      const vx = xcheck.details.get(id);
+      const cc = xcheck.todayCcById && xcheck.todayCcById.get(id);
+      rows.push({
+        id, st,
+        verdict: vx ? vx.verdict : (cc ? 'cc' : 'none'),
+        tag: vx ? vx.tag : (cc ? (cc.remarksStatus || 'CC remark') : 'No CC request'),
+        remarksStatus: vx ? (vx.remarksStatus || '') : (cc ? (cc.remarksStatus || '') : ''),
+        remarkEn: vx ? (vx.remarkEn || '') : (cc ? (cc.remarkEn || '') : ''),
+        remarkBn: vx ? (vx.remarkBn || '') : (cc ? (cc.remarkBn || '') : ''),
+        note: vx ? (vx.note || '') : (cc ? (cc.note || '') : ''),
+        dateKey: vx ? (vx.dateKey || '') : (cc ? (cc.dateKey || '') : ''),
+        carried: !!(vx && vx.carried),
+      });
+    });
+    rows.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+    return {
+      runId: getRunId(),
+      checkedAt: xcheck.checkedAt || 0,
+      xstatus: xcheck.status,
+      total: rows.length,
+      rows,
+      counts: {
+        validated: xcheck.validated.length,
+        warnings: xcheck.warnings.length,
+        undelivered: (xcheck.drUndelivered || []).length,
+        todayCc: (xcheck.todayCc || []).length,
+      },
+      sync: runSync.at ? runSync.last : '',
+    };
+  }
+
   // ── RUN STATUS SYNC (run → Supabase validations.consignment_status) ──
   // Run page-এর live status দিয়ে OI DIN-er (run kholar din, Dhaka bounds)
   // same consignment-এর SOB validation row-এর consignment_status update হয়
@@ -2423,6 +2466,20 @@
       if (message.action === 'db_memory_fill' && message.runId === getRunId()) {
         fillFromMemory();
         sendResponse({ ok: true });
+      }
+      if (message.action === 'db_run_report') {
+        // Popup Run tab-এর জন্য snapshot: run-এর sob parcel + protitar
+        // run status ও CC verdict/remark. Table + status-wise grouping
+        // popup-e hoy; content script sudhu data pathay.
+        (async () => {
+          try {
+            if (message.force) await maybeRefreshXcheck(true);
+            sendResponse({ ok: true, report: buildRunReport() });
+          } catch (err) {
+            sendResponse({ ok: false, error: (err && err.message) || 'report failed' });
+          }
+        })();
+        return true;
       }
       return false;
     });

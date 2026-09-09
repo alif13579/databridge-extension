@@ -1149,3 +1149,26 @@ html[data-theme="light"] .routing-decided { color: #15803d; }
 .routing-hist-row { display: flex; gap: 6px; padding: 4px 0; font-size: 12px; border-top: 1px solid rgba(148,163,184,.15); }
 .routing-sign { min-width: 18px; text-align: center; }
 html[data-theme="light"] .routing-hist-toggle { color: #0284c7; }
+
+/* ── Run Report Tab ── */
+.run-sum-table { width: 100%; border-collapse: collapse; margin-top: 8px; font-size: 11px; }
+.run-sum-table td { padding: 5px 6px; border-bottom: 1px solid #0f3460; color: #c9d8ec; }
+.run-sum-table tr:last-child td { border-bottom: none; }
+.run-sum-table td.num { text-align: right; font-weight: 700; color: #fff; white-space: nowrap; }
+.run-sum-table tr.run-sum-click { cursor: pointer; }
+.run-sum-table tr.run-sum-click:hover td { background: #00d4ff14; }
+.run-st-row { display: flex; align-items: center; gap: 6px; padding: 6px; background: #0d1b2e; border: 1px solid #2d5a8e; border-radius: 6px; margin-bottom: 5px; font-size: 11px; }
+.run-st-name { flex: 1; color: #c9d8ec; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.run-st-counts { color: #888; font-size: 10px; white-space: nowrap; }
+.run-st-counts b.ok { color: #00ff88; }
+.run-st-counts b.warn { color: #ff6666; }
+.run-eye-btn { background: #00d4ff22; color: #00d4ff; border: 1px solid #00d4ff55; border-radius: 5px; padding: 3px 8px; font-size: 11px; cursor: pointer; flex-shrink: 0; }
+.run-eye-btn:hover { background: #00d4ff33; }
+html[data-theme="light"] .run-sum-table td { border-bottom-color: #e2e8f0; color: #334155; }
+html[data-theme="light"] .run-sum-table td.num { color: #0f172a; }
+html[data-theme="light"] .run-st-row { background: #f8fafc; border-color: #e2e8f0; }
+html[data-theme="light"] .run-st-name { color: #334155; }
+html[data-theme="light"] .run-st-counts { color: #64748b; }
+html[data-theme="light"] .run-st-counts b.ok { color: #15803d; }
+html[data-theme="light"] .run-st-counts b.warn { color: #b91c1c; }
+html[data-theme="light"] .run-eye-btn { background: #e0f2fe; color: #0284c7; border-color: #7dd3fc; }

@@ -23,6 +23,7 @@
 
   <div class="bottom-nav">
     <div class="nav-item" id="nav-dashboard"><span class="nav-icon">📊</span>Dashboard</div>
+    <div class="nav-item" id="nav-run"><span class="nav-icon">🚚</span>Run</div>
     <div class="nav-item" id="nav-routing"><span class="nav-icon">🛣️</span>Routing</div>
     <div class="nav-item active" id="nav-history"><span class="nav-icon">📋</span>History</div>
     <div class="nav-item" id="nav-scan"><span class="nav-icon"><svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><rect x="1" y="2" width="1.5" height="12"/><rect x="3.5" y="2" width="1" height="12"/><rect x="5.5" y="2" width="2" height="12"/><rect x="8.5" y="2" width="1" height="12"/><rect x="10.5" y="2" width="1.5" height="12"/><rect x="13" y="2" width="2" height="12"/></svg></span>Barcodes</div>
@@ -121,6 +122,21 @@
     </div>
 
     <div class="dash-note">📊 Demo dashboard — tell me what else this should show.</div>
+  </div>
+
+  <!-- ── Run Report Tab ── -->
+  <div class="tab-content" id="tab-run">
+    <div class="dash-cc-section">
+      <div class="dash-sec-title">🚚 Run Validation Report</div>
+      <div class="dash-cc-status" id="run-report-status">Hermes run-route tab khola thakle ekhan theke report asbe।</div>
+      <div class="dash-cc-row">
+        <button class="dash-export-btn dash-cc-export-btn" id="run-report-load-btn" style="flex:1">🔄 Load report</button>
+        <button class="dash-export-btn dash-cc-export-btn" id="run-report-details-btn" style="flex:1">🔍 All details</button>
+      </div>
+      <div id="run-report-summary"></div>
+      <div class="dash-sec-title" style="margin-top:10px">Status-wise</div>
+      <div id="run-report-bystatus"></div>
+    </div>
   </div>
 
   <!-- ── Routing Approval Tab (demo) ── -->
