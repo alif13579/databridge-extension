@@ -217,6 +217,33 @@ detectCellClick();
     } catch { /* keep previous cfg */ }
   }
 
+  // A selector may match the eye button itself (e.g. `.eye-btn`) OR a
+  // container around it (e.g. `.masked-field` — the button renders inside,
+  // sometimes late via Vue `v-if`, leaving only a `<!---->` placeholder).
+  // So resolve the real clickable target: the element itself if clickable,
+  // else the eye-ish descendant, else any button-like descendant. Containers
+  // stay unresolved (re-scanned each sweep) until their button is found and
+  // clicked exactly once — late-rendered buttons are still caught.
+  const CLICKABLE_SELF = 'button, a, input, [role="button"], [onclick]';
+
+  function resolveEyeTarget(el) {
+    if (el.matches(CLICKABLE_SELF)) return el;
+    try {
+      const eyeish = el.querySelector('[class*="eye" i]');
+      if (eyeish instanceof HTMLElement) return eyeish;
+      const btn = el.querySelector('button, [role="button"], a, svg, i');
+      if (btn instanceof HTMLElement) return btn;
+    } catch { /* bad DOM state — treat as unresolved */ }
+    return null;
+  }
+
+  function isVisible(el) {
+    try {
+      const rect = el.getBoundingClientRect();
+      return rect.width !== 0 || rect.height !== 0;
+    } catch { return false; }
+  }
+
   function sweep() {
     if (!enabled || !selectors.length) return;
     for (const sel of selectors) {
@@ -224,11 +251,13 @@ detectCellClick();
       try { els = document.querySelectorAll(sel); }
       catch { continue; } // invalid selector slipped in — skip, don't die
       els.forEach(el => {
-        if (clicked.has(el) || !(el instanceof HTMLElement)) return;
-        const rect = el.getBoundingClientRect();
-        if (rect.width === 0 && rect.height === 0) return; // not visible yet
-        clicked.add(el);
-        try { el.click(); } catch {}
+        if (!(el instanceof HTMLElement)) return;
+        if (!isVisible(el)) return; // not rendered yet — retry next sweep
+        const target = resolveEyeTarget(el);
+        if (!target || clicked.has(target)) return;
+        if (!isVisible(target)) return; // button not rendered yet — retry later
+        clicked.add(target);
+        try { target.click(); } catch {}
       });
     }
   }
