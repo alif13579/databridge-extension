@@ -788,17 +788,17 @@
     });
   }
 
-  // Header toggle badge: worst state wins so attention items are visible
-  // even while the strips are collapsed.
+  // Header toggle badge — sobsomoy graph-chart icon (📈/📉): undelivered
+  // thakle 📉+count (down trend = attention), nahole 📈. Exact count
+  // title tooltip + expanded strip-e thake.
   function paintXcheckToggle() {
     const b = document.getElementById('db-xcheck-toggle');
     if (!b) return;
     const dr = (xcheck.drUndelivered || []).length;
     const v = (xcheck.validated || []).length;
-    if (xcheck.status !== 'done') b.textContent = '📋';
-    else if (dr > 0) b.textContent = `🚫${dr > 9 ? '9+' : dr}`;
-    else if (v > 0) b.textContent = '✅';
-    else b.textContent = '📋';
+    if (xcheck.status !== 'done' || (!dr && !v)) b.textContent = '📈';
+    else if (dr > 0) b.textContent = `📉${dr > 9 ? '9+' : dr}`;
+    else b.textContent = '📈';
     b.title = `CC validation report (${dr ? dr + ' undelivered' : v ? v + ' validated' : 'no activity'}) — click to show/hide`;
   }
 
@@ -810,7 +810,7 @@
         <span>📦 DataBridge Reconcile</span>
         <div class="db-hdr-actions">
           <button id="db-sheet-copy-btn" title="Copy Delivered/Hold/Return IDs for pasting into a sheet">📋</button>
-          <button id="db-xcheck-toggle" title="CC validation report — click to show/hide">📋</button>
+          <button id="db-xcheck-toggle" title="CC validation report — click to show/hide">📈</button>
           <button id="db-report-btn" title="CC Validation Report">📊</button>
           <button id="db-memory-toggle" title="Save to Memory">🧠</button>
           <button id="db-min">−</button>
