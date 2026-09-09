@@ -284,6 +284,7 @@ function buildCard(item, isNew) {
   card.className = 'history-card' + (isNew ? ' is-new' : '');
   card.dataset.id = item.id;
   const isPhone = item.type === 'phone';
+  const isConsignment = item.type === 'consignment';
 
   // ✅ Actions parsing for new structure { "action_...": { remarks, timestamp, ... } }
   const actions = item.actions || {};
@@ -311,7 +312,7 @@ function buildCard(item, isNew) {
       <div class="card-text">${escapeHtml(item.text || '')}</div>
       <div class="card-meta">
         <span class="card-time">${timeAgo(item.received_at)} (${exactTime(item.received_at)})</span>
-        <span class="badge ${isPhone ? 'badge-phone' : 'badge-text'}">${isPhone ? 'Phone' : 'Text'}</span>
+        <span class="badge ${isPhone ? 'badge-phone' : (isConsignment ? 'badge-phone' : 'badge-text')}">${isPhone ? 'Phone' : (isConsignment ? 'Parcel' : 'Text')}</span>
       </div>
     </div>
     <div class="chevron" id="chev-${item.id}">▼</div>`;

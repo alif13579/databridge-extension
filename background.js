@@ -165,6 +165,15 @@ function isPhoneNumber(text) {
   return false;
 }
 
+// Consignment/tracking ID: 14-char uppercase alphanumerics with at least one
+// letter and one digit (same rule as the app's ScannerFragment.TRACKING_ID_LENGTH
+// and scan-receive-helper's ID_REGEX). Checked AFTER phone so a 14-digit
+// number still routes to dial, not parcel lookup.
+function isConsignmentId(text) {
+  const s = text.trim().toUpperCase();
+  return /^[A-Z0-9]{14}$/.test(s) && /[A-Z]/.test(s) && /[0-9]/.test(s);
+}
+
 function normalizePhoneKey(text) {
   let s = text.replace(/[\s\-().]/g, '');
   if (s.startsWith('+')) s = s.slice(1);
@@ -188,10 +197,12 @@ async function sendToFirebase(text, opts = {}) {
   }
 
   const isPhone = isPhoneNumber(text);
+  const isConsignment = !isPhone && isConsignmentId(text);
   // cleaned: for phone numbers, strip spaces/dashes/brackets so the app can dial directly.
+  // For consignment IDs, normalize to trimmed UPPERCASE (Firebase keys are case-sensitive).
   // For non-phone text (names, addresses, etc.), keep the original — stripping spaces from
   // "TANJIR RAHAMAN" produces "TANJIRRAHAMAN" which is wrong for clipboard/display use.
-  const cleaned = isPhone ? text.replace(/[\s\-()]/g, "") : text;
+  const cleaned = isPhone ? text.replace(/[\s\-()]/g, "") : (isConsignment ? text.trim().toUpperCase() : text);
   const timestamp = Date.now();
   const itemId = `record_${timestamp}`;
 
@@ -199,7 +210,7 @@ async function sendToFirebase(text, opts = {}) {
   const payload = {
     text,
     cleaned,
-    type: isPhone ? "phone" : "text",
+    type: isPhone ? "phone" : (isConsignment ? "consignment" : "text"),
     received_at: timestamp,
     status: "pending",
     actions: {} // ✅ Empty actions object
