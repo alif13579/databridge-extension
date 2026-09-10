@@ -15,7 +15,7 @@
     if (r.verdict === 'ok') return `<span class="rr-badge rr-badge-ok">✅ ${esc(r.tag || 'Validated')}</span>`;
     if (r.verdict === 'warn') return `<span class="rr-badge rr-badge-warn">🚫 ${esc(r.tag || 'Warning')}</span>`;
     if (r.verdict === 'cc') return `<span class="rr-badge rr-badge-cc">📋 ${esc(r.tag || 'CC remark')}</span>`;
-    return `<span class="rr-badge rr-badge-none">➖ No CC request</span>`;
+    return `<span class="rr-badge rr-badge-none">➖ CC request nei</span>`;
   }
 
   function remarkLine(r) {
@@ -67,18 +67,18 @@
       return;
     }
     let rows = snap.rows.slice();
-    let scope = 'All parcels';
+    let scope = 'Sob parcel';
     if (fStatus) { rows = rows.filter(r => (r.st || '') === fStatus); scope = `Status: ${fStatus}`; }
     else if (fVerdict) {
       rows = rows.filter(r => r.verdict === fVerdict);
-      scope = fVerdict === 'ok' ? 'Validated' : fVerdict === 'warn' ? 'Warning / error'
-        : fVerdict === 'none' ? 'No CC request' : fVerdict === 'cc' ? 'CC remarks' : fVerdict;
+      scope = fVerdict === 'ok' ? 'Validated' : fVerdict === 'warn' ? 'Warning / vul'
+        : fVerdict === 'none' ? 'CC request nei' : fVerdict === 'cc' ? 'CC remarks' : fVerdict;
     } else if (fView === 'today') { rows = rows.filter(r => r.dateKey && !r.carried); scope = 'Latest CC remark ajker'; }
 
     if (titleEl) titleEl.textContent = `🔍 Run ${snap.runId} — ${scope} (${rows.length})`;
     if (subEl) {
       const checked = snap.checkedAt ? new Date(snap.checkedAt).toLocaleString('en-GB', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : '—';
-      subEl.textContent = `Checked ${checked}` + (snap.sync ? ` · 🔄 Supabase update: ${snap.sync}` : '');
+      subEl.textContent = `Check: ${checked}` + (snap.sync ? ` · 🔄 Supabase update: ${snap.sync}` : '');
     }
     if (!rows.length) {
       if (listEl) listEl.innerHTML = '<div class="rr-empty">Kichu nei।</div>';
@@ -96,7 +96,7 @@
       const ok = rs.filter(r => r.verdict === 'ok').length;
       const warn = rs.filter(r => r.verdict === 'warn').length;
       return `<div class="rr-group">
-        <div class="rr-group-hdr">${esc(st)} — ${rs.length} parcels · ✅ ${ok} · 🚫 ${warn}</div>
+        <div class="rr-group-hdr">${esc(st)} — ${rs.length}ta parcel · ✅ ${ok}ta · 🚫 ${warn}ta</div>
         ${rs.map(rowHtml).join('')}
       </div>`;
     }).join('');
@@ -106,8 +106,8 @@
       const orig = copyBtn.textContent;
       try {
         await navigator.clipboard.writeText(toTsv(rows));
-        copyBtn.textContent = '✓ Copied';
-      } catch { copyBtn.textContent = '✗ Failed'; }
+        copyBtn.textContent = '✓ Copy hoyeche';
+      } catch { copyBtn.textContent = '✗ Hoyni'; }
       setTimeout(() => { copyBtn.textContent = orig; }, 1500);
     });
     const closeBtn = document.getElementById('rr-close-btn');

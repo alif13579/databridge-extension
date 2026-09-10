@@ -4614,11 +4614,11 @@ function renderRunReport(rep) {
   const sumRow = (icon, label, n, q) =>
     `<tr class="run-sum-click" data-run-q="${q}"><td>${icon} ${label}</td><td class="num">${n}</td><td class="num">›</td></tr>`;
   sumEl.innerHTML = `<table class="run-sum-table">` +
-    sumRow('📦', 'Run parcels (total)', rep.total || 0, '?view=all') +
-    sumRow('📋', 'Validations found today', ccN, '?view=today') +
-    sumRow('✅', 'Validated', okN, '?verdict=ok') +
-    sumRow('🚫', 'Warning / error', warnN, '?verdict=warn') +
-    sumRow('➖', 'No CC request', noN, '?verdict=none') +
+    sumRow('📦', 'Run parcel (mot)', rep.total || 0, '?view=all') +
+    sumRow('📋', 'Ajke pawa validation', ccN, '?view=today') +
+    sumRow('✅', 'Validated (thik)', okN, '?verdict=ok') +
+    sumRow('🚫', 'Warning / vul', warnN, '?verdict=warn') +
+    sumRow('➖', 'CC request nei', noN, '?verdict=none') +
     `</table>`;
   sumEl.querySelectorAll('[data-run-q]').forEach(tr => {
     tr.addEventListener('click', () => openRunDetails(tr.dataset.runQ));
