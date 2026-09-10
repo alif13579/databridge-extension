@@ -143,6 +143,85 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true; // async sendResponse
   }
 });
+// ── Google login relay ───────────────────────────────────────────────
+// popup.js থেকে chrome.identity.launchWebAuthFlow() চালালে auth window
+// খোলার সাথে সাথে popup focus হারিয়ে বন্ধ হয়ে যেত — popup-এর JS context
+// মারা যাওয়ায় callback আর ফিরত না, profile select করলেও login শেষ হতো না।
+// তাই পুরো flow (chooser + Firebase exchange) service worker-এ চলে, যা popup
+// বন্ধ হলেও বেঁচে থাকে। শেষে session chrome.storage.local-এ google_pending_login
+// হিসেবে রাখা হয় — popup (পরে খুললেও) সেখান থেকে login শেষ করে।
+// NOTE: নিচের client_id "Web application"-type OAuth client — manifest.json-এর
+// oauth2 block-এর "Chrome Extension"-type client_id এখানে ব্যবহার করা যাবে না,
+// Google "Error 400: redirect_uri_mismatch" দেয় (ইতিহাস popup.js-এ ছিল)।
+// Redirect URI: https://<manifest key থেকে পাওয়া extension id>.chromiumapp.org/
+// — manifest-এর "key" না বদলালে ID বদলায় না।
+const GOOGLE_OAUTH_WEB_CLIENT_ID = '757742303355-qulp4gr95shmh36kj6ugtit15nfss46c.apps.googleusercontent.com';
+const GOOGLE_OAUTH_SCOPES = [
+  'https://www.googleapis.com/auth/userinfo.email',
+  'https://www.googleapis.com/auth/userinfo.profile'
+];
+
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (sender.id !== chrome.runtime.id) return;
+  if (message?.action === 'db_google_login') {
+    runGoogleLoginFlow().then(
+      () => sendResponse({ ok: true }),
+      (e) => sendResponse({ ok: false, error: e?.message || 'Google login failed' })
+    );
+    return true; // async sendResponse (user chooser-এ সময় নিতে পারে)
+  }
+});
+
+function runGoogleLoginFlow() {
+  return new Promise((resolve, reject) => {
+    const redirectUri = chrome.identity.getRedirectURL();
+    const authUrl = 'https://accounts.google.com/o/oauth2/v2/auth' +
+      `?client_id=${encodeURIComponent(GOOGLE_OAUTH_WEB_CLIENT_ID)}` +
+      `&response_type=token` +
+      `&redirect_uri=${encodeURIComponent(redirectUri)}` +
+      `&scope=${encodeURIComponent(GOOGLE_OAUTH_SCOPES.join(' '))}` +
+      `&prompt=select_account`;
+    chrome.identity.launchWebAuthFlow({ url: authUrl, interactive: true }, async (redirectUrl) => {
+      try {
+        if (chrome.runtime.lastError || !redirectUrl) {
+          throw chrome.runtime.lastError || new Error('No redirect URL returned');
+        }
+        const fragment = redirectUrl.split('#')[1] || '';
+        const accessToken = new URLSearchParams(fragment).get('access_token');
+        if (!accessToken) throw new Error('No access_token in redirect URL');
+        const res = await fetch(
+          `https://identitytoolkit.googleapis.com/v1/accounts:signInWithIdp?key=${CONFIG.FIREBASE_WEB_API_KEY}`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              postBody: `access_token=${accessToken}&providerId=google.com`,
+              requestUri: 'http://localhost',
+              returnSecureToken: true
+            })
+          }
+        );
+        const data = await res.json();
+        if (!res.ok || !data.localId) {
+          throw new Error(data?.error?.message || 'Firebase sign-in exchange failed');
+        }
+        await chrome.storage.local.set({ google_pending_login: {
+          uid: data.localId,
+          email: data.email || '',
+          displayName: data.displayName || '',
+          photoUrl: data.photoUrl || '',
+          idToken: data.idToken,
+          refreshToken: data.refreshToken,
+          expiresIn: parseInt(data.expiresIn, 10) || 3600,
+          at: Date.now()
+        }});
+        resolve(true);
+      } catch (e) {
+        reject(e);
+      }
+    });
+  });
+}
 // cc-panel.js (a content script) has no access to chrome.tabs.* — content
 // scripts only get a limited chrome.* surface, tabs.create isn't part of
 // it — so its 📞 Call button relays the phone number here to actually

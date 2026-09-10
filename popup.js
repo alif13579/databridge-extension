@@ -1037,42 +1037,11 @@ async function checkConnectionWithFallback(extension_id, retries = 5) {
 //   Chrome-Extension-type client_id — same failure will recur.
 
 
-// "Web application"-type OAuth client, created specifically for launchWebAuthFlow() — separate
-// from the "Chrome Extension"-type client_id in manifest.json's oauth2 block (which is used by
-// chrome.identity.getAuthToken() elsewhere and must NOT be reused here — see HISTORY above).
-const GOOGLE_OAUTH_WEB_CLIENT_ID = '757742303355-qulp4gr95shmh36kj6ugtit15nfss46c.apps.googleusercontent.com';
-const GOOGLE_OAUTH_SCOPES = [
-  'https://www.googleapis.com/auth/userinfo.email',
-  'https://www.googleapis.com/auth/userinfo.profile'
-];
-
-function getGoogleAuthToken(interactive = true) {
-  return new Promise((resolve, reject) => {
-    const redirectUri = chrome.identity.getRedirectURL();
-    const authUrl = `https://accounts.google.com/o/oauth2/v2/auth` +
-      `?client_id=${encodeURIComponent(GOOGLE_OAUTH_WEB_CLIENT_ID)}` +
-      `&response_type=token` +
-      `&redirect_uri=${encodeURIComponent(redirectUri)}` +
-      `&scope=${encodeURIComponent(GOOGLE_OAUTH_SCOPES.join(' '))}` +
-      `&prompt=select_account`;
-
-    chrome.identity.launchWebAuthFlow({ url: authUrl, interactive }, (redirectUrl) => {
-      if (chrome.runtime.lastError || !redirectUrl) {
-        reject(chrome.runtime.lastError || new Error('No redirect URL returned'));
-        return;
-      }
-      // launchWebAuthFlow returns the access_token in the redirect URL's fragment, e.g.
-      // "https://<ext-id>.chromiumapp.org/#access_token=...&token_type=Bearer&expires_in=..."
-      const fragment = redirectUrl.split('#')[1] || '';
-      const token = new URLSearchParams(fragment).get('access_token');
-      if (!token) {
-        reject(new Error('No access_token in redirect URL'));
-        return;
-      }
-      resolve(token);
-    });
-  });
-}
+// NOTE: Google auth এখন background.js-এ চলে (db_google_login relay) — popup
+// থেকে launchWebAuthFlow() চালালে auth window খুলতেই popup বন্ধ হয়ে callback
+// মরতো, profile select করলেও login শেষ হতো না। Web client ID + HISTORY
+// background.js-এ দেখো। Exchange (signInWithIdp) background-এই হয়; নিচের
+// exchangeGoogleTokenForFirebaseUid() এখন অব্যবহৃত, শুধু রেফারেন্স হিসেবে রাখা।
 
 async function exchangeGoogleTokenForFirebaseUid(accessToken) {
   const res = await fetch(
@@ -1274,79 +1243,96 @@ async function handleGoogleLogin() {
   const btn = document.getElementById('google-login-btn');
   if (btn) { btn.disabled = true; btn.textContent = 'Signing in...'; }
   try {
-    const accessToken = await getGoogleAuthToken(true);
-    const { uid, email, displayName, photoUrl, idToken, refreshToken, expiresIn } = await exchangeGoogleTokenForFirebaseUid(accessToken);
-
-    // Conflict check: currentUserId gets set by resolveContainerFromMeta() whenever a QR
-    // session's meta carries a user_id (i.e., this extension is already paired to an Android
-    // app that's logged in with SOME Google account). If that account is DIFFERENT from the
-    // one just signed into here, silently proceeding would switch the active container away
-    // from the paired device's — future data would go to THIS account's container instead,
-    // which the paired device never looks at, with no indication anything changed.
-    if (currentUserId && currentUserId !== uid) {
-      const proceed = confirm(
-        `⚠️ এই extension বর্তমানে অন্য একটি connected device-এর সাথে link করা আছে।\n\n` +
-        `${email} দিয়ে sign in করলে data এখন থেকে সেই device-এর container-এ না গিয়ে এই ` +
-        `Google account-এর নিজস্ব container-এ যাবে — connected device সেটা দেখতে পাবে না।\n\n` +
-        `তবুও continue করবেন?`
-      );
-      if (!proceed) {
-        if (btn) { btn.textContent = 'Sign in with Google'; btn.disabled = false; }
-        return;
-      }
-    }
-
-    currentGoogleUid = uid;
-    currentGoogleEmail = email;
-    currentIdToken = idToken;
-    currentRefreshToken = refreshToken;
-    idTokenExpiresAt = Date.now() + expiresIn * 1000;
-
-    // ✅ users/{uid}/profile — check if it already exists (existing user, e.g. already
-    // signed in on the Android app) or needs to be created fresh (brand-new user). Same
-    // path + shape as AuthManager.completeGoogleSignIn() on the app side.
-    const profile = await ensureUserProfile(uid, idToken, displayName, email, photoUrl).catch((err) => {
-      console.error('ensureUserProfile failed:', err);
-      return null;
-    });
-    currentGoogleName = profile?.name || displayName || email;
-    currentGooglePhotoUrl = profile?.photo_url || photoUrl || '';
-
-    await chrome.storage.local.set({
-      google_uid: uid,
-      google_email: email,
-      google_name: currentGoogleName,
-      google_photo_url: currentGooglePhotoUrl,
-      google_id_token: currentIdToken,
-      google_refresh_token: currentRefreshToken,
-      google_token_expires_at: idTokenExpiresAt
-    });
-
-    if (currentExtensionID) {
-      await linkExtensionToUid(currentExtensionID, uid, email);
-    }
-
-    // A linked account counts as "connected" from the extension's side — the Android app
-    // will pick up the container/session the next time it resolves paths for this UID.
-    currentContainerID = `container_${uid}`;
-    currentUserId = uid;
-    await chrome.storage.local.set({ container_id: currentContainerID, user_id: uid });
-
-    document.getElementById('screen-google-login')?.classList.remove('active');
-    showConnectedState({ meta: googleLinkedMeta() });
-    // NOTE: getActivePaths() is intentionally NOT called here — it re-derives
-    // containerID from sessions/{extension_id}/meta, which only exists for the
-    // QR-connect flow. Calling it here was clobbering the containerID we just
-    // set above (back to null) whenever no QR session existed yet, which broke
-    // loadHistory() right after Google login.
-    await loadHistory(false);
-    if (currentContainerID) startContainerListener(currentContainerID);
-    startScanListener();
+    // Chooser + exchange background service worker-এ হয় (db_google_login) —
+    // popup খোলা থাক বা মাঝপথে বন্ধ হোক, session google_pending_login-এ জমে।
+    const res = await chrome.runtime.sendMessage({ action: 'db_google_login' });
+    if (!res?.ok) throw new Error(res?.error || 'Google login failed');
+    const done = await finishGoogleLoginFromPending();
+    if (!done && btn) { btn.textContent = 'Sign in with Google'; btn.disabled = false; }
   } catch (e) {
     console.error('Google Sign-In failed:', e);
     if (btn) { btn.textContent = 'Sign in with Google'; btn.disabled = false; }
     alert('Google Sign-In failed. Please try again.');
   }
+}
+
+// Background-এর রাখা google_pending_login থেকে login শেষ করে: conflict check,
+// profile ensure, link, UI. Popup মাঝপথে বন্ধ হয়ে গেলে init থেকে auto-resume
+// হয়ে এটাই চলে — তাই এখানে alert নেই, ব্যর্থ হলে শুধু false।
+async function finishGoogleLoginFromPending() {
+  const btn = document.getElementById('google-login-btn');
+  const { google_pending_login: p } = await chrome.storage.local.get(['google_pending_login']);
+  if (!p?.uid || !p?.idToken) return false;
+  const { uid, email, displayName, photoUrl, idToken, refreshToken, expiresIn } = p;
+
+  // Conflict check: currentUserId gets set by resolveContainerFromMeta() whenever a QR
+  // session's meta carries a user_id (i.e., this extension is already paired to an Android
+  // app that's logged in with SOME Google account). If that account is DIFFERENT from the
+  // one just signed into here, silently proceeding would switch the active container away
+  // from the paired device's — future data would go to THIS account's container instead,
+  // which the paired device never looks at, with no indication anything changed.
+  if (currentUserId && currentUserId !== uid) {
+    const proceed = confirm(
+      `⚠️ এই extension বর্তমানে অন্য একটি connected device-এর সাথে link করা আছে।\n\n` +
+      `${email} দিয়ে sign in করলে data এখন থেকে সেই device-এর container-এ না গিয়ে এই ` +
+      `Google account-এর নিজস্ব container-এ যাবে — connected device সেটা দেখতে পাবে না।\n\n` +
+      `তবুও continue করবেন?`
+    );
+    if (!proceed) {
+      await chrome.storage.local.remove(['google_pending_login']);
+      if (btn) { btn.textContent = 'Sign in with Google'; btn.disabled = false; }
+      return false;
+    }
+  }
+
+  currentGoogleUid = uid;
+  currentGoogleEmail = email;
+  currentIdToken = idToken;
+  currentRefreshToken = refreshToken;
+  idTokenExpiresAt = Date.now() + expiresIn * 1000;
+
+  // ✅ users/{uid}/profile — check if it already exists (existing user, e.g. already
+  // signed in on the Android app) or needs to be created fresh (brand-new user). Same
+  // path + shape as AuthManager.completeGoogleSignIn() on the app side.
+  const profile = await ensureUserProfile(uid, idToken, displayName, email, photoUrl).catch((err) => {
+    console.error('ensureUserProfile failed:', err);
+    return null;
+  });
+  currentGoogleName = profile?.name || displayName || email;
+  currentGooglePhotoUrl = profile?.photo_url || photoUrl || '';
+
+  await chrome.storage.local.set({
+    google_uid: uid,
+    google_email: email,
+    google_name: currentGoogleName,
+    google_photo_url: currentGooglePhotoUrl,
+    google_id_token: currentIdToken,
+    google_refresh_token: currentRefreshToken,
+    google_token_expires_at: idTokenExpiresAt
+  });
+  await chrome.storage.local.remove(['google_pending_login']);
+
+  if (currentExtensionID) {
+    await linkExtensionToUid(currentExtensionID, uid, email);
+  }
+
+  // A linked account counts as "connected" from the extension's side — the Android app
+  // will pick up the container/session the next time it resolves paths for this UID.
+  currentContainerID = `container_${uid}`;
+  currentUserId = uid;
+  await chrome.storage.local.set({ container_id: currentContainerID, user_id: uid });
+
+  document.getElementById('screen-google-login')?.classList.remove('active');
+  showConnectedState({ meta: googleLinkedMeta() });
+  // NOTE: getActivePaths() is intentionally NOT called here — it re-derives
+  // containerID from sessions/{extension_id}/meta, which only exists for the
+  // QR-connect flow. Calling it here was clobbering the containerID we just
+  // set above (back to null) whenever no QR session existed yet, which broke
+  // loadHistory() right after Google login.
+  await loadHistory(false);
+  if (currentContainerID) startContainerListener(currentContainerID);
+  startScanListener();
+  return true;
 }
 
 async function restoreGoogleLoginState() {
@@ -1372,9 +1358,9 @@ async function restoreGoogleLoginState() {
 
 async function clearGoogleLoginState() {
   // No chrome.identity.removeCachedAuthToken() call needed here — that's specific to
-  // chrome.identity.getAuthToken()'s internal token cache, which launchWebAuthFlow() (see
-  // getGoogleAuthToken() above) doesn't use at all. Signing out just means dropping our own
-  // stored session state below.
+  // chrome.identity.getAuthToken()'s internal token cache, which our background-relay
+  // login flow doesn't use at all. Signing out just means dropping our own
+  // stored session state below. Also drop any half-finished login.
   currentGoogleUid = null;
   currentGoogleEmail = null;
   currentGoogleName = null;
@@ -1384,7 +1370,8 @@ async function clearGoogleLoginState() {
   idTokenExpiresAt = 0;
   await chrome.storage.local.remove([
     'google_uid', 'google_email', 'google_name', 'google_photo_url',
-    'google_id_token', 'google_refresh_token', 'google_token_expires_at'
+    'google_id_token', 'google_refresh_token', 'google_token_expires_at',
+    'google_pending_login'
   ]);
 }
 
@@ -1781,6 +1768,11 @@ async function init() {
     setupDisconnect(extension_id);
     setupGoogleLogin();
     await restoreGoogleLoginState();
+    // Auth window খোলার সময় popup বন্ধ হয়ে গেলে background login শেষ করে
+    // google_pending_login রেখে দেয় — reopen-এ এখান থেকে auto-resume।
+    if (!currentGoogleUid) {
+      try { await finishGoogleLoginFromPending(); } catch (e) { console.warn('Pending Google login resume failed:', e); }
+    }
     // Fire-and-forget heartbeat — not on the critical path, see touchExtensionConnection()'s
     // doc comment for why this needs to run on every open, not just at login.
     if (currentGoogleUid) touchExtensionConnection(extension_id, currentGoogleUid);
