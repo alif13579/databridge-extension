@@ -538,6 +538,7 @@
   let ccRemarkOpts = null;   // CC catalog, cached per page load
   let ccRefreshTimer = null;
   let ccLoading = false; // in-flight guard for auto/manual/visibility reloads
+  let ccLiveNote = null; // Live ID না এলে SPECIFIC কারণ (access/tab/filter/binding) — render empty-state-এ দেখায়
   const CC_REFRESH_MS = 60_000; // auto-refresh: new parcels + called-status updates
 
   function computeSummaryRows(allRows) {
@@ -652,7 +653,7 @@
         </div>
         <div class="db-cc-hist-section" data-idx="${idx}" style="display:none"></div>
         <div class="db-cc-remark-section" data-idx="${idx}" style="display:none"></div>
-      </div>`).join('') : `<div class="db-cc-status">এই filter-এ কোনো entry নেই</div>`;
+      </div>`).join('') : `<div class="db-cc-status">${escapeHtml(!summaryRows.length && ccLiveNote ? ccLiveNote : 'এই filter-এ কোনো entry নেই')}</div>`;
 
     bodyEl.innerHTML = `
       <div class="db-cc-summary">
@@ -893,20 +894,29 @@
       summaryRows = computeSummaryRows(allRows);
       // Live / Mix: same library (bindings) theke sheet ID + fetch criteria —
       // app Live-er same niyom. Request card thakle setai wins (remark trail soho).
+      ccLiveNote = null;
       if (ccMode === 'live' || ccMode === 'mix') {
         const targets = await fetchCcTargets(idToken, branchIds, dateKey);
         if (targets.length) {
           const { token: sheetsToken, error: sheetsErr } = await getSheetsToken();
           if (!sheetsToken) throw new Error(sheetsErr || 'Sheets auth nei — popup Connect theke Google sign in koro');
           const liveIdsByBranch = {};
+          const liveProblems = [];
+          let liveScanned = 0, liveDropped = 0;
           await Promise.all(targets.map(async t => {
+            const sheetLabel = t.lib.sheetName || t.lib.sheetId || t.branchId;
             try {
               const r = await fetchLiveIdsForBinding(sheetsToken, t.binding, t.lib, dateKey);
+              liveScanned += r.scanned || 0;
+              liveDropped += r.dropped || 0;
+              if (r.note) liveProblems.push(`${sheetLabel}: ${r.note}`);
               if (r.ids.length) {
                 liveIdsByBranch[t.branchId] = [...(liveIdsByBranch[t.branchId] || []), ...r.ids];
               }
             } catch (e) {
-              console.warn('[DB CC] live fetch failed:', t.branchId, e?.message || e);
+              const msg = e?.message || 'sheet পড়া যায়নি';
+              console.warn('[DB CC] live fetch failed:', t.branchId, msg);
+              liveProblems.push(`${sheetLabel}: ${msg}`);
             }
           }));
           const liveIds = [...new Set(Object.values(liveIdsByBranch).flat())];
@@ -921,11 +931,15 @@
               const seen = new Set(summaryRows.map(r => r.cId));
               liveCards.forEach(c => { if (!seen.has(c.cId)) { seen.add(c.cId); summaryRows.push(c); } });
             }
-          } else if (ccMode === 'live') {
-            summaryRows = [];
+          } else {
+            // Specific reason (app-er note-er moto) — access / tab / filter / column.
+            ccLiveNote = 'Live: ' + (liveProblems.length ? liveProblems.slice(0, 2).join(' · ')
+              : `${liveScanned} row দেখা${liveDropped ? `, ${liveDropped} filter-e bad` : ''} — filter/scope মিলছে না`);
+            if (ccMode === 'live') summaryRows = [];
           }
-        } else if (ccMode === 'live') {
-          summaryRows = [];
+        } else {
+          ccLiveNote = 'Live: এই date-এ কোনো CC binding নেই — CallCenter 🔌 থেকে sheet bind করো (scope দেখো)';
+          if (ccMode === 'live') summaryRows = [];
         }
       }
       ccVisibleCount = CC_RENDER_LIMIT;
@@ -1094,7 +1108,11 @@
 
   async function sheetsGet(token, url) {
     const res = await fetch(url, { headers: { 'Authorization': `Bearer ${token}` } });
-    if (!res.ok) throw new Error(`Sheets API ${res.status}`);
+    if (!res.ok) {
+      if (res.status === 401 || res.status === 403) throw new Error('এই Google account-এর sheet access নেই — sheet-টি login mail-এ share করো');
+      if (res.status === 404) throw new Error('Sheet/tab পাওয়া যায়নি — sheet ID ও tab name মিলিয়ে দেখো');
+      throw new Error(`Sheets API ${res.status}`);
+    }
     return res.json();
   }
 
@@ -1276,12 +1294,27 @@
       if (!t) return null;
       return resolveLetter(sheetsToken, L.sheetId, tab, { colRef: t, mode }, headerRow, headerCache);
     };
-    const rangeStart = L.colStart >= 1 ? L.colStart : 1;
+    const rangeStart = (() => {
+      // App effectiveColStart-er same: colStart unset (legacy library) হলে
+      // legacy colRefs থেকে smallest, নইলে 1 — নইলে ভুল column থেকে ID আসে।
+      if (L.colStart >= 1) return L.colStart;
+      let min = 0;
+      [...(L.lookupCols || []), ...(L.writeCols || [])].forEach(r => {
+        const t = String(r?.colRef || '').trim();
+        if (!t) return;
+        let n = 0;
+        if (/^[A-Za-z]{1,3}$/.test(t)) {
+          for (const ch of t.toUpperCase()) n = n * 26 + (ch.charCodeAt(0) - 64);
+        } else { const p = parseInt(t, 10); if (!isNaN(p)) n = p; }
+        if (n >= 1 && (!min || n < min)) min = n;
+      });
+      return min || 1;
+    })();
     const fetchRef = String(b.fetchColRef || '').trim();
     const fetchLetter = fetchRef
       ? await letterOf(fetchRef, b.fetchColMode)
       : indexToLetter(rangeStart);
-    if (!fetchLetter) return { ids: [], note: `ID column '${fetchRef}' paini` };
+    if (!fetchLetter) return { ids: [], scanned: 0, dropped: 0, note: `ID column '${fetchRef}' paini` };
     const rules = Array.isArray(b.filters) ? b.filters.filter(r => r && String(r.colRef || '').trim() && r.op) : [];
     const useOr = rules.length > 0 && b.filterLogic === 'OR';
     const colCache = {};
@@ -1305,7 +1338,7 @@
     const idCol = await colOf(
       fetchRef || indexToLetter(rangeStart),
       fetchRef ? (b.fetchColMode || 'index') : 'index');
-    if (!idCol) return { ids: [], note: 'ID column paini' };
+    if (!idCol) return { ids: [], scanned: 0, dropped: 0, note: 'ID column paini' };
     const ids = [];
     let dropped = 0;
     idCol.forEach((cell, i) => {
@@ -1316,7 +1349,7 @@
       if (!pass) { dropped++; return; }
       if (ids.indexOf(cid) === -1) ids.push(cid);
     });
-    return { ids, dropped, note: missing.length ? `column ${[...new Set(missing)].join(',')} paini (skip)` : null };
+    return { ids, scanned: idCol.length, dropped, note: missing.length ? `column ${[...new Set(missing)].join(',')} paini (skip)` : null };
   }
 
   // ── BULK SYNC TO SHEET (header) ────────────────────────────────
