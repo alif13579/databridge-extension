@@ -1000,6 +1000,7 @@
   const SHEET_DATE_RES = [
     [/^(\d{4})-(\d{2})-(\d{2})$/, (m) => [m[1], m[2], m[3]]],
     [/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/, (m) => [m[3], m[1].padStart(2, '0'), m[2].padStart(2, '0')]], // M/d/yyyy first…
+    [/^(\d{1,2})\/(\d{1,2})\/(\d{2})$/, (m) => ['20' + m[3], m[1].padStart(2, '0'), m[2].padStart(2, '0')]], // M/d/yy ("9/10/26" → Sep 10)
     [/^(\d{1,2})-(\d{1,2})-(\d{4})$/, (m) => [m[3], m[2].padStart(2, '0'), m[1].padStart(2, '0')]],
     [/^(\d{4})\/(\d{2})\/(\d{2})$/, (m) => [m[1], m[2], m[3]]],
     [/^(\d{1,2})\.(\d{1,2})\.(\d{4})$/, (m) => [m[3], m[2].padStart(2, '0'), m[1].padStart(2, '0')]],
@@ -1019,6 +1020,8 @@
       const isoMdy = `${m[3]}-${m[1].padStart(2, '0')}-${m[2].padStart(2, '0')}`;
       return isoDmy;
     }
+    m = s2.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2})/);
+    if (m) return `20${m[3]}-${m[1].padStart(2, '0')}-${m[2].padStart(2, '0')}`; // M/d/yy
     m = s2.match(/^(\d{1,2})-([A-Za-z]{3})-(\d{2}|\d{4})$/);
     if (m) {
       const months = { jan: '01', feb: '02', mar: '03', apr: '04', may: '05', jun: '06', jul: '07', aug: '08', sep: '09', oct: '10', nov: '11', dec: '12' };
@@ -1050,6 +1053,13 @@
     if (m) {
       const cand = `${m[3]}-${m[2].padStart(2, '0')}-${m[1].padStart(2, '0')}`;
       if (cand === dateKey) return true;
+    }
+    // M/d/yy + d/M/yy ("9/10/26") — either reading matching today counts
+    m = raw.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2})$/);
+    if (m) {
+      const y = '20' + m[3];
+      if (`${y}-${m[1].padStart(2, '0')}-${m[2].padStart(2, '0')}` === dateKey) return true;
+      if (`${y}-${m[2].padStart(2, '0')}-${m[1].padStart(2, '0')}` === dateKey) return true;
     }
     return false;
   }
@@ -1174,6 +1184,10 @@
     let m;
     if ((m = t.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/))) return +`${m[1]}${String(m[2]).padStart(2, '0')}${String(m[3]).padStart(2, '0')}`;
     if ((m = t.match(/^(\d{1,2})[\/.\-](\d{1,2})[\/.\-](\d{4})/))) return +`${m[3]}${String(m[2]).padStart(2, '0')}${String(m[1]).padStart(2, '0')}`;
+    if ((m = t.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2})/))) { // M/d/yy ("9/10/26" → Sep 10)
+      const y = 2000 + (+m[3]);
+      return +(String(y) + String(m[1]).padStart(2, '0') + String(m[2]).padStart(2, '0'));
+    }
     if ((m = t.match(/^(\d{1,2})[\-\.]([A-Za-z]{3})[\-\.](\d{2,4})/))) {
       const mo = months[m[2].toLowerCase().slice(0, 3)];
       if (!mo) return null;

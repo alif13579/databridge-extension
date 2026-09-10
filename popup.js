@@ -2896,6 +2896,7 @@ function getSelectedHvBranchIds() {
   const HV_SHEET_DATE_RES = [
     [/^(\d{4})-(\d{2})-(\d{2})$/, (m) => [m[1], m[2], m[3]]],
     [/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/, (m) => [m[3], m[1].padStart(2, '0'), m[2].padStart(2, '0')]],
+    [/^(\d{1,2})\/(\d{1,2})\/(\d{2})$/, (m) => ['20' + m[3], m[1].padStart(2, '0'), m[2].padStart(2, '0')]], // M/d/yy
     [/^(\d{1,2})-(\d{1,2})-(\d{4})$/, (m) => [m[3], m[2].padStart(2, '0'), m[1].padStart(2, '0')]],
     [/^(\d{4})\/(\d{2})\/(\d{2})$/, (m) => [m[1], m[2], m[3]]],
     [/^(\d{1,2})\.(\d{1,2})\.(\d{4})$/, (m) => [m[3], m[2].padStart(2, '0'), m[1].padStart(2, '0')]],
@@ -2920,6 +2921,12 @@ function getSelectedHvBranchIds() {
     if (m) {
       const cand = `${m[3]}-${m[2].padStart(2, '0')}-${m[1].padStart(2, '0')}`;
       if (cand === dateKey) return true;
+    }
+    m = raw.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2})$/);
+    if (m) {
+      const y = '20' + m[3];
+      if (`${y}-${m[1].padStart(2, '0')}-${m[2].padStart(2, '0')}` === dateKey) return true;
+      if (`${y}-${m[2].padStart(2, '0')}-${m[1].padStart(2, '0')}` === dateKey) return true;
     }
     return false;
   }
