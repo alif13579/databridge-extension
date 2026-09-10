@@ -3979,10 +3979,11 @@ const ROUTING_OWN_HUB = 'Madanpur';
 // Closed-delivered family: ei status-e parcel sesh (ar asbena).
 const ROUTING_CLOSED_STATUSES = ['delivered', 'partial delivery', 'partial', 'paid return', 'exchange'];
 // ⚠️ vinno hub theke closed | ✓ nij hub theke closed | '' choloman/onnanno.
-function routingParcelSign(status, hub) {
+function routingParcelSign(status, hub, ownHub) {
+  const own = String(ownHub || ROUTING_OWN_HUB || '').trim().toLowerCase();
   const s = (status || '').trim().toLowerCase();
   if (!ROUTING_CLOSED_STATUSES.includes(s)) return '';
-  return (hub || '').trim().toLowerCase() === ROUTING_OWN_HUB.toLowerCase() ? '✓' : '⚠️';
+  return (hub || '').trim().toLowerCase() === own ? '✓' : '⚠️';
 }
 const ROUTING_DECISIONS_KEY = 'routing_decisions';
 const ROUTING_SHEET_CFG_KEY = 'routing_sheet_cfg';
@@ -4064,7 +4065,7 @@ async function fetchRoutingSheetRows(cfg) {
     const to = toIdx >= 0 ? String(r[toIdx] || '').trim() : '';
     const confirm = confirmIdx >= 0 ? String(r[confirmIdx] || '').trim() : '';
     const row = {
-      id, from, to, confirm,
+      id, from, to, confirm, rowNum: i + 1,
       sheetAddress: from && to ? `${from} → ${to}` : (from || to),
       phone: '', customer: '',
       // Hermes step-e bhore jabe (ekhon blank).
@@ -4153,9 +4154,34 @@ async function loadRoutingTab() {
     if (summaryEl) summaryEl.textContent = '';
     return;
   }
+  routingState.cfg = cfg;
+  routingState.tab = tab;
+  routingState.incoming = incoming;
+  routingState.outgoing = outgoing;
+  routingState.decisions = decisions;
+  renderRoutingList();
+  // Hermes enrich: cached instant, bakigulo background-e fetch — seshe re-render.
+  try {
+    await routingEnrichHermes(cfg, [...incoming, ...outgoing], (done, total) => {
+      if (statusEl) statusEl.textContent = `🔌 Hermes ${done}/${total}…`;
+    });
+  } catch (e) {
+    console.warn('[DB] routing hermes enrich failed:', e?.message || e);
+  }
+  renderRoutingList();
+}
+
+let routingState = { cfg: null, tab: '', incoming: [], outgoing: [], decisions: {} };
+
+function renderRoutingList() {
+  const listEl = document.getElementById('routing-list');
+  const statusEl = document.getElementById('routing-status');
+  const summaryEl = document.getElementById('routing-summary');
+  if (!listEl) return;
+  const { cfg, tab, incoming, outgoing, decisions } = routingState;
   const ownBranch = String((cfg || {}).ownBranch || 'Madanpur').trim();
   const sheetRows = [...incoming, ...outgoing];
-  if (statusEl) statusEl.textContent = `📄 ${tab} · ⬇️ ${incoming.length} incoming · ⬆️ ${outgoing.length} outgoing — Hermes info porer step-e asbe।`;
+  if (statusEl && sheetRows.length) statusEl.textContent = `📄 ${tab} · ⬇️ ${incoming.length} incoming · ⬆️ ${outgoing.length} outgoing`;
   const addrMismatch = (row) => !!(row.hermesAddress || '').trim() && (row.sheetAddress || '').trim() !== (row.hermesAddress || '').trim();
   if (!sheetRows.length) {
     listEl.innerHTML = '<div class="card-meta">Ajker tab-e kono row nei।</div>';
@@ -4168,9 +4194,9 @@ async function loadRoutingTab() {
       ? `<div class="routing-decided">✓ ${escapeHtml(d.label)} · ${new Date(d.at).toLocaleString()}${d.extra ? ' · ' + escapeHtml(d.extra) : ''}</div>`
       : '';
     const hist = Array.isArray(row.history) ? row.history : [];
-    const warnCount = hist.filter((h) => routingParcelSign(h.status, h.hub) === '⚠️').length;
+    const warnCount = hist.filter((h) => routingParcelSign(h.status, h.hub, ownBranch) === '⚠️').length;
     const histRows = hist.map((h) => {
-      const sign = routingParcelSign(h.status, h.hub);
+      const sign = routingParcelSign(h.status, h.hub, ownBranch);
       return `<div class="routing-hist-row">
         <span class="routing-sign">${sign}</span>
         <span><b>${escapeHtml(h.id)}</b> · ${escapeHtml(h.address || '—')}<br>
@@ -4233,13 +4259,210 @@ async function decideRouting(id, act, btn) {
   if (btn) btn.textContent = '⏳…';
   try {
     await saveRoutingDecision(id, act, labels[act] || act, extra);
+    // Sheet K (confirm) column-eo likho: approved/wrong-hub label,
+    // update-address hole notun address-tai confirmation.
+    const kValue = act === 'update_address' ? extra : (labels[act] || act);
+    await routingWriteConfirm(id, kValue);
   } catch (e) {
     if (btn) btn.textContent = orig;
     return;
   }
-  loadRoutingTab();
+  renderRoutingList();
 }
 
+// Decision → sheet confirm column (settings K, default K) at that row.
+async function routingWriteConfirm(id, value) {
+  const { cfg, incoming, outgoing } = routingState;
+  if (!cfg) return;
+  const row = [...incoming, ...outgoing].find(r => r.id === id);
+  if (!row || !row.rowNum) return;
+  const letter = String(cfg.confirmCol || 'K').trim().toUpperCase() || 'K';
+  if (!/^[A-Z]{1,3}$/.test(letter)) return;
+  const { token, error } = await hvGetSheetsToken();
+  if (!token) throw new Error(error || 'Sheets auth nei');
+  const tab = routingResolveTab(cfg.tabPattern);
+  const sheetId = routingExtractSheetId(cfg.sheetId);
+  const range = routingSheetRange(`${tab}!${letter}${row.rowNum}`);
+  const res = await fetch(
+    `https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values/${range}?valueInputOption=RAW`,
+    {
+      method: 'PUT',
+      headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ range: `${tab}!${letter}${row.rowNum}`, majorDimension: 'ROWS', values: [[value]] }),
+    });
+  if (!res.ok) throw new Error(`Sheet write failed (${res.status})`);
+  row.confirm = value;
+}
+
+// ══════════════════════════════
+// 🛣️ Routing — Hermes enrich (details + history per consignment)
+// Popup theke Hermes tab-e executeScript: page-er login cookie auto-jay,
+// alada token lage na. Response shape defensive parse (key walk) — Hermes
+// field rename korleo best-effort cholbe; na pele card-e '—' + console-e keys.
+// ══════════════════════════════
+function routingHermesDayKey() {
+  try {
+    return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Dhaka' }).format(new Date());
+  } catch { return new Date().toISOString().slice(0, 10); }
+}
+
+function routingHermesCacheKey() {
+  return 'routing_hermes_' + routingHermesDayKey();
+}
+
+async function routingHermesTab() {
+  const tabs = await chrome.tabs.query({ url: 'https://hermes.pathaointernal.com/*' });
+  const active = (tabs || []).find(t => t.active) || (tabs || [])[0];
+  if (active) return active;
+  const created = await chrome.tabs.create({
+    url: 'https://hermes.pathaointernal.com/orders/all', active: false,
+  });
+  await new Promise(resolve => {
+    let done = false;
+    const finish = () => { if (!done) { done = true; resolve(); } };
+    const timer = setTimeout(finish, 15000);
+    const listener = (tabId, info) => {
+      if (tabId === created.id && info.status === 'complete') {
+        clearTimeout(timer);
+        try { chrome.tabs.onUpdated.removeListener(listener); } catch {}
+        finish();
+      }
+    };
+    try { chrome.tabs.onUpdated.addListener(listener); } catch { finish(); }
+  });
+  return created;
+}
+
+async function routingHermesFetch(path) {
+  const tab = await routingHermesTab();
+  const clean = '/' + String(path || '').replace(/^\/+/, '');
+  const results = await chrome.scripting.executeScript({
+    target: { tabId: tab.id },
+    func: async (p) => {
+      try {
+        const res = await fetch(p, {
+          headers: { 'Accept': 'application/json' },
+          credentials: 'include',
+        });
+        const text = await res.text();
+        let data = null;
+        try { data = JSON.parse(text); } catch { data = text; }
+        return { ok: res.ok, status: res.status, data };
+      } catch (e) {
+        return { ok: false, status: 0, data: null, error: String((e && e.message) || e) };
+      }
+    },
+    args: [clean],
+  });
+  const r = results && results[0] && results[0].result;
+  if (!r) throw new Error('Hermes tab-e exec failed');
+  if (!r.ok) throw new Error(`Hermes ${r.status || 'fetch failed'}`);
+  return r.data;
+}
+
+// Case-insensitive key walk — prothom non-empty string hit.
+function routingWalk(data, keys) {
+  const want = keys.map(k => String(k).toLowerCase());
+  let hit = '';
+  try {
+    (function walk(o) {
+      if (hit || !o || typeof o !== 'object') return;
+      if (Array.isArray(o)) { for (const v of o) { walk(v); if (hit) return; } return; }
+      for (const k of Object.keys(o)) {
+        const v = o[k];
+        if (typeof v === 'string' && want.indexOf(k.toLowerCase()) !== -1 && v.trim()) { hit = v.trim(); return; }
+      }
+      for (const k of Object.keys(o)) { walk(o[k]); if (hit) return; }
+    })(data);
+  } catch {}
+  return hit;
+}
+
+function routingLocalPhone(raw) {
+  const d = String(raw || '').replace(/\D/g, '');
+  if (/^8801[3-9]\d{8}$/.test(d)) return '0' + d.slice(3);
+  if (/^01[3-9]\d{8}$/.test(d)) return d;
+  return '';
+}
+
+function routingExtractDetails(data) {
+  const root = (data && typeof data === 'object' && data.data && typeof data.data === 'object') ? data.data : data;
+  return {
+    status: routingWalk(root, ['status', 'order_status', 'consignment_status', 'state', 'delivery_status']),
+    address: routingWalk(root, ['receiver_address', 'delivery_address', 'customer_address', 'address', 'consignee_address']),
+    phone: routingLocalPhone(routingWalk(root, ['receiver_phone', 'recipient_phone', 'phone', 'customer_phone', 'consignee_phone', 'mobile'])),
+    customer: routingWalk(root, ['receiver_name', 'customer_name', 'customer', 'consignee_name', 'name']),
+    hub: routingWalk(root, ['hub', 'hub_name', 'current_hub', 'origin_hub']),
+    lastMile: routingWalk(root, ['last_mile', 'lastmile', 'last_mile_hub', 'last_mile_hub_name', 'destination_hub']),
+    cod: routingWalk(root, ['cod', 'cod_amount', 'collectable_amount', 'amount']),
+    merchant: routingWalk(root, ['merchant', 'merchant_name', 'shop_name', 'shop']),
+  };
+}
+
+function routingExtractList(data) {
+  if (Array.isArray(data)) return data;
+  if (data && typeof data === 'object') {
+    for (const k of ['data', 'orders', 'list', 'results', 'items']) {
+      if (Array.isArray(data[k])) return data[k];
+    }
+  }
+  return [];
+}
+
+async function routingEnrichOne(id) {
+  const out = { id, hermesAddress: '', hermesStatus: '', hub: '', lastMile: '', phone: '', customer: '', cod: '', merchant: '', history: [] };
+  const details = await routingHermesFetch('/api/v1/orders/' + encodeURIComponent(id) + '/details');
+  const d = routingExtractDetails(details);
+  Object.assign(out, d);
+  if (d.phone) {
+    try {
+      const hist = await routingHermesFetch('/api/v1/orders/all?receiver_phone=' + encodeURIComponent(d.phone) + '&all_order_page=true');
+      out.history = routingExtractList(hist)
+        .map(o => {
+          const e = routingExtractDetails(o);
+          const cid = routingWalk(o, ['consignment_id', 'consignment', 'id']) || '';
+          if (!cid || cid === id) return null;
+          return { id: cid, address: e.address, hub: e.lastMile || e.hub, status: e.status };
+        })
+        .filter(Boolean)
+        .slice(0, 20);
+    } catch (e) {
+      console.warn('[DB] routing history failed:', id, e?.message || e);
+    }
+  }
+  return out;
+}
+
+async function routingEnrichHermes(cfg, rows, onProgress) {
+  const cacheKey = routingHermesCacheKey();
+  let cache = {};
+  try {
+    const r = await chrome.storage.local.get([cacheKey]);
+    cache = r[cacheKey] || {};
+  } catch {}
+  // Cached age bosiye dao (instant render), bakigulo background-e ano.
+  rows.forEach(row => {
+    const c = cache[row.id];
+    if (c) Object.assign(row, c, { history: Array.isArray(c.history) ? c.history : [] });
+  });
+  const pending = rows.filter(row => !cache[row.id]);
+  let done = 0;
+  for (const row of pending) {
+    try {
+      const info = await routingEnrichOne(row.id);
+      Object.assign(row, info);
+      cache[row.id] = info;
+    } catch (e) {
+      console.warn('[DB] routing enrich failed:', row.id, e?.message || e);
+      row.hermesError = e?.message || 'failed';
+    }
+    done++;
+    try { onProgress && onProgress(done, pending.length); } catch {}
+    await new Promise(r => setTimeout(r, 150));
+  }
+  try { await chrome.storage.local.set({ [cacheKey]: cache }); } catch {}
+  return rows;
+}
 // ══════════════════════════════
 // 🚚 RUN VALIDATION REPORT TAB
 // ══════════════════════════════
