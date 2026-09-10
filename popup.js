@@ -4032,7 +4032,7 @@ async function loadRoutingSheetCfg() {
   } catch { return null; }
 }
 
-// Ajker tab theke rows: [{id, sheetAddress, phone, customer}].
+// Ajker tab theke rows: [{id, from, to, confirm}].
 async function fetchRoutingSheetRows(cfg) {
   const { token, error } = await hvGetSheetsToken();
   if (!token) throw new Error(error || 'Google sheets auth nei — Connect tab theke sign in koro');
@@ -4049,27 +4049,33 @@ async function fetchRoutingSheetRows(cfg) {
   const data = await res.json().catch(() => ({}));
   const values = Array.isArray(data.values) ? data.values : [];
   const headerRow = Math.max(1, parseInt(cfg.headerRow, 10) || 1);
-  const idIdx = routingColToIndex(cfg.idCol || 'A');
-  const addrIdx = routingColToIndex(cfg.addrCol || 'B');
-  const phoneIdx = routingColToIndex(cfg.phoneCol || '');
-  const custIdx = routingColToIndex(cfg.custCol || '');
-  if (idIdx < 0) throw new Error('ID column letter thik daw (jemon A)');
-  const rows = [];
+  const idIdx = routingColToIndex(cfg.idCol || 'D');
+  const fromIdx = routingColToIndex(cfg.fromCol || 'C');
+  const toIdx = routingColToIndex(cfg.toCol || 'E');
+  const confirmIdx = routingColToIndex(cfg.confirmCol || 'K');
+  if (idIdx < 0) throw new Error('ID column letter thik daw (jemon D)');
+  const own = String(cfg.ownBranch || 'Madanpur').trim().toLowerCase();
+  const incoming = [], outgoing = [];
   for (let i = headerRow; i < values.length; i++) {
     const r = values[i] || [];
     const id = String(r[idIdx] || '').trim();
     if (!id) continue;
-    rows.push({
-      id,
-      sheetAddress: addrIdx >= 0 ? String(r[addrIdx] || '').trim() : '',
-      phone: phoneIdx >= 0 ? String(r[phoneIdx] || '').trim() : '',
-      customer: custIdx >= 0 ? String(r[custIdx] || '').trim() : '',
+    const from = fromIdx >= 0 ? String(r[fromIdx] || '').trim() : '';
+    const to = toIdx >= 0 ? String(r[toIdx] || '').trim() : '';
+    const confirm = confirmIdx >= 0 ? String(r[confirmIdx] || '').trim() : '';
+    const row = {
+      id, from, to, confirm,
+      sheetAddress: from && to ? `${from} → ${to}` : (from || to),
+      phone: '', customer: '',
       // Hermes step-e bhore jabe (ekhon blank).
       hermesAddress: '', hermesStatus: '', hub: '', lastMile: '',
       merchant: '', cod: '', history: [],
-    });
+    };
+    // Destination wins: To == self → incoming, else From == self → outgoing.
+    if (to.toLowerCase() === own) incoming.push(row);
+    else if (from.toLowerCase() === own) outgoing.push(row);
   }
-  return { tab, rows };
+  return { tab, incoming, outgoing };
 }
 
 function bindRoutingSettingsOnce(cfg) {
@@ -4087,10 +4093,11 @@ function bindRoutingSettingsOnce(cfg) {
     const next = {
       sheetId: ($('routing-sheet-id') || {}).value || '',
       tabPattern: (($('routing-tab') || {}).value || '').trim() || 'Routing {dd}',
-      idCol: (($('routing-col-id') || {}).value || '').trim() || 'A',
-      addrCol: (($('routing-col-addr') || {}).value || '').trim() || 'B',
-      phoneCol: (($('routing-col-phone') || {}).value || '').trim(),
-      custCol: (($('routing-col-cust') || {}).value || '').trim(),
+      idCol: (($('routing-col-id') || {}).value || '').trim() || 'D',
+      fromCol: (($('routing-col-from') || {}).value || '').trim() || 'C',
+      toCol: (($('routing-col-to') || {}).value || '').trim() || 'E',
+      confirmCol: (($('routing-col-confirm') || {}).value || '').trim() || 'K',
+      ownBranch: (($('routing-own-branch') || {}).value || '').trim() || 'Madanpur',
       headerRow: (($('routing-header-row') || {}).value || '').trim() || '1',
     };
     try {
@@ -4106,10 +4113,11 @@ function fillRoutingSettings(cfg) {
   cfg = cfg || {};
   set('routing-sheet-id', cfg.sheetId);
   set('routing-tab', cfg.tabPattern || 'Routing {dd}');
-  set('routing-col-id', cfg.idCol || 'A');
-  set('routing-col-addr', cfg.addrCol || 'B');
-  set('routing-col-phone', cfg.phoneCol || '');
-  set('routing-col-cust', cfg.custCol || '');
+  set('routing-col-id', cfg.idCol || 'D');
+  set('routing-col-from', cfg.fromCol || 'C');
+  set('routing-col-to', cfg.toCol || 'E');
+  set('routing-col-confirm', cfg.confirmCol || 'K');
+  set('routing-own-branch', cfg.ownBranch || 'Madanpur');
   set('routing-header-row', cfg.headerRow || '1');
 }
 
@@ -4136,23 +4144,25 @@ async function loadRoutingTab() {
   }
   if (statusEl) statusEl.textContent = '⏳ Sheet theke ajker data ana hocche…';
   listEl.innerHTML = '';
-  let tab = '', sheetRows = [];
+  let tab = '', incoming = [], outgoing = [];
   try {
     const fetched = await fetchRoutingSheetRows(cfg);
-    tab = fetched.tab; sheetRows = fetched.rows;
+    tab = fetched.tab; incoming = fetched.incoming; outgoing = fetched.outgoing;
   } catch (e) {
     if (statusEl) statusEl.textContent = `⚠ ${e.message || e}`;
     if (summaryEl) summaryEl.textContent = '';
     return;
   }
-  if (statusEl) statusEl.textContent = `📄 ${tab} · ${sheetRows.length} rows — Hermes info porer step-e asbe।`;
+  const ownBranch = String((cfg || {}).ownBranch || 'Madanpur').trim();
+  const sheetRows = [...incoming, ...outgoing];
+  if (statusEl) statusEl.textContent = `📄 ${tab} · ⬇️ ${incoming.length} incoming · ⬆️ ${outgoing.length} outgoing — Hermes info porer step-e asbe।`;
   const addrMismatch = (row) => !!(row.hermesAddress || '').trim() && (row.sheetAddress || '').trim() !== (row.hermesAddress || '').trim();
   if (!sheetRows.length) {
     listEl.innerHTML = '<div class="card-meta">Ajker tab-e kono row nei।</div>';
     if (summaryEl) summaryEl.textContent = `📄 ${tab} · 0 rows`;
     return;
   }
-  listEl.innerHTML = sheetRows.map((row) => {
+  const renderRow = (row) => {
     const d = decisions[row.id];
     const stateLine = d
       ? `<div class="routing-decided">✓ ${escapeHtml(d.label)} · ${new Date(d.at).toLocaleString()}${d.extra ? ' · ' + escapeHtml(d.extra) : ''}</div>`
@@ -4173,8 +4183,8 @@ async function loadRoutingTab() {
       : `<div class="card-meta">📞 Hermes info asle history asbe</div>`;
     return `<div class="history-card routing-card">
       <div class="card-main">
-        <div class="card-text">${escapeHtml(row.id)}${row.cod ? ` <span class="routing-cod">৳${escapeHtml(String(row.cod))}</span>` : ''}</div>
-        <div class="card-meta">${escapeHtml([row.customer, row.phone, row.merchant].filter(Boolean).join(' · ') || '—')}</div>
+        <div class="card-text">${escapeHtml(row.id)}${row.cod ? ` <span class="routing-cod">৳${escapeHtml(String(row.cod))}</span>` : ''}${row.confirm ? ` <span class="routing-diff" style="background:#dcfce7;color:#15803d">✔ ${escapeHtml(row.confirm)}</span>` : ''}</div>
+        <div class="card-meta">🛣️ ${escapeHtml(row.from || '?')} → ${escapeHtml(row.to || '?')}</div>
         <div class="routing-addr">📄 Sheet: ${escapeHtml(row.sheetAddress || '—')}</div>
         <div class="routing-addr">🏢 Hermes: ${escapeHtml(row.hermesAddress || '—')}${addrMismatch(row) ? ' <span class="routing-diff">≠ mismatch</span>' : ''}</div>
         <div class="card-meta">${(row.hermesStatus || row.hub) ? `Status: <b>${escapeHtml(row.hermesStatus || '—')}</b> · Hub: ${escapeHtml(row.hub || '—')} → Last mile: ${escapeHtml(row.lastMile || '—')}` : 'Status: — (Hermes porer step-e)'}</div>
@@ -4187,11 +4197,15 @@ async function loadRoutingTab() {
         </div>
       </div>
     </div>`;
-  }).join('');
+  };
+  const groupHdr = (t) => `<div class="dash-sec-title" style="margin-top:10px">${t}</div>`;
+  listEl.innerHTML =
+    (incoming.length ? groupHdr(`⬇️ Incoming — ${ownBranch} (${incoming.length})`) + incoming.map(renderRow).join('') : '') +
+    (outgoing.length ? groupHdr(`⬆️ Outgoing — ${ownBranch} theke (${outgoing.length})`) + outgoing.map(renderRow).join('') : '');
   const counts = { approved: 0, wrong_hub: 0, update_address: 0 };
   Object.values(decisions).forEach((d) => { if (counts[d.act] !== undefined) counts[d.act]++; });
   const decided = sheetRows.filter((r) => decisions[r.id]).length;
-  if (summaryEl) summaryEl.textContent = `📄 ${tab} · ${sheetRows.length} rows · Decided ${decided} — ✅ ${counts.approved} · 🏢 ${counts.wrong_hub} · 📝 ${counts.update_address}`;
+  if (summaryEl) summaryEl.textContent = `📄 ${tab} · ⬇️${incoming.length} ⬆️${outgoing.length} · Decided ${decided} — ✅ ${counts.approved} · 🏢 ${counts.wrong_hub} · 📝 ${counts.update_address}`;
   listEl.querySelectorAll('[data-route-act]').forEach((btn) => {
     btn.addEventListener('click', () => decideRouting(btn.dataset.routeId, btn.dataset.routeAct, btn));
   });
