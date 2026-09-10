@@ -1172,3 +1172,7 @@ html[data-theme="light"] .run-st-counts { color: #64748b; }
 html[data-theme="light"] .run-st-counts b.ok { color: #15803d; }
 html[data-theme="light"] .run-st-counts b.warn { color: #b91c1c; }
 html[data-theme="light"] .run-eye-btn { background: #e0f2fe; color: #0284c7; border-color: #7dd3fc; }
+
+/* ── Routing sheet settings ── */
+.routing-cfg-toggle { font-size: 11px; color: #00d4ff; cursor: pointer; padding: 6px 0 0; font-weight: bold; }
+html[data-theme="light"] .routing-cfg-toggle { color: #0284c7; }

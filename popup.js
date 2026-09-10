@@ -3971,45 +3971,9 @@ function renderPerfReport(reportEl, mode, summary, modeRows) {
 
 document.addEventListener('DOMContentLoaded', init);
 // ══════════════════════════════
-// 🛣️ Routing Approval (DEMO — wiring later)
-// Flow (future): sheet rows fetch → Hermes info per consignment → render.
-// Decision click → sheet-এ save (এখন local demo store).
-// ══════════════════════════════
-const ROUTING_DEMO_ROWS = [
-  { id: 'DP0509263HNLMG', customer: 'Ms.Sadia', phone: '01810304154',
-    sheetAddress: 'Bailor Shantibazar, Sonargaon, Narayanganj',
-    hermesAddress: 'Bailor Shantibazar, Sonargaon, Narayanganj',
-    hermesStatus: 'Return Requested', hub: 'Madanpur', lastMile: 'Madanpur',
-    cod: 1300, merchant: 'PaikariGhor',
-    history: [
-      { id: 'DP0209261AAB12', address: 'Bailor Shantibazar, Sonargaon', hub: 'Madanpur', status: 'Delivered' },
-      { id: 'DP2808269ZZQ44', address: 'Bailor Notun Bazar, Sonargaon', hub: 'Sonargaon', status: 'Partial Delivery' },
-    ] },
-  { id: 'DT070926KF9C6U', customer: 'Noor Hossain', phone: '01855550121',
-    sheetAddress: 'Chairman bari, South Bakoliya',
-    hermesAddress: 'Ali star building, 19 no ward, South Bakoliya',
-    hermesStatus: 'Assigned for Delivery', hub: 'Madanpur', lastMile: 'Madanpur',
-    cod: 850, merchant: 'DailyBazar',
-    history: [
-      { id: 'DT0109267QWERTY', address: 'Chairman bari, South Bakoliya', hub: 'Madanpur', status: 'Delivered' },
-      { id: 'DT2508263ASDFGH', address: 'Chairman bari, South Bakoliya', hub: 'Madanpur', status: 'Exchange' },
-      { id: 'DT2008269ZXCVBN', address: 'Agrabad, Chattogram', hub: 'Chattogram', status: 'Delivered' },
-    ] },
-  { id: 'DM050926NAYR86', customer: 'Karim Sheikh', phone: '01719348451',
-    sheetAddress: 'House 12, Mograpara Bazar',
-    hermesAddress: 'House 12, Mograpara Bazar',
-    hermesStatus: 'On Hold', hub: 'Sonargaon', lastMile: 'Madanpur',
-    cod: 2200, merchant: 'TechPoint',
-    history: [
-      { id: 'DM2808261QAZWSX', address: 'House 12, Mograpara Bazar', hub: 'Sonargaon', status: 'Assigned for Delivery' },
-    ] },
-  { id: 'DB060926W7PHSJ', customer: 'Rina Akter', phone: '01890235366',
-    sheetAddress: 'Jatrabari, Dhaka',
-    hermesAddress: 'Jatrabari, Dhaka',
-    hermesStatus: 'Delivered', hub: 'Madanpur', lastMile: 'Madanpur',
-    cod: 499, merchant: 'StyleHub',
-    history: [] },
-];
+// 🛣️ Routing Approval (sheet LIVE — Hermes step next)
+// Flow: ajker tab theke sheet rows → Hermes info per consignment → render.
+// Decision click → sheet-এ save (ekhon local store).
 // TODO(wire-up): nijer hub — data-user hubs[0].name (hermes-api.js HermesApi.user()).
 const ROUTING_OWN_HUB = 'Madanpur';
 // Closed-delivered family: ei status-e parcel sesh (ar asbena).
@@ -4020,20 +3984,175 @@ function routingParcelSign(status, hub) {
   if (!ROUTING_CLOSED_STATUSES.includes(s)) return '';
   return (hub || '').trim().toLowerCase() === ROUTING_OWN_HUB.toLowerCase() ? '✓' : '⚠️';
 }
-const ROUTING_DECISIONS_KEY = 'routing_decisions_demo';
+const ROUTING_DECISIONS_KEY = 'routing_decisions';
+const ROUTING_SHEET_CFG_KEY = 'routing_sheet_cfg';
+
+// Dhaka date tokens — app-er resolveTabName-er same semantics:
+// {dd}=09, {d}=9, {mm}=09, {m}=9, {yyyy}=2026, {yy}=26. Token na thakle fixed.
+function routingResolveTab(pattern, date) {
+  const p = (pattern || '').trim() || 'Routing {dd}';
+  const dt = date || new Date();
+  const parts = new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'Asia/Dhaka', day: '2-digit', month: '2-digit', year: 'numeric',
+  }).formatToParts(dt);
+  const get = t => (parts.find(x => x.type === t) || {}).value || '';
+  const dd = get('day'), yyyy = get('year');
+  const mm = get('month');
+  const d = String(parseInt(dd, 10) || 0), m = String(parseInt(mm, 10) || 0);
+  return p.split('{dd}').join(dd).split('{d}').join(d)
+    .split('{mm}').join(mm).split('{m}').join(m)
+    .split('{yyyy}').join(yyyy).split('{yy}').join(yyyy.slice(-2));
+}
+
+function routingColToIndex(letter) {
+  const t = String(letter || '').trim().toUpperCase();
+  if (!/^[A-Z]{1,3}$/.test(t)) return -1;
+  let n = 0;
+  for (const ch of t) n = n * 26 + (ch.charCodeAt(0) - 64);
+  return n - 1;
+}
+
+function routingExtractSheetId(input) {
+  const t = String(input || '').trim();
+  if (!t) return '';
+  const m = t.match(/spreadsheets\/d\/([a-zA-Z0-9-_]+)/);
+  return m ? m[1] : t;
+}
+
+function routingSheetRange(tab) {
+  const t = String(tab || '');
+  const q = /[^A-Za-z0-9_]/.test(t) ? `'${t.replace(/'/g, "''")}'` : t;
+  return encodeURIComponent(q);
+}
+
+async function loadRoutingSheetCfg() {
+  try {
+    const r = await chrome.storage.local.get([ROUTING_SHEET_CFG_KEY]);
+    return r[ROUTING_SHEET_CFG_KEY] || null;
+  } catch { return null; }
+}
+
+// Ajker tab theke rows: [{id, sheetAddress, phone, customer}].
+async function fetchRoutingSheetRows(cfg) {
+  const { token, error } = await hvGetSheetsToken();
+  if (!token) throw new Error(error || 'Google sheets auth nei — Connect tab theke sign in koro');
+  const sheetId = routingExtractSheetId(cfg.sheetId);
+  if (!sheetId) throw new Error('Sheet ID daw settings-e');
+  const tab = routingResolveTab(cfg.tabPattern);
+  const res = await fetch(
+    `https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values/${routingSheetRange(tab)}`,
+    { headers: { 'Authorization': `Bearer ${token}` } });
+  if (!res.ok) {
+    if (res.status === 404) throw new Error(`Tab "${tab}" paini`);
+    throw new Error(`Sheets read failed (${res.status})`);
+  }
+  const data = await res.json().catch(() => ({}));
+  const values = Array.isArray(data.values) ? data.values : [];
+  const headerRow = Math.max(1, parseInt(cfg.headerRow, 10) || 1);
+  const idIdx = routingColToIndex(cfg.idCol || 'A');
+  const addrIdx = routingColToIndex(cfg.addrCol || 'B');
+  const phoneIdx = routingColToIndex(cfg.phoneCol || '');
+  const custIdx = routingColToIndex(cfg.custCol || '');
+  if (idIdx < 0) throw new Error('ID column letter thik daw (jemon A)');
+  const rows = [];
+  for (let i = headerRow; i < values.length; i++) {
+    const r = values[i] || [];
+    const id = String(r[idIdx] || '').trim();
+    if (!id) continue;
+    rows.push({
+      id,
+      sheetAddress: addrIdx >= 0 ? String(r[addrIdx] || '').trim() : '',
+      phone: phoneIdx >= 0 ? String(r[phoneIdx] || '').trim() : '',
+      customer: custIdx >= 0 ? String(r[custIdx] || '').trim() : '',
+      // Hermes step-e bhore jabe (ekhon blank).
+      hermesAddress: '', hermesStatus: '', hub: '', lastMile: '',
+      merchant: '', cod: '', history: [],
+    });
+  }
+  return { tab, rows };
+}
+
+function bindRoutingSettingsOnce(cfg) {
+  if (bindRoutingSettingsOnce.done) return;
+  bindRoutingSettingsOnce.done = true;
+  const $ = id => document.getElementById(id);
+  const toggle = $('routing-cfg-toggle'), box = $('routing-cfg');
+  if (toggle && box) toggle.addEventListener('click', () => {
+    const open = box.style.display === 'none';
+    box.style.display = open ? '' : 'none';
+    toggle.textContent = open ? '⚙️ Sheet settings ▾' : '⚙️ Sheet settings ▸';
+  });
+  const saveBtn = $('routing-save-btn');
+  if (saveBtn) saveBtn.addEventListener('click', async () => {
+    const next = {
+      sheetId: ($('routing-sheet-id') || {}).value || '',
+      tabPattern: (($('routing-tab') || {}).value || '').trim() || 'Routing {dd}',
+      idCol: (($('routing-col-id') || {}).value || '').trim() || 'A',
+      addrCol: (($('routing-col-addr') || {}).value || '').trim() || 'B',
+      phoneCol: (($('routing-col-phone') || {}).value || '').trim(),
+      custCol: (($('routing-col-cust') || {}).value || '').trim(),
+      headerRow: (($('routing-header-row') || {}).value || '').trim() || '1',
+    };
+    try {
+      await chrome.storage.local.set({ [ROUTING_SHEET_CFG_KEY]: next });
+      loadRoutingTab();
+    } catch (e) { console.warn('[DB] routing cfg save failed:', e); }
+  });
+}
+
+function fillRoutingSettings(cfg) {
+  const $ = id => document.getElementById(id);
+  const set = (id, v) => { const el = $(id); if (el && el.value !== undefined && document.activeElement !== el) el.value = v || ''; };
+  cfg = cfg || {};
+  set('routing-sheet-id', cfg.sheetId);
+  set('routing-tab', cfg.tabPattern || 'Routing {dd}');
+  set('routing-col-id', cfg.idCol || 'A');
+  set('routing-col-addr', cfg.addrCol || 'B');
+  set('routing-col-phone', cfg.phoneCol || '');
+  set('routing-col-cust', cfg.custCol || '');
+  set('routing-header-row', cfg.headerRow || '1');
+}
 
 async function loadRoutingTab() {
   const listEl = document.getElementById('routing-list');
   const statusEl = document.getElementById('routing-status');
   const summaryEl = document.getElementById('routing-summary');
   if (!listEl) return;
+  bindRoutingSettingsOnce();
+  const cfg = await loadRoutingSheetCfg();
+  fillRoutingSettings(cfg);
+  const reloadBtn = document.getElementById('routing-refresh-btn');
+  if (reloadBtn) reloadBtn.onclick = () => loadRoutingTab();
   let decisions = {};
   try {
-    const r = await chrome.storage.local.get([ROUTING_DECISIONS_KEY]);
-    decisions = r[ROUTING_DECISIONS_KEY] || {};
-  } catch { /* demo proceeds without saved state */ }
-  const addrMismatch = (row) => (row.sheetAddress || '').trim() !== (row.hermesAddress || '').trim();
-  listEl.innerHTML = ROUTING_DEMO_ROWS.map((row) => {
+    const r = await chrome.storage.local.get([ROUTING_DECISIONS_KEY, 'routing_decisions_demo']);
+    decisions = r[ROUTING_DECISIONS_KEY] || r['routing_decisions_demo'] || {};
+  } catch { /* proceeds without saved state */ }
+  if (!cfg || !routingExtractSheetId(cfg.sheetId)) {
+    if (statusEl) statusEl.textContent = 'Sheet settings-e Sheet ID daw (⚙️ kholo) — tarpor ajker tab theke data asbe।';
+    listEl.innerHTML = '';
+    if (summaryEl) summaryEl.textContent = '';
+    return;
+  }
+  if (statusEl) statusEl.textContent = '⏳ Sheet theke ajker data ana hocche…';
+  listEl.innerHTML = '';
+  let tab = '', sheetRows = [];
+  try {
+    const fetched = await fetchRoutingSheetRows(cfg);
+    tab = fetched.tab; sheetRows = fetched.rows;
+  } catch (e) {
+    if (statusEl) statusEl.textContent = `⚠ ${e.message || e}`;
+    if (summaryEl) summaryEl.textContent = '';
+    return;
+  }
+  if (statusEl) statusEl.textContent = `📄 ${tab} · ${sheetRows.length} rows — Hermes info porer step-e asbe।`;
+  const addrMismatch = (row) => !!(row.hermesAddress || '').trim() && (row.sheetAddress || '').trim() !== (row.hermesAddress || '').trim();
+  if (!sheetRows.length) {
+    listEl.innerHTML = '<div class="card-meta">Ajker tab-e kono row nei।</div>';
+    if (summaryEl) summaryEl.textContent = `📄 ${tab} · 0 rows`;
+    return;
+  }
+  listEl.innerHTML = sheetRows.map((row) => {
     const d = decisions[row.id];
     const stateLine = d
       ? `<div class="routing-decided">✓ ${escapeHtml(d.label)} · ${new Date(d.at).toLocaleString()}${d.extra ? ' · ' + escapeHtml(d.extra) : ''}</div>`
@@ -4051,14 +4170,14 @@ async function loadRoutingTab() {
     const histBlock = hist.length
       ? `<button class="routing-hist-toggle" data-route-hist="${escapeHtml(row.id)}">📞 Same number (${hist.length})${warnCount ? ` · ⚠️ ${warnCount}` : ''} ▸</button>
          <div class="routing-hist-list" id="rhist-${escapeHtml(row.id)}" style="display:none">${histRows || '<div class="card-meta">—</div>'}</div>`
-      : `<div class="card-meta">📞 Same number: first parcel</div>`;
+      : `<div class="card-meta">📞 Hermes info asle history asbe</div>`;
     return `<div class="history-card routing-card">
       <div class="card-main">
-        <div class="card-text">${escapeHtml(row.id)} <span class="routing-cod">৳${row.cod}</span></div>
-        <div class="card-meta">${escapeHtml(row.customer)} · ${escapeHtml(row.phone)} · ${escapeHtml(row.merchant)}</div>
+        <div class="card-text">${escapeHtml(row.id)}${row.cod ? ` <span class="routing-cod">৳${escapeHtml(String(row.cod))}</span>` : ''}</div>
+        <div class="card-meta">${escapeHtml([row.customer, row.phone, row.merchant].filter(Boolean).join(' · ') || '—')}</div>
         <div class="routing-addr">📄 Sheet: ${escapeHtml(row.sheetAddress || '—')}</div>
         <div class="routing-addr">🏢 Hermes: ${escapeHtml(row.hermesAddress || '—')}${addrMismatch(row) ? ' <span class="routing-diff">≠ mismatch</span>' : ''}</div>
-        <div class="card-meta">Status: <b>${escapeHtml(row.hermesStatus)}</b> · Hub: ${escapeHtml(row.hub)} → Last mile: ${escapeHtml(row.lastMile)}${row.hub !== row.lastMile ? ' <span class="routing-diff">≠ hub mismatch</span>' : ''}</div>
+        <div class="card-meta">${(row.hermesStatus || row.hub) ? `Status: <b>${escapeHtml(row.hermesStatus || '—')}</b> · Hub: ${escapeHtml(row.hub || '—')} → Last mile: ${escapeHtml(row.lastMile || '—')}` : 'Status: — (Hermes porer step-e)'}</div>
         ${histBlock}
         ${stateLine}
         <div class="card-actions">
@@ -4071,9 +4190,8 @@ async function loadRoutingTab() {
   }).join('');
   const counts = { approved: 0, wrong_hub: 0, update_address: 0 };
   Object.values(decisions).forEach((d) => { if (counts[d.act] !== undefined) counts[d.act]++; });
-  const decided = Object.keys(decisions).length;
-  if (summaryEl) summaryEl.textContent = `Decided ${decided}/${ROUTING_DEMO_ROWS.length} — ✅ ${counts.approved} · 🏢 ${counts.wrong_hub} · 📝 ${counts.update_address}`;
-  if (statusEl) statusEl.textContent = 'Sheet + Hermes connect hole live data asbe — ekhon demo data।';
+  const decided = sheetRows.filter((r) => decisions[r.id]).length;
+  if (summaryEl) summaryEl.textContent = `📄 ${tab} · ${sheetRows.length} rows · Decided ${decided} — ✅ ${counts.approved} · 🏢 ${counts.wrong_hub} · 📝 ${counts.update_address}`;
   listEl.querySelectorAll('[data-route-act]').forEach((btn) => {
     btn.addEventListener('click', () => decideRouting(btn.dataset.routeId, btn.dataset.routeAct, btn));
   });
@@ -4086,20 +4204,13 @@ async function loadRoutingTab() {
       btn.innerHTML = btn.innerHTML.replace(open ? '▾' : '▸', open ? '▸' : '▾');
     });
   });
-  const reloadBtn = document.getElementById('routing-refresh-btn');
-  if (reloadBtn && !reloadBtn.__dbBound) {
-    reloadBtn.__dbBound = true;
-    reloadBtn.addEventListener('click', () => loadRoutingTab());
-  }
 }
 
 async function decideRouting(id, act, btn) {
   const labels = { approved: 'Approved', wrong_hub: 'Wrong Hub', update_address: 'Update Address' };
   let extra = '';
   if (act === 'update_address') {
-    const row = ROUTING_DEMO_ROWS.find((r) => r.id === id);
-    const cur = (row && row.hermesAddress) || '';
-    const val = prompt('Notun address likho:', cur);
+    const val = prompt('Notun address likho:', '');
     if (val === null) return; // cancelled
     extra = (val || '').trim();
     if (!extra) return;

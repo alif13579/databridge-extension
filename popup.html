@@ -139,11 +139,34 @@
     </div>
   </div>
 
-  <!-- ── Routing Approval Tab (demo) ── -->
+  <!-- ── Routing Approval Tab ── -->
   <div class="tab-content" id="tab-routing">
     <div class="dash-cc-section">
-      <div class="dash-sec-title">🛣️ Routing Approval <span class="routing-demo-tag">DEMO</span></div>
-      <div class="dash-cc-status" id="routing-status">Sheet + Hermes connect hole live data asbe — ekhon demo data।</div>
+      <div class="dash-sec-title">🛣️ Routing Approval</div>
+      <div class="dash-cc-status" id="routing-status">Sheet connect koro — ajker tab theke data asbe।</div>
+      <div class="routing-cfg-toggle" id="routing-cfg-toggle">⚙️ Sheet settings ▸</div>
+      <div id="routing-cfg" style="display:none">
+        <div class="dash-cc-row">
+          <span class="dash-cc-label">Sheet</span>
+          <input type="text" class="dash-cc-date" id="routing-sheet-id" placeholder="Sheet ID / link" style="flex:1">
+        </div>
+        <div class="dash-cc-row">
+          <span class="dash-cc-label">Tab</span>
+          <input type="text" class="dash-cc-date" id="routing-tab" placeholder="Routing {dd}" style="flex:1">
+        </div>
+        <div class="dash-cc-row">
+          <span class="dash-cc-label">Cols</span>
+          <input type="text" class="dash-cc-date" id="routing-col-id" placeholder="ID col (A)" style="flex:1;max-width:70px">
+          <input type="text" class="dash-cc-date" id="routing-col-addr" placeholder="Addr (B)" style="flex:1;max-width:70px">
+          <input type="text" class="dash-cc-date" id="routing-col-phone" placeholder="Ph (C)" style="flex:1;max-width:70px">
+        </div>
+        <div class="dash-cc-row">
+          <span class="dash-cc-label"></span>
+          <input type="text" class="dash-cc-date" id="routing-col-cust" placeholder="Customer (D)" style="flex:1;max-width:90px">
+          <input type="text" class="dash-cc-date" id="routing-header-row" placeholder="Hdr row (1)" style="flex:1;max-width:90px">
+        </div>
+        <button class="dash-export-btn dash-cc-export-btn" id="routing-save-btn">💾 Save settings</button>
+      </div>
       <button class="dash-export-btn dash-cc-export-btn" id="routing-refresh-btn">🔄 Reload</button>
       <div id="routing-list"></div>
       <div class="dash-cc-status" id="routing-summary"></div>
