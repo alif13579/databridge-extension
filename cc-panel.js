@@ -978,6 +978,22 @@
     return effectiveLookups(conn).length > 0 && effectiveWrites(conn).length > 0;
   }
 
+  // Socket binding (CC 🔌) + neutral library → legacy conn shape, so
+  // bulkSyncOneConnection reuses one code path. binding-এর field keys legacy
+  // kind strings-এর সমান by design (app CcField); scope আসে LIB থেকে।
+  function ccAdaptBinding(b, lib) {
+    const mapKind = list => (Array.isArray(list) ? list : [])
+      .filter(r => r && String(r.colRef || '').trim())
+      .map(r => ({ colRef: String(r.colRef).trim(), kind: String(r.field || r.kind || ''), mode: r.mode === 'text' ? 'text' : 'index' }));
+    return {
+      lookups: mapKind(b.lookups), writes: mapKind(b.writes),
+      tabPattern: lib.tabPattern || 'Day {dd}', headerRow: lib.headerRow || 1,
+      sheetId: lib.sheetId || '', sheetName: lib.sheetName || lib.nickname || '',
+      scopeType: lib.scopeType || 'global', scopeMonth: lib.scopeMonth || '',
+      scopeFrom: lib.scopeFrom || '', scopeTo: lib.scopeTo || '', enabled: true,
+    };
+  }
+
   // Date scope: most-specific covering scope wins (range > month > global),
   // same as the app's SheetScope.selectForDate. yyyy-MM-dd strings compare
   // lexicographically, so no date parsing is needed.
@@ -1380,7 +1396,7 @@
     if (!lookups.length || !writes.length) throw new Error('lookup/write rule নেই');
     const cidRule = lookups.find(r => r.kind === 'consignment');
     if (!cidRule) throw new Error('consignment lookup নেই — কোন column দিযে মিলাবো বোঝা যাচ্ছে না');
-    const tab = (conn.tabPattern || 'Day {dd}').replace('{dd}', dateKey.split('-')[2]);
+    const tab = resolveConnTab(conn.tabPattern, dateKey);
     const hr = (conn.headerRow >= 1 && conn.headerRow <= 20) ? conn.headerRow : 1;
     const headerCache = {};
     const cidLetter = await resolveLetter(token, conn.sheetId, tab, cidRule, hr, headerCache);
@@ -1467,6 +1483,19 @@
       if (!token) throw new Error(error || 'Sheets permission নেই — extension popup থেকে re-login করুন');
       let totConns = 0, totScanned = 0, totFilled = 0, totRows = 0, totCells = 0, totNoCc = 0;
       const errs = [];
+      // NEW all-in-one bindings (socket 🔌 + library) — fetchCcTargets scope
+      // filter করেই দেয়; legacy conns-এর সাথে merge করে নিচে একসাথে চালাই।
+      const adaptedByBranch = {};
+      try {
+        const tgts = await fetchCcTargets(ccIdToken, branchIds, dateKey);
+        tgts.forEach(t => {
+          const ad = ccAdaptBinding(t.binding, t.lib);
+          if (!ad.lookups.length || !ad.writes.length) return;
+          (adaptedByBranch[t.branchId] = adaptedByBranch[t.branchId] || []).push(ad);
+        });
+      } catch (e) {
+        console.warn('[DB CC] bulk: bindings read failed:', e?.message || e);
+      }
       for (const branchId of branchIds) {
         let conns = [];
         try {
@@ -1474,7 +1503,8 @@
             `${FIREBASE_URL}/config/connectors/${encodeURIComponent(branchId)}/current.json?auth=${ccIdToken}`);
           const connObj = await connRes.json().catch(() => ({})) || {};
           conns = selectForDate(
-            Object.values(connObj).filter(isRemarkConn).filter(c => c.enabled !== false),
+            [...Object.values(connObj).filter(isRemarkConn).filter(c => c.enabled !== false),
+             ...(adaptedByBranch[branchId] || [])],
             dateKey);
         } catch (e) {
           errs.push(`${branchId}: connection পড়া যায়নি`);

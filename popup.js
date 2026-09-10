@@ -2981,6 +2981,36 @@ function getSelectedHvBranchIds() {
     return hvEffectiveRules(conn, 'lookup').length > 0 && hvEffectiveRules(conn, 'write').length > 0;
   }
 
+  // All-in-one socket binding (CC 🔌) + neutral library → legacy conn shape,
+  // so hvBulkSyncOneConnection reuses one code path. binding-এর field keys
+  // legacy kind strings-এর সমান by design (app CcField); scope আসে LIB থেকে।
+  function hvAdaptBinding(b, lib) {
+    const mapKind = list => (Array.isArray(list) ? list : [])
+      .filter(r => r && String(r.colRef || '').trim())
+      .map(r => ({ colRef: String(r.colRef).trim(), kind: String(r.field || r.kind || ''), mode: r.mode === 'text' ? 'text' : 'index' }));
+    return {
+      lookups: mapKind(b.lookups), writes: mapKind(b.writes),
+      tabPattern: lib.tabPattern || 'Day {dd}',
+      headerRow: lib.headerRow || 1,
+      sheetId: lib.sheetId || '', sheetName: lib.sheetName || lib.nickname || '',
+      scopeType: lib.scopeType || 'global', scopeMonth: lib.scopeMonth || '',
+      scopeFrom: lib.scopeFrom || '', scopeTo: lib.scopeTo || '',
+      enabled: true
+    };
+  }
+
+  // App resolveTabName-er same tokens ({dd},{d},{mm},{m},{yyyy},{yy}).
+  function hvResolveConnTab(pattern, dateKey) {
+    const p = String(pattern || '').trim() || 'Day {dd}';
+    const m = String(dateKey || '').match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (!m) return p;
+    const yyyy = m[1], mm = m[2], dd = m[3];
+    const d = String(parseInt(dd, 10) || 0), mo = String(parseInt(mm, 10) || 0);
+    return p.split('{dd}').join(dd).split('{d}').join(d)
+      .split('{mm}').join(mm).split('{m}').join(mo)
+      .split('{yyyy}').join(yyyy).split('{yy}').join(yyyy.slice(-2));
+  }
+
   function hvScopeCovers(conn, dateKey) {
     const t = conn.scopeType || 'global';
     if (t === 'month') {
@@ -3063,7 +3093,7 @@ function getSelectedHvBranchIds() {
     if (!lookups.length || !writes.length) throw new Error('lookup/write rule নেই');
     const cidRule = lookups.find(r => r.kind === 'consignment');
     if (!cidRule) throw new Error('consignment lookup নেই — কোন column দিয়ে মিলাবো বোঝা যাচ্ছে না');
-    const tab = (conn.tabPattern || 'Day {dd}').replace('{dd}', dateKey.split('-')[2]);
+    const tab = hvResolveConnTab(conn.tabPattern, dateKey);
     const hr = (conn.headerRow >= 1 && conn.headerRow <= 20) ? conn.headerRow : 1;
     const headerCache = {};
     const cidLetter = await hvResolveLetter(token, conn.sheetId, tab, cidRule, hr, headerCache);
@@ -3186,13 +3216,31 @@ function getSelectedHvBranchIds() {
       if (!token) { setStatus(`⚠ ${error || 'Sheets permission নেই — re-login করুন'}`); return; }
 
       // Connectors per branch (once), scope selected per day below.
+      // NEW all-in-one path (app + CC panel-এর মতো): sheetBindings/{branch}/cc
+      // + neutral libraries (isLibrary) — সাথে legacy remark conns (back-compat)।
       const branchConns = new Map();
       for (const branchId of branchesToQuery) {
         try {
-          const connRes = await fetch(
-            `${FIREBASE_URL}/config/connectors/${encodeURIComponent(branchId)}/current.json?auth=${idToken}`);
-          const connObj = await connRes.json().catch(() => ({})) || {};
-          branchConns.set(branchId, Object.values(connObj).filter(hvIsRemarkConn).filter(c => c.enabled !== false));
+          const [bRes, lRes] = await Promise.all([
+            fetch(`${FIREBASE_URL}/config/sheetBindings/${encodeURIComponent(branchId)}/cc.json?auth=${idToken}`),
+            fetch(`${FIREBASE_URL}/config/connectors/${encodeURIComponent(branchId)}/current.json?auth=${idToken}`),
+          ]);
+          const bObj = await bRes.json().catch(() => ({})) || {};
+          const lObj = await lRes.json().catch(() => ({})) || {};
+          const libs = {};
+          Object.entries(lObj).forEach(([lid, l]) => {
+            if (l && l.isLibrary && l.enabled !== false) libs[lid] = l;
+          });
+          const adapted = [];
+          Object.entries(bObj).forEach(([, b]) => {
+            if (!b || b.enabled === false) return;
+            const lib = libs[b.libraryId];
+            if (!lib) return;
+            const ad = hvAdaptBinding(b, lib);
+            if (ad.lookups.length && ad.writes.length) adapted.push(ad);
+          });
+          const legacy = Object.values(lObj).filter(hvIsRemarkConn).filter(c => c.enabled !== false);
+          branchConns.set(branchId, [...adapted, ...legacy]);
         } catch (e) {
           console.warn('[DB] HV sync: connectors unreadable for', branchId, e);
           branchConns.set(branchId, []);
