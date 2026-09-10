@@ -215,6 +215,16 @@ function runGoogleLoginFlow() {
           expiresIn: parseInt(data.expiresIn, 10) || 3600,
           at: Date.now()
         }});
+        // Popup auth window খুলতেই Chrome বন্ধ করে দেয়, তাই success চোখে
+        // দেখানোর জন্য notification — best-effort, fail করলে login আটকাবে না।
+        try {
+          chrome.notifications.create('db-google-login-done', {
+            type: 'basic',
+            iconUrl: 'icons/icon48.png',
+            title: 'DataBridge',
+            message: `✅ Google login hoyeche (${data.email || 'connected'}) — popup khulle connected dekhabe`
+          });
+        } catch (_) { /* notification optional */ }
         resolve(true);
       } catch (e) {
         reject(e);
