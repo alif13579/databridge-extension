@@ -3987,6 +3987,24 @@ function routingParcelSign(status, hub, ownHub) {
 }
 const ROUTING_DECISIONS_KEY = 'routing_decisions';
 const ROUTING_SHEET_CFG_KEY = 'routing_sheet_cfg';
+// Default decision buttons — settings theke bodlano jay. value-te {input}
+// thakle press-e prompt kore bosiye K-te lekhe.
+const ROUTING_DEFAULT_BUTTONS = [
+  { id: 'approved', label: '✅ Approved', value: 'Approved' },
+  { id: 'wrong_hub', label: '🏢 Wrong Hub', value: 'Wrong Hub' },
+  { id: 'update_address', label: '📝 Update Address', value: '{input}' },
+];
+
+function routingButtons(cfg) {
+  const list = cfg && Array.isArray(cfg.buttons) && cfg.buttons.length ? cfg.buttons : ROUTING_DEFAULT_BUTTONS;
+  return list
+    .filter(b => b && String(b.label || '').trim())
+    .map((b, i) => ({
+      id: String(b.id || ('btn' + (i + 1))),
+      label: String(b.label).trim(),
+      value: String(b.value != null ? b.value : '').trim(),
+    }));
+}
 
 // Dhaka date tokens — app-er resolveTabName-er same semantics:
 // {dd}=09, {d}=9, {mm}=09, {m}=9, {yyyy}=2026, {yy}=26. Token na thakle fixed.
@@ -4079,6 +4097,47 @@ async function fetchRoutingSheetRows(cfg) {
   return { tab, incoming, outgoing };
 }
 
+// Decision button editor (settings): label + K value rows.
+function renderRoutingDecisionEditor(buttons) {
+  const box = document.getElementById('routing-decision-list');
+  if (!box) return;
+  box.innerHTML = '';
+  (buttons && buttons.length ? buttons : ROUTING_DEFAULT_BUTTONS).forEach((b, i) => {
+    const row = document.createElement('div');
+    row.className = 'dash-cc-row';
+    const lab = document.createElement('input');
+    lab.type = 'text'; lab.className = 'dash-cc-date'; lab.style.flex = '1';
+    lab.placeholder = 'Label (✅ ...)'; lab.value = b.label || '';
+    lab.dataset.rlab = '1';
+    const val = document.createElement('input');
+    val.type = 'text'; val.className = 'dash-cc-date'; val.style.flex = '1';
+    val.placeholder = 'K value ({input}?)'; val.value = b.value != null ? b.value : '';
+    val.dataset.rval = '1';
+    val.dataset.rid = b.id || ('btn' + (i + 1));
+    const del = document.createElement('button');
+    del.className = 'dash-export-btn'; del.textContent = '✕'; del.title = 'Delete';
+    del.style.flex = '0 0 auto';
+    del.addEventListener('click', () => { row.remove(); });
+    row.appendChild(lab); row.appendChild(val); row.appendChild(del);
+    box.appendChild(row);
+  });
+}
+
+function collectRoutingDecisionEditor() {
+  const box = document.getElementById('routing-decision-list');
+  if (!box) return null;
+  const out = [];
+  box.querySelectorAll('.dash-cc-row').forEach(row => {
+    const lab = row.querySelector('[data-rlab]');
+    const val = row.querySelector('[data-rval]');
+    if (!lab) return;
+    const label = (lab.value || '').trim();
+    if (!label) return;
+    out.push({ id: (val && val.dataset.rid) || ('btn' + (out.length + 1)), label, value: ((val || {}).value || '').trim() });
+  });
+  return out;
+}
+
 function bindRoutingSettingsOnce(cfg) {
   if (bindRoutingSettingsOnce.done) return;
   bindRoutingSettingsOnce.done = true;
@@ -4091,6 +4150,7 @@ function bindRoutingSettingsOnce(cfg) {
   });
   const saveBtn = $('routing-save-btn');
   if (saveBtn) saveBtn.addEventListener('click', async () => {
+    const btns = collectRoutingDecisionEditor();
     const next = {
       sheetId: ($('routing-sheet-id') || {}).value || '',
       tabPattern: (($('routing-tab') || {}).value || '').trim() || 'Routing {dd}',
@@ -4100,11 +4160,23 @@ function bindRoutingSettingsOnce(cfg) {
       confirmCol: (($('routing-col-confirm') || {}).value || '').trim() || 'K',
       ownBranch: (($('routing-own-branch') || {}).value || '').trim() || 'Madanpur',
       headerRow: (($('routing-header-row') || {}).value || '').trim() || '1',
+      buttons: btns && btns.length ? btns : ROUTING_DEFAULT_BUTTONS.map(b => ({ ...b })),
     };
     try {
       await chrome.storage.local.set({ [ROUTING_SHEET_CFG_KEY]: next });
       loadRoutingTab();
     } catch (e) { console.warn('[DB] routing cfg save failed:', e); }
+  });
+  const addBtn = $('routing-decision-add-btn');
+  if (addBtn) addBtn.addEventListener('click', () => {
+    const box = document.getElementById('routing-decision-list');
+    if (!box) return;
+    const cur = collectRoutingDecisionEditor() || [];
+    cur.push({ id: 'btn' + (cur.length + 1) + '_' + Date.now().toString(36), label: '', value: '' });
+    renderRoutingDecisionEditor(cur.length ? cur : ROUTING_DEFAULT_BUTTONS);
+    const rows = box.querySelectorAll('.dash-cc-row');
+    const last = rows[rows.length - 1];
+    if (last) { const inp = last.querySelector('input'); if (inp) inp.focus(); }
   });
 }
 
@@ -4120,6 +4192,7 @@ function fillRoutingSettings(cfg) {
   set('routing-col-confirm', cfg.confirmCol || 'K');
   set('routing-own-branch', cfg.ownBranch || 'Madanpur');
   set('routing-header-row', cfg.headerRow || '1');
+  renderRoutingDecisionEditor(cfg.buttons && cfg.buttons.length ? cfg.buttons : ROUTING_DEFAULT_BUTTONS);
 }
 
 async function loadRoutingTab() {
@@ -4217,9 +4290,7 @@ function renderRoutingList() {
         ${histBlock}
         ${stateLine}
         <div class="card-actions">
-          <button class="action-btn" data-route-act="approved" data-route-id="${escapeHtml(row.id)}">✅ Approved</button>
-          <button class="action-btn" data-route-act="wrong_hub" data-route-id="${escapeHtml(row.id)}">🏢 Wrong Hub</button>
-          <button class="action-btn" data-route-act="update_address" data-route-id="${escapeHtml(row.id)}">📝 Update Address</button>
+          ${routingButtons(routingState.cfg).map(b => `<button class="action-btn" data-route-act="${escapeHtml(b.id)}" data-route-id="${escapeHtml(row.id)}">${escapeHtml(b.label)}</button>`).join('')}
         </div>
       </div>
     </div>`;
@@ -4228,10 +4299,14 @@ function renderRoutingList() {
   listEl.innerHTML =
     (incoming.length ? groupHdr(`⬇️ Incoming — ${ownBranch} (${incoming.length})`) + incoming.map(renderRow).join('') : '') +
     (outgoing.length ? groupHdr(`⬆️ Outgoing — ${ownBranch} theke (${outgoing.length})`) + outgoing.map(renderRow).join('') : '');
-  const counts = { approved: 0, wrong_hub: 0, update_address: 0 };
-  Object.values(decisions).forEach((d) => { if (counts[d.act] !== undefined) counts[d.act]++; });
+  const counts = {};
+  Object.values(decisions).forEach((d) => { const k = (d && d.act) || '?'; counts[k] = (counts[k] || 0) + 1; });
   const decided = sheetRows.filter((r) => decisions[r.id]).length;
-  if (summaryEl) summaryEl.textContent = `📄 ${tab} · ⬇️${incoming.length} ⬆️${outgoing.length} · Decided ${decided} — ✅ ${counts.approved} · 🏢 ${counts.wrong_hub} · 📝 ${counts.update_address}`;
+  const btnCounts = routingButtons(routingState.cfg)
+    .filter(b => counts[b.id])
+    .map(b => `${escapeHtml(b.label)} ${counts[b.id]}`)
+    .join(' · ');
+  if (summaryEl) summaryEl.textContent = `📄 ${tab} · ⬇️${incoming.length} ⬆️${outgoing.length} · Decided ${decided}${btnCounts ? ' — ' + btnCounts.replace(/<[^>]*>/g, '') : ''}`;
   listEl.querySelectorAll('[data-route-act]').forEach((btn) => {
     btn.addEventListener('click', () => decideRouting(btn.dataset.routeId, btn.dataset.routeAct, btn));
   });
@@ -4247,21 +4322,23 @@ function renderRoutingList() {
 }
 
 async function decideRouting(id, act, btn) {
-  const labels = { approved: 'Approved', wrong_hub: 'Wrong Hub', update_address: 'Update Address' };
+  const buttons = routingButtons(routingState.cfg);
+  const def = buttons.find(b => b.id === act) || { id: act, label: act, value: act };
+  let kValue = def.value;
   let extra = '';
-  if (act === 'update_address') {
-    const val = prompt('Notun address likho:', '');
+  if (kValue.includes('{input}')) {
+    const val = prompt(`✏️ ${def.label} — likho:`, '');
     if (val === null) return; // cancelled
     extra = (val || '').trim();
     if (!extra) return;
+    kValue = kValue.split('{input}').join(extra);
   }
+  if (!kValue) return;
   const orig = btn ? btn.textContent : '';
   if (btn) btn.textContent = '⏳…';
   try {
-    await saveRoutingDecision(id, act, labels[act] || act, extra);
-    // Sheet K (confirm) column-eo likho: approved/wrong-hub label,
-    // update-address hole notun address-tai confirmation.
-    const kValue = act === 'update_address' ? extra : (labels[act] || act);
+    await saveRoutingDecision(id, def.id, def.label, extra);
+    // Sheet K (confirm) column-e configured value.
     await routingWriteConfirm(id, kValue);
   } catch (e) {
     if (btn) btn.textContent = orig;
