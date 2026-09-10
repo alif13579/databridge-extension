@@ -197,6 +197,12 @@
       }
       .db-cc-body { padding: 8px; flex: 1; min-height: 0; overflow-y: auto; }
       .db-cc-status { font-size: 11px; color: #64748b; padding: 8px 2px; }
+      .db-cc-spinner {
+        display: inline-block; width: 11px; height: 11px; margin-right: 6px;
+        border: 2px solid #cbd5e1; border-top-color: #1e293b; border-radius: 50%;
+        animation: db-cc-spin .7s linear infinite; vertical-align: -1px;
+      }
+      @keyframes db-cc-spin { to { transform: rotate(360deg); } }
       .db-cc-summary { display: flex; gap: 6px; margin-bottom: 8px; }
       .db-cc-stat {
         flex: 1; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px;
@@ -502,11 +508,11 @@
       // not overlap into parallel Supabase+Firebase storms + out-of-order render.
       // Past dates are static — no auto-refresh (manual ⟳ still works).
       if (document.hidden || !ccBodyEl || ccLoading || ccDateKey !== todayBdDateKey()) return;
-      loadAndRender(ccBodyEl).catch(e => console.warn('[DB CC Panel] auto-refresh failed:', e));
+      loadAndRender(ccBodyEl, { quiet: true }).catch(e => console.warn('[DB CC Panel] auto-refresh failed:', e));
     }, CC_REFRESH_MS);
     document.addEventListener('visibilitychange', () => {
       if (!document.hidden && ccBodyEl && !ccLoading && ccDateKey === todayBdDateKey()) {
-        loadAndRender(ccBodyEl).catch(e => console.warn('[DB CC Panel] visible-refresh failed:', e));
+        loadAndRender(ccBodyEl, { quiet: true }).catch(e => console.warn('[DB CC Panel] visible-refresh failed:', e));
       }
     });
     window.addEventListener('pagehide', () => {
@@ -842,7 +848,7 @@
         const data = await res.json().catch(() => ({}));
         if (!res.ok || data.ok === false) throw new Error(data.error || `HTTP ${res.status}`);
         say('✓ রিমার্কস সেভ হয়েছে — reload হচ্ছে…');
-        setTimeout(() => { if (ccBodyEl) loadAndRender(ccBodyEl); }, 800);
+        setTimeout(() => { if (ccBodyEl) loadAndRender(ccBodyEl, { quiet: true }); }, 800);
       } catch (e) {
         say(`⚠ Save failed — ${e.message || 'network error'}`);
         saveBtn.disabled = false;
@@ -851,13 +857,19 @@
     });
   }
 
-  async function loadAndRender(bodyEl) {
+  // opts.quiet=true → purono content rekhe silent refresh (auto/visibility/
+  // post-save reload-এ spinner flash হবে না)। Default (mode/date/manual)
+  // → spinner দেখিয়ে বোঝায় fresh data আসছে।
+  async function loadAndRender(bodyEl, opts = {}) {
     if (ccLoading) return;
     ccLoading = true;
     // Preserve bulk-sync status across render() — render() overwrites
     // bodyEl.innerHTML which would otherwise destroy #db-cc-bulk-msg.
     const prevBulkMsg = bodyEl.querySelector('#db-cc-bulk-msg')?.textContent || '';
     const prevBulkVisible = prevBulkMsg ? bodyEl.querySelector('#db-cc-bulk-msg')?.style.display !== 'none' : false;
+    if (!opts.quiet) {
+      bodyEl.innerHTML = '<div class="db-cc-status"><span class="db-cc-spinner"></span>⏳ Loading…</div>';
+    }
     try {
     const idToken = await getValidFirebaseIdToken();
     if (!idToken) { bodyEl.innerHTML = '<div class="db-cc-status">⚠ Extension-এ Google দিয়ে login করুন প্রথমে</div>'; return; }
