@@ -124,6 +124,25 @@
     return rows;
   }
 
+  // Live card-er jonno nirdisto ID-gulor validations (app buildLiveParcels-er moto).
+  async function fetchValidationsByIds(ids, idToken) {
+    const uniq = [...new Set((ids || []).map(String).map(s => s.trim()).filter(Boolean))];
+    const out = [];
+    for (let i = 0; i < uniq.length; i += 200) {
+      const ch = uniq.slice(i, i + 200);
+      const res = await fetch(`${SUPABASE_URL}/rest/v1/validations` +
+        `?select=consignment,branch_id,assigned_to_system_id,source,remarks_status,remarks,note,customer_phone,created_at` +
+        `&consignment=in.(${ch.map(encodeURIComponent).join(',')})` +
+        `&order=created_at.desc`, {
+        headers: { 'apikey': SUPABASE_ANON_KEY, 'Authorization': `Bearer ${idToken}`, 'Accept': 'application/json' },
+      });
+      if (!res.ok) throw new Error(`Supabase validations fetch failed (${res.status})`);
+      const arr = await res.json().catch(() => []);
+      if (Array.isArray(arr)) out.push(...arr);
+    }
+    return out;
+  }
+
   // ── Branch list (branch_ids from Firebase profile + names from Supabase,
   //    which is source of truth since the branch cutover — Firebase
   //    branches/{id}/name no longer exists, so that lookup only ever
@@ -201,6 +220,14 @@
       .db-cc-badge { font-size: 9px; padding: 2px 6px; border-radius: 3px; font-weight: 700; }
       .db-cc-badge-pending   { background: #fef3c7; color: #92400e; }
       .db-cc-badge-validated { background: #dcfce7; color: #15803d; }
+      .db-cc-badge-none      { background: #f1f5f9; color: #64748b; }
+      .db-cc-row-none { border-left: 3px solid #cbd5e1; }
+      .db-cc-modes { display: flex; gap: 2px; margin-left: auto; }
+      .db-cc-mode-btn {
+        background: #f1f5f9; color: #64748b; border: 1px solid #cbd5e1;
+        border-radius: 4px; padding: 1px 7px; font-size: 10px; font-weight: 700; cursor: pointer;
+      }
+      .db-cc-mode-btn.active { background: #1e293b; color: #fff; border-color: #1e293b; }
       .db-cc-call-btn {
         background: #dcfce7; color: #15803d; border: 1px solid #86efac;
         border-radius: 4px; padding: 3px 8px; font-size: 10px; font-weight: 600; cursor: pointer;
@@ -335,6 +362,9 @@
       </div>
       <div class="db-cc-datebar">
         <span>📅</span><input type="date" id="db-cc-date"><span id="db-cc-date-label"></span>
+        <span class="db-cc-modes" id="db-cc-modes">
+          <button type="button" class="db-cc-mode-btn" data-mode="live" title="Sheet library theke ajker ID">Live</button><button type="button" class="db-cc-mode-btn" data-mode="request" title="Supabase validation requests">Req</button><button type="button" class="db-cc-mode-btn" data-mode="mix" title="Live + Request eksathe">Mix</button>
+        </span>
       </div>
       <div class="db-cc-body" id="db-cc-body">
         <div class="db-cc-status">⏳ Loading…</div>
@@ -432,6 +462,28 @@
       if (ccBodyEl) await loadAndRender(ccBodyEl);
     });
 
+    const paintModes = () => {
+      panel.querySelectorAll('#db-cc-modes .db-cc-mode-btn').forEach(b =>
+        b.classList.toggle('active', b.dataset.mode === ccMode));
+    };
+    try {
+      chrome.storage.local.get(['db-cc-mode'], r => {
+        if (r && (r['db-cc-mode'] === 'live' || r['db-cc-mode'] === 'mix')) ccMode = r['db-cc-mode'];
+        paintModes();
+      });
+    } catch {}
+    paintModes();
+    panel.querySelectorAll('#db-cc-modes .db-cc-mode-btn').forEach(b =>
+      b.addEventListener('click', async () => {
+        if (ccMode === b.dataset.mode) return;
+        ccMode = b.dataset.mode;
+        try { chrome.storage.local.set({ 'db-cc-mode': ccMode }); } catch {}
+        paintModes();
+        filter = 'all';
+        ccVisibleCount = CC_RENDER_LIMIT;
+        if (ccBodyEl) await loadAndRender(ccBodyEl);
+      }));
+
     panel.querySelector('#db-cc-sync-sheet').addEventListener('click', async (e) => {
       e.stopPropagation();
       const btn = e.currentTarget;
@@ -470,6 +522,7 @@
   // combined, with no date/branch pickers (no room for them here).
   let summaryRows = [];
   let filter = 'all'; // 'all' | 'pending' | 'validated'
+  let ccMode = 'request'; // 'live' | 'request' | 'mix' — app-er same library (bindings) theke Live
   let ccDateKey = todayBdDateKey(); // picked date (default today) — panel + sync scope
   let ccIdToken = null;      // set per loadAndRender — remark options + save reuse it
   let ccBodyEl = null;
@@ -525,18 +578,54 @@
     });
   }
 
+  // Live/Mix card builder — request card-er same shape (render FILTER chips reuse),
+  // sudhu source: sheet library ID + Supabase rows. Row nei = noActivity.
+  function buildLiveCards(liveIdsByBranch, rowsByCid, dateKey) {
+    const [y, m, d] = String(dateKey || '').split('-');
+    const dateLabel = (d && m && y) ? `${d}-${m}-${y}` : (dateKey || '');
+    const cards = [];
+    Object.entries(liveIdsByBranch).forEach(([branchId, ids]) => {
+      (ids || []).forEach(cId => {
+        const rows = (rowsByCid[cId] || []).slice()
+          .sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+        const latest = rows.length ? rows[rows.length - 1] : null;
+        const workerRows = rows.filter(r => r.source === 'WORKER');
+        const ccRows = rows.filter(r => r.source === 'CC');
+        const firstWorker = workerRows.length ? workerRows[0] : null;
+        const lastCc = ccRows.length ? ccRows[ccRows.length - 1] : null;
+        cards.push({
+          dateLabel, branchId, cId,
+          agentSystemId: latest ? (latest.assigned_to_system_id || '') : '',
+          customerPhone: latest ? (latest.customer_phone || '').trim() : '',
+          firstWorkerRemark: firstWorker ? (firstWorker.remarks || firstWorker.note || '') : '',
+          lastCcRemark: lastCc ? (lastCc.remarks || lastCc.note || '') : '',
+          stillPending: latest ? latest.source === 'WORKER' : false,
+          noActivity: !rows.length,
+          trail: rows.map(r => ({
+            source: r.source || '', remark: r.remarks || '', note: r.note || '',
+            status: r.remarks_status || '', created: r.created_at || '',
+            author: r.author_system_id || '',
+          })),
+        });
+      });
+    });
+    return cards;
+  }
+
   function render(bodyEl, branchNames) {
     const totalReq   = summaryRows.length;
     const pendingCnt = summaryRows.filter(r => r.stillPending).length;
-    const validCnt   = totalReq - pendingCnt;
+    const noneCnt    = summaryRows.filter(r => r.noActivity).length;
+    const validCnt   = totalReq - pendingCnt - noneCnt;
 
     const filtered = filter === 'all' ? summaryRows
-      : summaryRows.filter(r => filter === 'pending' ? r.stillPending : !r.stillPending);
+      : filter === 'pending' ? summaryRows.filter(r => r.stillPending)
+      : summaryRows.filter(r => !r.stillPending && !r.noActivity);
 
     const visible = filtered.slice(0, ccVisibleCount);
     const hiddenCount = filtered.length - visible.length;
     const rowsHtml = visible.length ? visible.map((r, idx) => `
-      <div class="db-cc-row ${r.stillPending ? 'db-cc-row-pending' : 'db-cc-row-validated'}">
+      <div class="db-cc-row ${r.stillPending ? 'db-cc-row-pending' : (r.noActivity ? 'db-cc-row-none' : 'db-cc-row-validated')}">
         <div class="db-cc-row-top">
           <span>${escapeHtml(r.cId)}</span>
           <span>${escapeHtml(branchNames[r.branchId] || r.branchId)}</span>
@@ -546,8 +635,8 @@
         <div class="db-cc-row-remark">🙋 ${escapeHtml(r.firstWorkerRemark || '(no note)')}</div>
         ${r.lastCcRemark ? `<div class="db-cc-row-remark">↳ ${escapeHtml(r.lastCcRemark)}</div>` : ''}
         <div class="db-cc-row-bottom">
-          <span class="db-cc-badge ${r.stillPending ? 'db-cc-badge-pending' : 'db-cc-badge-validated'}">
-            ${r.stillPending ? '⏳ Pending' : '✓ Validated'}
+          <span class="db-cc-badge ${r.stillPending ? 'db-cc-badge-pending' : (r.noActivity ? 'db-cc-badge-none' : 'db-cc-badge-validated')}">
+            ${r.stillPending ? '⏳ Pending' : (r.noActivity ? '➖ No activity' : '✓ Validated')}
           </span>
           <span>
             ${r.customerPhone ? `<button type="button" class="db-cc-call-btn" data-phone="${escapeHtml(r.customerPhone)}">📞 Call</button>` : ''}
@@ -790,6 +879,43 @@
         allRows.push(...rows);
       }));
       summaryRows = computeSummaryRows(allRows);
+      // Live / Mix: same library (bindings) theke sheet ID + fetch criteria —
+      // app Live-er same niyom. Request card thakle setai wins (remark trail soho).
+      if (ccMode === 'live' || ccMode === 'mix') {
+        const targets = await fetchCcTargets(idToken, branchIds, dateKey);
+        if (targets.length) {
+          const { token: sheetsToken, error: sheetsErr } = await getSheetsToken();
+          if (!sheetsToken) throw new Error(sheetsErr || 'Sheets auth nei — popup Connect theke Google sign in koro');
+          const liveIdsByBranch = {};
+          await Promise.all(targets.map(async t => {
+            try {
+              const r = await fetchLiveIdsForBinding(sheetsToken, t.binding, t.lib, dateKey);
+              if (r.ids.length) {
+                liveIdsByBranch[t.branchId] = [...(liveIdsByBranch[t.branchId] || []), ...r.ids];
+              }
+            } catch (e) {
+              console.warn('[DB CC] live fetch failed:', t.branchId, e?.message || e);
+            }
+          }));
+          const liveIds = [...new Set(Object.values(liveIdsByBranch).flat())];
+          if (liveIds.length) {
+            const liveRows = await fetchValidationsByIds(liveIds, idToken);
+            const rowsByCid = {};
+            liveRows.forEach(r => { (rowsByCid[r.consignment] = rowsByCid[r.consignment] || []).push(r); });
+            const liveCards = buildLiveCards(liveIdsByBranch, rowsByCid, dateKey);
+            if (ccMode === 'live') {
+              summaryRows = liveCards;
+            } else {
+              const seen = new Set(summaryRows.map(r => r.cId));
+              liveCards.forEach(c => { if (!seen.has(c.cId)) { seen.add(c.cId); summaryRows.push(c); } });
+            }
+          } else if (ccMode === 'live') {
+            summaryRows = [];
+          }
+        } else if (ccMode === 'live') {
+          summaryRows = [];
+        }
+      }
       ccVisibleCount = CC_RENDER_LIMIT;
       ccBranchNamesCache = branchNames;
       ccBranchIdsCache = branchIds.slice();
@@ -971,6 +1097,184 @@
         });
       } catch (e) { resolve({ token: null, error: e.message }); }
     });
+  }
+
+  // ── SAME LIBRARY AS APP (bindings + libraries) ─────────────────────
+  // App-er socket binding (CC 🔌) thekei Live ID + filter ase — alada
+  // config nei, tai app ar extension sobsomoy same sheet/rules dekhe.
+  // Firebase: config/sheetBindings/{branch}/cc + config/connectors/{branch}/current(isLibrary).
+  async function fetchCcTargets(idToken, branchIds, dateKey) {
+    const authQuery = idToken ? `?auth=${idToken}` : '';
+    const out = [];
+    await Promise.all(branchIds.map(async branchId => {
+      try {
+        const [bRes, lRes] = await Promise.all([
+          fetch(`${FIREBASE_URL}/config/sheetBindings/${encodeURIComponent(branchId)}/cc.json${authQuery}`),
+          fetch(`${FIREBASE_URL}/config/connectors/${encodeURIComponent(branchId)}/current.json${authQuery}`),
+        ]);
+        const bObj = await bRes.json().catch(() => null) || {};
+        const lObj = await lRes.json().catch(() => null) || {};
+        const libs = {};
+        Object.entries(lObj).forEach(([lid, l]) => {
+          if (l && l.isLibrary && l.enabled !== false) libs[lid] = l;
+        });
+        Object.entries(bObj).forEach(([bid, b]) => {
+          if (!b || b.enabled === false) return;
+          const lib = libs[b.libraryId];
+          if (!lib) return;
+          if (!scopeCovers(lib.scopeType || 'global', lib.scopeMonth || '', lib.scopeFrom || '', lib.scopeTo || '', dateKey)) return;
+          out.push({ branchId, bindingId: bid, binding: b, lib });
+        });
+      } catch (e) {
+        console.warn('[DB CC] bindings read failed:', branchId, e?.message || e);
+      }
+    }));
+    return out;
+  }
+
+  // App resolveTabName-er same tokens ({dd}=09, {d}=9, {mm}, {m}, {yyyy}, {yy}).
+  function resolveConnTab(pattern, dateKey) {
+    const p = (pattern || '').trim() || 'Day {dd}';
+    const m = String(dateKey || '').match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (!m) return p;
+    const yyyy = m[1], mm = m[2], dd = m[3];
+    const d = String(parseInt(dd, 10) || 0), mo = String(parseInt(mm, 10) || 0);
+    return p.split('{dd}').join(dd).split('{d}').join(d)
+      .split('{mm}').join(mm).split('{m}').join(mo)
+      .split('{yyyy}').join(yyyy).split('{yy}').join(yyyy.slice(-2));
+  }
+
+  function colLetterToIndex(letter) {
+    const t = String(letter || '').trim().toUpperCase();
+    if (!/^[A-Z]{1,3}$/.test(t)) return -1;
+    let n = 0;
+    for (const ch of t) n = n * 26 + (ch.charCodeAt(0) - 64);
+    return n;
+  }
+
+  function columnLettersRange(start, end) {
+    const s = Math.max(1, start || 1), e = Math.max(s, end || s);
+    const out = [];
+    for (let i = s; i <= Math.min(e, s + 51); i++) out.push(indexToLetter(i));
+    return out;
+  }
+
+  function dhakaTodayKey() {
+    try {
+      return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Dhaka' }).format(new Date());
+    } catch { return todayBdDateKey(); }
+  }
+
+  // "2026-09-10", "10/09/2026", "10-09-2026", "10.09.2026", "10-Sep-2026",
+  // "10-Sep-26", "Sep 10, 2026" → yyyymmdd number, else null.
+  function parseDateJs(raw) {
+    const t = String(raw || '').trim();
+    if (!t) return null;
+    const months = { jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6, jul: 7, aug: 8, sep: 9, oct: 10, nov: 11, dec: 12 };
+    let m;
+    if ((m = t.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/))) return +`${m[1]}${String(m[2]).padStart(2, '0')}${String(m[3]).padStart(2, '0')}`;
+    if ((m = t.match(/^(\d{1,2})[\/.\-](\d{1,2})[\/.\-](\d{4})/))) return +`${m[3]}${String(m[2]).padStart(2, '0')}${String(m[1]).padStart(2, '0')}`;
+    if ((m = t.match(/^(\d{1,2})[\-\.]([A-Za-z]{3})[\-\.](\d{2,4})/))) {
+      const mo = months[m[2].toLowerCase().slice(0, 3)];
+      if (!mo) return null;
+      let y = +m[3]; if (y < 100) y += 2000;
+      return +(String(y) + String(mo).padStart(2, '0') + String(m[1]).padStart(2, '0'));
+    }
+    if ((m = t.match(/^([A-Za-z]{3,9})\s+(\d{1,2}),?\s+(\d{4})/))) {
+      const mo = months[m[1].toLowerCase().slice(0, 3)];
+      if (!mo) return null;
+      return +(`${m[3]}${String(mo).padStart(2, '0')}${String(m[2]).padStart(2, '0')}`);
+    }
+    const iso = Date.parse(t);
+    if (!Number.isNaN(iso)) {
+      try {
+        const k = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Dhaka', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(iso));
+        return +k.replace(/-/g, '');
+      } catch { return null; }
+    }
+    return null;
+  }
+
+  // App SheetCellCompare-er same semantics (typed value: text/number/date/today).
+  function cellPassJs(op, cell, value, valueType) {
+    const c = String(cell == null ? '' : cell).trim();
+    const vt = valueType || 'text';
+    const t = vt === 'today' ? dhakaTodayKey().replace(/-/g, '') : String(value == null ? '' : value).trim();
+    const num = s => { const n = parseFloat(String(s).replace(/,/g, '')); return Number.isFinite(n) ? n : null; };
+    const ord = (a, b) => {
+      const an = num(a), bn = num(b);
+      if (an !== null && bn !== null) return an < bn ? -1 : an > bn ? 1 : 0;
+      const ad = parseDateJs(a), bd = parseDateJs(b);
+      if (ad !== null && bd !== null) return ad < bd ? -1 : ad > bd ? 1 : 0;
+      const al = String(a).trim().toLowerCase(), bl = String(b).trim().toLowerCase();
+      return al < bl ? -1 : al > bl ? 1 : 0;
+    };
+    switch (op) {
+      case 'blank': return c === '';
+      case 'notblank': return c !== '';
+      case 'equals': return vt === 'text' ? c === t : ord(c, t) === 0;
+      case 'notequals': return vt === 'text' ? c !== t : ord(c, t) !== 0;
+      case 'gt': return ord(c, t) > 0;
+      case 'gte': return ord(c, t) >= 0;
+      case 'lt': return ord(c, t) < 0;
+      case 'lte': return ord(c, t) <= 0;
+      default: return true;
+    }
+  }
+
+  // One binding's Live IDs — app fetchLiveIdsForBinding-er same niyom:
+  // fetch col (default range start), AND/OR filters, unresolvable never blocks.
+  async function fetchLiveIdsForBinding(sheetsToken, binding, lib, dateKey) {
+    const b = binding || {}, L = lib || {};
+    const tab = resolveConnTab(L.tabPattern, dateKey);
+    const headerRow = (L.headerRow >= 1 && L.headerRow <= 20) ? L.headerRow : 1;
+    const headerCache = {};
+    const letterOf = async (ref, mode) => {
+      const t = String(ref || '').trim();
+      if (!t) return null;
+      return resolveLetter(sheetsToken, L.sheetId, tab, { colRef: t, mode }, headerRow, headerCache);
+    };
+    const rangeStart = L.colStart >= 1 ? L.colStart : 1;
+    const fetchRef = String(b.fetchColRef || '').trim();
+    const fetchLetter = fetchRef
+      ? await letterOf(fetchRef, b.fetchColMode)
+      : indexToLetter(rangeStart);
+    if (!fetchLetter) return { ids: [], note: `ID column '${fetchRef}' paini` };
+    const rules = Array.isArray(b.filters) ? b.filters.filter(r => r && String(r.colRef || '').trim() && r.op) : [];
+    const useOr = rules.length > 0 && b.filterLogic === 'OR';
+    const colCache = {};
+    const colOf = async (ref, mode) => {
+      const letter = await letterOf(ref, mode);
+      if (!letter) return null;
+      if (!colCache[letter]) {
+        colCache[letter] = await sheetsGet(sheetsToken,
+          `https://sheets.googleapis.com/v4/spreadsheets/${L.sheetId}/values/${encodeURIComponent(tab + '!' + letter + ':' + letter)}`)
+          .then(d => (((d || {}).values) || []).map(r => (r || [])[0] || ''));
+      }
+      return colCache[letter];
+    };
+    const missing = [];
+    const ruleCols = [];
+    for (const r of rules) {
+      const vals = await colOf(r.colRef, r.mode);
+      if (!vals) missing.push(String(r.colRef || '').trim());
+      else ruleCols.push({ r, vals });
+    }
+    const idCol = await colOf(
+      fetchRef || indexToLetter(rangeStart),
+      fetchRef ? (b.fetchColMode || 'index') : 'index');
+    if (!idCol) return { ids: [], note: 'ID column paini' };
+    const ids = [];
+    let dropped = 0;
+    idCol.forEach((cell, i) => {
+      const cid = String(cell || '').trim();
+      if (!cid) return;
+      const results = ruleCols.map(({ r, vals }) => cellPassJs(r.op, vals[i] || '', r.value, r.valueType));
+      const pass = useOr && results.length ? results.some(Boolean) : results.every(Boolean);
+      if (!pass) { dropped++; return; }
+      if (ids.indexOf(cid) === -1) ids.push(cid);
+    });
+    return { ids, dropped, note: missing.length ? `column ${[...new Set(missing)].join(',')} paini (skip)` : null };
   }
 
   // ── BULK SYNC TO SHEET (header) ────────────────────────────────
