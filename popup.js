@@ -4103,9 +4103,9 @@ async function loadRoutingSheetCfg() {
 // Ajker tab theke rows: [{id, from, to, confirm}].
 async function fetchRoutingSheetRows(cfg) {
   const { token, error } = await hvGetSheetsToken();
-  if (!token) throw new Error(error || 'Google sheets auth nei — Connect tab theke sign in koro');
+  if (!token) throw new Error(error || 'No Google Sheets auth — sign in from the Connect tab');
   const sheetId = routingExtractSheetId(cfg.sheetId);
-  if (!sheetId) throw new Error('Sheet ID daw settings-e');
+  if (!sheetId) throw new Error('Enter a Sheet ID in settings');
   const tab = routingResolveTab(cfg.tabPattern);
   const res = await fetch(
     `https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values/${routingSheetRange(tab)}`,
@@ -4121,7 +4121,7 @@ async function fetchRoutingSheetRows(cfg) {
   const fromIdx = routingColToIndex(cfg.fromCol || 'C');
   const toIdx = routingColToIndex(cfg.toCol || 'E');
   const confirmIdx = routingColToIndex(cfg.confirmCol || 'K');
-  if (idIdx < 0) throw new Error('ID column letter thik daw (jemon D)');
+  if (idIdx < 0) throw new Error('Enter a valid ID column letter (e.g. D)');
   const own = String(cfg.ownBranch || 'Madanpur').trim().toLowerCase();
   const incoming = [], outgoing = [];
   for (let i = headerRow; i < values.length; i++) {
@@ -4266,7 +4266,7 @@ async function fetchRoutingRowsFromTarget(token, target) {
   const tab = routingResolveTab(lib.tabPattern || 'Routing {dd}');
   const headerRow = Math.max(1, parseInt(lib.headerRow, 10) || 1);
   const sheetId = routingExtractSheetId(lib.sheetId);
-  if (!sheetId) throw new Error('Library-te sheet ID nei');
+  if (!sheetId) throw new Error('Library has no sheet ID');
   const col = async (ref, mode) => routingResolveCol(token, sheetId, tab, ref, mode, headerRow);
   const [idIdx, fromIdx, toIdx, confirmIdx] = await Promise.all([
     col(b.idCol, (b.idCol || {}).mode),
@@ -4309,7 +4309,7 @@ async function fetchRoutingViaSocket(statusEl) {
   const targets = await fetchRoutingTargets(idToken, own.ids, dateKey);
   if (!targets.length) return null;
   const { token, error } = await hvGetSheetsToken();
-  if (!token) throw new Error(error || 'Sheets auth nei');
+  if (!token) throw new Error(error || 'No Sheets auth');
   const ownSet = new Set([...own.ids, ...Object.values(own.names)].map(s => String(s || '').trim().toLowerCase()).filter(Boolean));
   const ownLabel = own.ids.map(id => own.names[id] || id).join(', ');
   const seen = new Set();
@@ -4355,7 +4355,7 @@ function renderRoutingDecisionEditor(buttons) {
     val.dataset.rid = b.id || ('btn' + (i + 1));
     const col = document.createElement('input');
     col.type = 'text'; col.className = 'dash-cc-date'; col.style.flex = '0 0 52px';
-    col.placeholder = 'Col'; col.title = 'Kon column-e likhbe (khali = socket confirm column)';
+    col.placeholder = 'Col'; col.title = 'Which column to write (blank = socket confirm column)';
     col.value = b.col || '';
     col.dataset.rcol = '1';
     const del = document.createElement('button');
@@ -4453,7 +4453,7 @@ async function loadRoutingTab() {
   bindRoutingSettingsOnce();
   bindRoutingSubTabsOnce();
   // Instant spinner — sheet + Hermes enrich sesh howa porjonto thakbe.
-  if (statusEl) statusEl.innerHTML = '<span class="spinner"></span> Sheet theke ajker data ana hocche…';
+  if (statusEl) statusEl.innerHTML = '<span class="spinner"></span> Loading today\u2019s data from sheet…';
   listEl.innerHTML = '<div class="dash-cc-status"><span class="spinner"></span> ⏳ Loading…</div>';
   try {
   const cfg = await loadRoutingSheetCfg();
@@ -4480,7 +4480,7 @@ async function loadRoutingTab() {
   }
   if (!incoming.length && !outgoing.length) {
     if (!cfg || !routingExtractSheetId(cfg.sheetId)) {
-      if (statusEl) statusEl.textContent = 'Sheet settings-e Sheet ID daw (⚙️ kholo) — tarpor ajker tab theke data asbe।';
+      if (statusEl) statusEl.textContent = 'Enter a Sheet ID in settings (⚙️) — then data comes from today\u2019s tab.';
       listEl.innerHTML = '';
       if (summaryEl) summaryEl.textContent = '';
       return;
@@ -4574,7 +4574,7 @@ function renderRoutingList() {
     statusEl.textContent = `📄 ${tab} · ${viaSocket ? '🔌 socket' : '⚙️ local'} · ${ownBranch} · ⬇️ ${incoming.length} incoming · ⬆️ ${outgoing.length} outgoing`;
   }
   if (!rows.length) {
-    listEl.innerHTML = `<div class="card-meta">${showIncoming ? '⬇️ Incoming-e kono parcel nei।' : '⬆️ Outgoing-e kono parcel nei।'}</div>`;
+    listEl.innerHTML = `<div class="card-meta">${showIncoming ? '⬇️ No incoming parcels.' : '⬆️ No outgoing parcels.'}</div>`;
     if (summaryEl) summaryEl.textContent = `📄 ${tab} · ⬇️${incoming.length} ⬆️${outgoing.length}`;
     return;
   }
@@ -4596,7 +4596,7 @@ function renderRoutingList() {
     const histBlock = hist.length
       ? `<button class="routing-hist-toggle" data-route-hist="${escapeHtml(row.id)}">🕘 Previous delivery (${hist.length})${warnCount ? ` · ⚠️ ${warnCount}` : ''} ▸</button>
          <div class="routing-hist-list" id="rhist-${escapeHtml(row.id)}" style="display:none">${histRows || '<div class="card-meta">—</div>'}</div>`
-      : `<div class="card-meta">📞 Hermes info asle history asbe</div>`;
+      : `<div class="card-meta">📞 History appears once Hermes info loads</div>`;
     const addr = (row.hermesAddress || '').trim() || '—';
     return `<div class="history-card routing-card">
       <div class="card-main">
@@ -4677,7 +4677,7 @@ async function routingWriteConfirm(id, value, colOverride) {
   const row = [...incoming, ...outgoing].find(r => r.id === id);
   if (!row || !row.rowNum) return;
   const { token, error } = await hvGetSheetsToken();
-  if (!token) throw new Error(error || 'Sheets auth nei');
+  if (!token) throw new Error(error || 'No Sheets auth');
   let sheetId, tab, headerRow = 1, ref = '', mode = 'index';
   if (row._target) {
     sheetId = row._target.sheetId;
@@ -4911,22 +4911,22 @@ async function loadRunReport(force) {
   const setStatus = (t) => { if (statusEl) statusEl.textContent = t; };
   const tab = await findHermesRunTab();
   if (!tab) {
-    setStatus('Kono Hermes run-route tab khola nei — run khule abar Load daw।');
+    setStatus('No Hermes run-route tab open — open a run and Load again.');
     if (sumEl) sumEl.innerHTML = '';
     if (byStEl) byStEl.innerHTML = '';
     return;
   }
   const m = (tab.url || '').match(/run-routes\/(\d+)/);
-  setStatus(`Run ${m ? m[1] : ''} theke report ana hocche…`);
+  setStatus(`Loading report from run ${m ? m[1] : ''}…`);
   let res;
   try {
     res = await chrome.tabs.sendMessage(tab.id, { action: 'db_run_report', force: !!force });
   } catch (e) {
-    setStatus('Run tab-e connect holo na — extension reload kore Hermes tab refresh daw, tarpor abar try koro।');
+    setStatus('Could not reach the run tab — reload the extension, refresh the Hermes tab, then retry.');
     return;
   }
   if (!res || !res.ok || !res.report) {
-    setStatus('Report pelam na (' + ((res && res.error) || 'no response') + ') — Hermes tab refresh kore abar try koro।');
+    setStatus('Report not received (' + ((res && res.error) || 'no response') + ') — refresh the Hermes tab and retry.');
     return;
   }
   runReportCache = res.report;
@@ -4954,10 +4954,10 @@ function renderRunReport(rep) {
     `<tr class="run-sum-click" data-run-q="${q}"><td>${icon} ${label}</td><td class="num">${n}</td><td class="num">›</td></tr>`;
   sumEl.innerHTML = `<table class="run-sum-table">` +
     sumRow('📦', 'Run parcel (mot)', rep.total || 0, '?view=all') +
-    sumRow('📋', 'Ajke pawa validation', ccN, '?view=today') +
-    sumRow('✅', 'Validated (thik)', okN, '?verdict=ok') +
+    sumRow('📋', 'Validations found today', ccN, '?view=today') +
+    sumRow('✅', 'Validated (OK)', okN, '?verdict=ok') +
     sumRow('🚫', 'Warning / vul', warnN, '?verdict=warn') +
-    sumRow('➖', 'CC request nei', noN, '?verdict=none') +
+    sumRow('➖', 'No CC request', noN, '?verdict=none') +
     `</table>`;
   sumEl.querySelectorAll('[data-run-q]').forEach(tr => {
     tr.addEventListener('click', () => openRunDetails(tr.dataset.runQ));
@@ -4980,7 +4980,7 @@ function renderRunReport(rep) {
       <span class="run-st-counts">${g.total} · <b class="ok">✅${g.ok}</b> · <b class="warn">🚫${g.warn}</b></span>
       <button class="run-eye-btn" data-run-st="${escapeHtml(g.st)}">👁</button>
     </div>`).join('')
-    : '<div class="dash-cc-status">Kono parcel nei।</div>';
+    : '<div class="dash-cc-status">No parcels.</div>';
   byStEl.querySelectorAll('[data-run-st]').forEach(btn => {
     btn.addEventListener('click', () => openRunDetails('?status=' + encodeURIComponent(btn.dataset.runSt)));
   });

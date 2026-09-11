@@ -799,7 +799,7 @@
     if (xcheck.status !== 'done' || (!dr && !v)) b.textContent = '📈';
     else if (dr > 0) b.textContent = `📉${dr > 9 ? '9+' : dr}`;
     else b.textContent = '📈';
-    b.title = `CC validation report (${dr ? dr + 'ta deya hoyni' : v ? v + 'ta validated' : 'kono activity nei'}) — dekhte/hide korte click koro`;
+    b.title = `CC validation report (${dr ? dr + ' undelivered' : v ? v + ' validated' : 'no activity'}) — click to show/hide`;
   }
 
   function createPanel() {
@@ -809,22 +809,22 @@
       <div class="db-hdr">
         <span>📦 DataBridge Reconcile</span>
         <div class="db-hdr-actions">
-          <button id="db-sheet-copy-btn" title="Sheet-e bosanor jonno Delivered/Hold/Return ID copy koro">📋</button>
-          <button id="db-xcheck-toggle" title="CC validation report — dekhte/hide korte click koro">📈</button>
+          <button id="db-sheet-copy-btn" title="Copy Delivered/Hold/Return IDs for the sheet">📋</button>
+          <button id="db-xcheck-toggle" title="CC validation report — click to show/hide">📈</button>
           <button id="db-report-btn" title="CC Validation Report">📊</button>
-          <button id="db-memory-toggle" title="Memory-te save koro">🧠</button>
+          <button id="db-memory-toggle" title="Save to memory">🧠</button>
           <button id="db-min">−</button>
         </div>
       </div>
       <div class="db-memory-popover hidden" id="db-memory-popover">
-        <input id="db-memory-save-input" type="text" placeholder="Scan koro, likho ba paste koro (line-e 1ta) + Enter">
+        <input id="db-memory-save-input" type="text" placeholder="Scan, type or paste (1 per line) + Enter">
         <div class="db-memory-cols">
           <div class="db-memory-col">
             <div class="db-memory-col-hdr">Save kora ID <span class="db-mem-clear-all hidden" id="db-mem-clear-all" title="Sob ID muchho">Sob muchho</span></div>
             <div class="db-memory-list" id="db-memory-list"></div>
           </div>
           <div class="db-memory-col">
-            <div class="db-memory-col-hdr">🎯 Kon field-e bosbe <span class="db-field-rescan" id="db-field-rescan" title="Page abar scan koro">🔄</span></div>
+            <div class="db-memory-col-hdr">🎯 Which field it goes to <span class="db-field-rescan" id="db-field-rescan" title="Scan the page again">🔄</span></div>
             <div class="db-field-list" id="db-field-list"></div>
           </div>
         </div>
@@ -1223,7 +1223,7 @@
     if (clearAllBtn) clearAllBtn.classList.toggle('hidden', memCount === 0);
 
     if (!holdPending.length && !returnPending.length) {
-      pendHTML += '<div class="db-done">✅ Sob parcel receive hoyeche!</div>';
+      pendHTML += '<div class="db-done">✅ All parcels received!</div>';
     }
 
     document.getElementById('db-pending').innerHTML = pendHTML;
@@ -1274,7 +1274,7 @@
       const ids = [...new Set(rows.map(rowId).filter(id => id && ID_REGEX.test(id) && !seen.has(id)))].sort();
       const stMap = new Map();
       rows.forEach(r => { const id = rowId(r); if (id && !stMap.has(id)) stMap.set(id, rowStatus(r) || ''); });
-      return ids.map(id => ({ id, verdict: 'mute', tag: 'CC request nei', st: stMap.get(id) || '?', remarkEn: '', remarkBn: '', note: '', dateKey: '', carried: false }));
+      return ids.map(id => ({ id, verdict: 'mute', tag: 'No CC request', st: stMap.get(id) || '?', remarkEn: '', remarkBn: '', note: '', dateKey: '', carried: false }));
     }
     return all;
   }
@@ -1336,15 +1336,15 @@
         <div class="db-rp-chips">
           ${chip('all', `Sob (${all.length})`)}
           ${chip('dr', `🚫 Deya hoyni (${drN})`)}
-          ${chip('co', `📅 Ager baki (${coN})`)}
+          ${chip('co', `📅 Backlog (${coN})`)}
           ${chip('ok', `✅ Validated (${v})`)}
-          ${chip('cc', `📋 Ajker CC (${ccN})`)}
-          ${chip('none', `➖ Request nei (${noneCount})`)}
-          <span class="db-rp-chip" id="db-rp-refresh" title="Ekhon abar check koro">🔄</span>
+          ${chip('cc', `📋 Today CC (${ccN})`)}
+          ${chip('none', `➖ No request (${noneCount})`)}
+          <span class="db-rp-chip" id="db-rp-refresh" title="Check again now">🔄</span>
         </div>
         <div class="db-rp-table">${
-          xcheck.status === 'loading' ? '<div class="db-rp-note" style="padding:8px 0">🔍 Check hocche…</div>'
-          : !entries.length ? '<div class="db-rp-note" style="padding:8px 0">Kichu nei</div>'
+          xcheck.status === 'loading' ? '<div class="db-rp-note" style="padding:8px 0">🔍 Checking…</div>'
+          : !entries.length ? '<div class="db-rp-note" style="padding:8px 0">Nothing here</div>'
           : entries.map(e => `
             <div class="db-rp-row" data-scroll-id="${escapeHtml(e.id)}">
               <span class="db-rp-badge ${badgeCls(e)}">${escapeHtml(e.tag)}</span>
@@ -1375,7 +1375,7 @@
       if (!b) return;
       const ok = await fn().catch(() => false);
       const orig = b.textContent;
-      b.textContent = ok ? '✓ Copy hoyeche' : '✗ Hoyni';
+      b.textContent = ok ? '✓ Copied' : '✗ Failed';
       setTimeout(() => { b.textContent = orig; }, 1500);
     };
     document.getElementById('db-rp-copy-tsv').addEventListener('click', () =>
@@ -1445,19 +1445,19 @@
     const el = document.getElementById('db-confirmed-strip');
     if (!el) return;
     if (cfd.status === 'loading' && !cfd.items.length) {
-      el.innerHTML = `<div class="db-xc-bar db-xc-bar-idle"><span>🔍 Confirmed check hocche…</span></div>`;
+      el.innerHTML = `<div class="db-xc-bar db-xc-bar-idle"><span>🔍 Checking confirmed…</span></div>`;
       applyXcheckVisibility();
       return;
     }
     if (!cfd.items.length) { el.innerHTML = ''; return; }
     el.innerHTML =
       `<div class="db-xc-bar db-xc-bar-ok"><span>✅ Confirmed (${cfd.items.length}) — leaves the list once copied</span>` +
-      `<span class="db-xc-refresh" id="db-cfd-refresh" title="Ekhon abar check koro">🔄</span></div>` +
+      `<span class="db-xc-refresh" id="db-cfd-refresh" title="Check again now">🔄</span></div>` +
       `<div class="db-xc-list">${cfd.items.map(e => `
         <span class="db-cf-item">
-          <span data-scroll-id="${escapeHtml(e.id)}" style="cursor:pointer" title="Row-তে যাও">${escapeHtml(e.id)}</span>
+          <span data-scroll-id="${escapeHtml(e.id)}" style="cursor:pointer" title="Go to row">${escapeHtml(e.id)}</span>
           <span class="db-cf-agent">${escapeHtml(e.agent || '')}</span>
-          <button class="db-cf-copy" data-copy-id="${escapeHtml(e.id)}" title="ID copy koro (ekbar)">📋</button>
+          <button class="db-cf-copy" data-copy-id="${escapeHtml(e.id)}" title="Copy ID (once)">📋</button>
         </span>`).join('')}</div>`;
     el.querySelectorAll('[data-scroll-id]').forEach(n => {
       n.addEventListener('click', () => scrollToRow(n.dataset.scrollId));
@@ -1473,7 +1473,7 @@
           cfd.items = cfd.items.filter(x => x.id !== id);
           await cfdSave(cfd.items);
           renderConfirmed();
-          showToast('Confirmed', `📋 ${id} copy hoyeche — list theke gelo`, false);
+          showToast('Confirmed', `📋 ${id} copied — removed from list`, false);
         } else {
           const orig = btn.textContent;
           btn.textContent = '✗';
@@ -1587,7 +1587,7 @@
           const b = document.createElement('span');
           const isWarn = vx.verdict === 'warn';
           b.className = 'db-tick db-xbadge' + (isWarn ? ' db-xbadge-warn' : '');
-          b.textContent = isWarn ? '⚠ DEKHO' : '✓ THIK';
+          b.textContent = isWarn ? '⚠ CHECK' : '✓ OK';
           b.title = `${vx.tag} — run: ${vx.st}` +
             (vx.remarkEn ? ` — ${vx.remarkBn || vx.remarkEn}` : '') +
             (vx.carried ? ` (${vx.dateKey})` : '');
@@ -1600,7 +1600,7 @@
             b.className = 'db-tick db-xbadge';
             b.style.background = '#d97706';
             b.textContent = '📅 BAKI';
-            b.title = `Ager din (${co.dateKey || ''}) delivery request — ekhono deya hoyni` +
+            b.title = `Previous day (${co.dateKey || ''}) delivery request — still undelivered` +
               (co.remarkEn ? ` — ${co.remarkBn || co.remarkEn}` : '') +
               ` — run: ${co.st}`;
             idEl.appendChild(b);
@@ -1614,7 +1614,7 @@
               b.style.background = '#2563eb';
               b.textContent = '📋 CC';
               const lbl = cc.remarksStatus || cc.remarkEn || 'CC remark';
-              b.title = `Ajker CC — ${lbl}${cc.remarkEn && cc.remarkEn !== lbl ? ` — ${cc.remarkBn || cc.remarkEn}` : ''} — run: ${cc.st}`;
+              b.title = `Today\u2019s CC — ${lbl}${cc.remarkEn && cc.remarkEn !== lbl ? ` — ${cc.remarkBn || cc.remarkEn}` : ''} — run: ${cc.st}`;
               idEl.appendChild(b);
             }
           }
@@ -1630,7 +1630,7 @@
         if (idEl) {
           const tick = document.createElement('span');
           tick.className = 'db-tick';
-          tick.textContent = '\u2713 SCAN HOYECHE';
+          tick.textContent = '\u2713 SCANNED';
           idEl.appendChild(tick);
         }
 
@@ -1894,7 +1894,7 @@
     };
     const carryEntry = (id, row, runRaw) => {
       const e = {
-        id, verdict: 'co', tag: 'Ager din — deya hoyni', st: runRaw || '?',
+        id, verdict: 'co', tag: 'Previous day — undelivered', st: runRaw || '?',
         remarkEn: (row.remarks || '').trim(),
         remarkBn: '',
         remarksStatus: (row.remarks_status || '').trim(),
@@ -1927,16 +1927,16 @@
       if (rs === 'delivery_request') {
         if (XCHECK_DELIVERY.has(run)) {
           // Ajkei delivered hole validated; age delivered hole dorkar nei.
-          if (isToday) entry(id, row, 'ok', 'Delivery hoyeche', runRaw);
+          if (isToday) entry(id, row, 'ok', 'Delivered', runRaw);
         } else if (isToday) {
           drUndelivered.push(entry(id, row, 'warn', 'Delivery request — deya hoyni', runRaw));
         } else {
           carryEntry(id, row, runRaw);
         }
       } else if (rs === 'hold_verified') {
-        if (isToday) entry(id, row, 'ok', 'Hold thik ache', runRaw);
+        if (isToday) entry(id, row, 'ok', 'Hold OK', runRaw);
       } else if (rs === 'return_verified') {
-        if (isToday) entry(id, row, 'ok', 'Return thik ache', runRaw);
+        if (isToday) entry(id, row, 'ok', 'Return OK', runRaw);
       }
     });
     todayCc.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
@@ -2000,7 +2000,7 @@
       warnings.forEach(e => L.push(`• ${e.id} — ${e.tag}, run: ${e.st}`));
     }
     if (co.length) {
-      L.push('📅 Ager din request chilo, deya hoyni:');
+      L.push('📅 Requested on a previous day, undelivered:');
       co.forEach(e => L.push(`• ${e.id} — ${e.dateKey || ''}, run: ${e.st}`));
     }
     if (validated.length) {
@@ -2147,14 +2147,14 @@
   function renderXcheck() {
     const el = document.getElementById('db-xcheck-strip');
     if (!el) return;
-    const refreshBtn = `<span class="db-xc-refresh" id="db-xcheck-refresh" title="Ekhon abar check koro">🔄</span>`;
+    const refreshBtn = `<span class="db-xc-refresh" id="db-xcheck-refresh" title="Check again now">🔄</span>`;
     if (xcheck.status === 'idle') { el.innerHTML = ''; return; }
     if (xcheck.status === 'loading') {
-      el.innerHTML = `<div class="db-xc-bar db-xc-bar-idle"><span>🔍 CC request check hocche…</span>${refreshBtn}</div>`;
+      el.innerHTML = `<div class="db-xc-bar db-xc-bar-idle"><span>🔍 Checking CC requests…</span>${refreshBtn}</div>`;
     } else if (xcheck.status === 'no-token') {
-      el.innerHTML = `<div class="db-xc-bar db-xc-bar-idle"><span>⚪ CC check bondho — extension popup theke sign in koro</span>${refreshBtn}</div>`;
+      el.innerHTML = `<div class="db-xc-bar db-xc-bar-idle"><span>⚪ CC check off — sign in from the extension popup</span>${refreshBtn}</div>`;
     } else if (xcheck.status === 'error') {
-      el.innerHTML = `<div class="db-xc-bar db-xc-bar-idle"><span>⚪ CC check fail hoyeche (network/RLS) — 🔄 chepe abar try koro</span>${refreshBtn}</div>`;
+      el.innerHTML = `<div class="db-xc-bar db-xc-bar-idle"><span>⚪ CC check failed (network/RLS) — press 🔄 to retry</span>${refreshBtn}</div>`;
     } else {
       const w = xcheck.warnings, v = xcheck.validated;
       const cc = xcheck.todayCc || [];
@@ -2173,10 +2173,10 @@
         : '';
       // Ager din delivery request chilo, ekhono deya hoyni — alada kore, jeno clearly bojha jay.
       const coItem = (e) =>
-        `<span class="db-xc-item db-xc-item-warn" data-scroll-id="${escapeHtml(e.id)}" title="Ager din (${escapeHtml(e.dateKey || '')}) delivery request — ekhono deya hoyni — run: ${escapeHtml(e.st)}${e.remarkEn ? ` — ${escapeHtml(e.remarkBn || e.remarkEn)}` : ''}">` +
+        `<span class="db-xc-item db-xc-item-warn" data-scroll-id="${escapeHtml(e.id)}" title="Previous day (${escapeHtml(e.dateKey || '')}) delivery request — still undelivered — run: ${escapeHtml(e.st)}${e.remarkEn ? ` — ${escapeHtml(e.remarkBn || e.remarkEn)}` : ''}">` +
         `${escapeHtml(e.id)} <span class="db-xc-st">${escapeHtml(e.st)}</span></span>`;
       const coBar = co.length
-        ? `<div class="db-xc-bar db-xc-bar-warn" id="db-xc-cobar" style="border-color:#d97706"><span>📅 Ager din-er ${co.length}ta delivery request ekhono deya hoyni</span></div>` +
+        ? `<div class="db-xc-bar db-xc-bar-warn" id="db-xc-cobar" style="border-color:#d97706"><span>📅 ${co.length} previous-day delivery requests still undelivered</span></div>` +
           (xcheck.coOpen ? `<div class="db-xc-list">${co.map(coItem).join('')}</div>` : '')
         : '';
       const ccItem = (c) => {
@@ -2186,9 +2186,9 @@
           `${escapeHtml(c.id)} <span class="db-xc-st">${escapeHtml(label)}</span></span>`;
       };
       const ccBar =
-        `<div class="db-xc-bar db-xc-bar-ok" id="db-xc-ccbar"><span>📋 Ajker CC remark: ${cc.length}</span>${(!w.length && !v.length) ? refreshBtn : ''}</div>` +
+        `<div class="db-xc-bar db-xc-bar-ok" id="db-xc-ccbar"><span>📋 Today\u2019s CC remarks: ${cc.length}</span>${(!w.length && !v.length) ? refreshBtn : ''}</div>` +
         (xcheck.ccOpen && cc.length ? `<div class="db-xc-list">${cc.map(ccItem).join('')}</div>` : '') +
-        (!cc.length ? `<div class="db-xc-list"><span style="opacity:.65">Ajker date-e ei run-er kono CC remark nei</span></div>` : '');
+        (!cc.length ? `<div class="db-xc-list"><span style="opacity:.65">No CC remarks for this run today</span></div>` : '');
       const hasActivity = dr.length || co.length || otherWarn.length || v.length;
       if (!hasActivity) {
         el.innerHTML = drBar + coBar + ccBar + runSyncBar();
@@ -2215,7 +2215,7 @@
           drBar +
           coBar +
           (otherWarn.length
-            ? `<div class="db-xc-bar db-xc-bar-warn" id="db-xc-warnbar"><span>⚠️ ${otherWarn.length}ta dekhte hobe — delivery/verify mile ni</span>${(!dr.length && !co.length) ? refreshBtn : ''}</div>` +
+            ? `<div class="db-xc-bar db-xc-bar-warn" id="db-xc-warnbar"><span>⚠️ ${otherWarn.length} need review — delivery/verify mismatch</span>${(!dr.length && !co.length) ? refreshBtn : ''}</div>` +
               (xcheck.warnOpen ? `<div class="db-xc-list">${otherWarn.map(e => item(e, 'db-xc-item-warn')).join('')}</div>` : '')
             : '') +
           (v.length
@@ -2531,13 +2531,13 @@
     try {
       const result = await chrome.storage.local.get([memKey]);
       mem = result[memKey];
-      if (!mem) { showToast('Memory', 'Ei run-er jonno save kora ID nei', false); return; }
+      if (!mem) { showToast('Memory', 'No saved IDs for this run', false); return; }
     } catch { return; }
 
     const ids = [...(mem.ids || [])];
     if (!ids.length) { showToast('Memory', 'Memory khali', false); return; }
 
-    showToast('Memory', `${ids.length}ta ID bosano hocche…`, false);
+    showToast('Memory', `Pasting ${ids.length} IDs…`, false);
 
     for (const id of ids) {
       let input;

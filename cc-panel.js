@@ -369,7 +369,7 @@
       <div class="db-cc-datebar">
         <span>📅</span><input type="date" id="db-cc-date"><span id="db-cc-date-label"></span>
         <span class="db-cc-modes" id="db-cc-modes">
-          <button type="button" class="db-cc-mode-btn" data-mode="live" title="Sheet library theke ajker ID">Live</button><button type="button" class="db-cc-mode-btn" data-mode="request" title="Supabase validation requests">Req</button><button type="button" class="db-cc-mode-btn" data-mode="mix" title="Live + Request eksathe">Mix</button>
+          <button type="button" class="db-cc-mode-btn" data-mode="live" title="Today\u2019s IDs from the sheet library">Live</button><button type="button" class="db-cc-mode-btn" data-mode="request" title="Supabase validation requests">Req</button><button type="button" class="db-cc-mode-btn" data-mode="mix" title="Live + Request eksathe">Mix</button>
         </span>
       </div>
       <div class="db-cc-body" id="db-cc-body">
@@ -909,7 +909,7 @@
         const targets = await fetchCcTargets(idToken, branchIds, dateKey);
         if (targets.length) {
           const { token: sheetsToken, error: sheetsErr } = await getSheetsToken();
-          if (!sheetsToken) throw new Error(sheetsErr || 'Sheets auth nei — popup Connect theke Google sign in koro');
+          if (!sheetsToken) throw new Error(sheetsErr || 'No Sheets auth — sign in with Google from the popup Connect tab');
           const liveIdsByBranch = {};
           const liveProblems = [];
           let liveScanned = 0, liveDropped = 0;

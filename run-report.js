@@ -15,7 +15,7 @@
     if (r.verdict === 'ok') return `<span class="rr-badge rr-badge-ok">✅ ${esc(r.tag || 'Validated')}</span>`;
     if (r.verdict === 'warn') return `<span class="rr-badge rr-badge-warn">🚫 ${esc(r.tag || 'Warning')}</span>`;
     if (r.verdict === 'cc') return `<span class="rr-badge rr-badge-cc">📋 ${esc(r.tag || 'CC remark')}</span>`;
-    return `<span class="rr-badge rr-badge-none">➖ CC request nei</span>`;
+    return `<span class="rr-badge rr-badge-none">➖ No CC request</span>`;
   }
 
   function remarkLine(r) {
@@ -62,7 +62,7 @@
       snap = r[SNAP_KEY] || null;
     } catch {}
     if (!snap || !Array.isArray(snap.rows)) {
-      if (subEl) subEl.textContent = 'Kono snapshot nei — popup Run tab theke Load report daw, tarpor abar kholo।';
+      if (subEl) subEl.textContent = 'No snapshot — load the report from the popup Run tab, then reopen.';
       if (listEl) listEl.innerHTML = '<div class="rr-empty">—</div>';
       return;
     }
@@ -72,8 +72,8 @@
     else if (fVerdict) {
       rows = rows.filter(r => r.verdict === fVerdict);
       scope = fVerdict === 'ok' ? 'Validated' : fVerdict === 'warn' ? 'Warning / vul'
-        : fVerdict === 'none' ? 'CC request nei' : fVerdict === 'cc' ? 'CC remarks' : fVerdict;
-    } else if (fView === 'today') { rows = rows.filter(r => r.dateKey && !r.carried); scope = 'Latest CC remark ajker'; }
+        : fVerdict === 'none' ? 'No CC request' : fVerdict === 'cc' ? 'CC remarks' : fVerdict;
+    } else if (fView === 'today') { rows = rows.filter(r => r.dateKey && !r.carried); scope = 'Latest CC remarks today'; }
 
     if (titleEl) titleEl.textContent = `🔍 Run ${snap.runId} — ${scope} (${rows.length})`;
     if (subEl) {
@@ -81,7 +81,7 @@
       subEl.textContent = `Check: ${checked}` + (snap.sync ? ` · 🔄 Supabase update: ${snap.sync}` : '');
     }
     if (!rows.length) {
-      if (listEl) listEl.innerHTML = '<div class="rr-empty">Kichu nei।</div>';
+      if (listEl) listEl.innerHTML = '<div class="rr-empty">Nothing here.</div>';
       return;
     }
     // Status-wise grouping (status filter thakle single group).
@@ -106,7 +106,7 @@
       const orig = copyBtn.textContent;
       try {
         await navigator.clipboard.writeText(toTsv(rows));
-        copyBtn.textContent = '✓ Copy hoyeche';
+        copyBtn.textContent = '✓ Copied';
       } catch { copyBtn.textContent = '✗ Hoyni'; }
       setTimeout(() => { copyBtn.textContent = orig; }, 1500);
     });

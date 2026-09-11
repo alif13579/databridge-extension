@@ -209,8 +209,8 @@
         + '<button data-act="copy" style="flex:1">Copy all</button>'
         + '<button data-act="clear">Clear</button></div>';
       html += '<div data-role="msg" style="color:#64748b;margin-bottom:6px">'
-        + 'Capture: browser-level (CSP-proof) — site-ti normal use koro '
-        + '(orders search, run-route), call gulo ekhane live jombe.</div>';
+        + 'Capture: browser-level (CSP-proof) — use the site normally '
+        + '(orders search, run-route); calls land here live.</div>';
       html += '<div style="display:flex;gap:6px;margin:8px 0">'
         + '<input data-role="probe-id" placeholder="Consignment ID (jemon DR070926TXSTGS)" '
         + 'style="flex:1;border:1px solid #cbd5e1;border-radius:6px;padding:4px 6px;font-size:12px"/>'
@@ -234,7 +234,7 @@
         apiFetch(PING_PATH).then(function (r) {
           msg.textContent = r.ok
             ? '✓ Session OK (' + r.status + ') — cookie-auth kaj korche.'
-            : '✕ Session fail (' + r.status + ') — Hermes-e login ache kina dekho.';
+            : '✕ Session failed (' + r.status + ') — check whether you are logged into Hermes.';
         }).catch(function (e) {
           msg.textContent = '✕ Request failed: ' + (e && e.message);
         });
@@ -392,12 +392,12 @@
       toast('📞 ' + cid + ' → customer history anchi…');
       window.HermesApi.orderSearch(cid).then(function (r) {
         var phone = (r && r.ok) ? firstPhoneIn(r.data) : '';
-        if (!phone) { toast('⚠ Number pelam na — phone box-e manually daw'); return; }
+        if (!phone) { toast('⚠ No number found — enter it in the phone box manually'); return; }
         setVueInput(pEl, phone);
         clickSearchButton();
-        toast('📞 ' + phone + ' — sob parcel asche');
+        toast('📞 ' + phone + ' — loading all parcels');
       }).catch(function () {
-        toast('⚠ History ana jayni — phone box-e manually daw');
+        toast('⚠ Could not load history — enter it in the phone box manually');
       });
     } catch (e) { /* never break host page */ }
   }
@@ -509,7 +509,7 @@
   function renderTicketList() {
     var html = '<div style="font-weight:700;margin-bottom:6px">🎫 Amar pending tickets</div>';
     if (!ticketList.length) {
-      html += '<div style="color:#94a3b8">Pending ticket nei. 🎉</div>';
+      html += '<div style="color:#94a3b8">No pending tickets. 🎉</div>';
     } else {
       html += ticketList.map(function (t) {
         var meta = [t.cat, t.team, t.sla].filter(Boolean).join(' • ');
@@ -548,7 +548,7 @@
         });
         document.documentElement.appendChild(el);
       }
-      el.innerHTML = '<b>🎫 Notun ticket</b><br>' + String(t.title).replace(/</g, '&lt;')
+      el.innerHTML = '<b>🎫 New ticket</b><br>' + String(t.title).replace(/</g, '&lt;')
         + '<br><span style="color:#c4b5fd;font-size:11px">#' + String(t.id).replace(/</g, '&lt;')
         + (t.cat ? ' • ' + String(t.cat).replace(/</g, '&lt;') : '') + '</span>';
       el.style.display = '';
@@ -592,7 +592,7 @@
         if (isFirst || !news.length) return; // first sighting = silent baseline
         beep(2);
         news.slice(0, 3).forEach(ticketToast);
-        if (news.length > 3) toast('🎫 ' + news.length + ' ta notun ticket!');
+        if (news.length > 3) toast('🎫 ' + news.length + ' new tickets!');
       }).catch(function () { /* next tick retries */ });
     } catch (e) { /* never break host page */ }
   }

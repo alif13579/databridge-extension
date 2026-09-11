@@ -222,7 +222,7 @@ function runGoogleLoginFlow() {
             type: 'basic',
             iconUrl: 'icons/icon48.png',
             title: 'DataBridge',
-            message: `✅ Google login hoyeche (${data.email || 'connected'}) — popup khulle connected dekhabe`
+            message: `✅ Google login successful (${data.email || 'connected'}) — open the popup to see the connected state`
           });
         } catch (_) { /* notification optional */ }
         resolve(true);
