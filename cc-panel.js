@@ -364,7 +364,7 @@
     panel.innerHTML = `
       <div class="db-cc-hdr" id="db-cc-hdr">
         <span>☎️ Call Center — Hold Validation</span>
-        <span><button id="db-cc-sync-sheet" title="Sync to Sheet — নির্বাচিত date-এর sheet blank + Supabase CC মিলিয়ে bulk update">⇪ Sheet</button><button id="db-cc-refresh" title="Reload now">⟳</button><button id="db-cc-min" title="Minimize">−</button></span>
+        <span><button id="db-cc-sync-sheet" title="Sync to Sheet — blank cells of the selected date\u2019s sheet updated from Supabase CC">⇪ Sheet</button><button id="db-cc-refresh" title="Reload now">⟳</button><button id="db-cc-min" title="Minimize">−</button></span>
       </div>
       <div class="db-cc-datebar">
         <span>📅</span><input type="date" id="db-cc-date"><span id="db-cc-date-label"></span>
@@ -659,7 +659,7 @@
         </div>
         <div class="db-cc-hist-section" data-idx="${idx}" style="display:none"></div>
         <div class="db-cc-remark-section" data-idx="${idx}" style="display:none"></div>
-      </div>`).join('') : `<div class="db-cc-status">${escapeHtml(!summaryRows.length && ccLiveNote ? ccLiveNote : 'এই filter-এ কোনো entry নেই')}</div>`;
+      </div>`).join('') : `<div class="db-cc-status">${escapeHtml(!summaryRows.length && ccLiveNote ? ccLiveNote : 'No entries for this filter')}</div>`;
 
     bodyEl.innerHTML = `
       <div class="db-cc-summary">
@@ -674,7 +674,7 @@
         </div>
       </div>
       ${rowsHtml}
-      ${hiddenCount > 0 ? `<button type="button" class="db-cc-more-btn" id="db-cc-more">▼ আরও ${hiddenCount}টি দেখুন (${visible.length}/${filtered.length})</button>` : ''}
+      ${hiddenCount > 0 ? `<button type="button" class="db-cc-more-btn" id="db-cc-more">▼ Show ${hiddenCount} more (${visible.length}/${filtered.length})</button>` : ''}
     `;
 
     bodyEl.querySelectorAll('.db-cc-stat').forEach(cell => {
@@ -740,7 +740,7 @@
         <div class="db-cc-hist-head"><span>${who}${t.author ? ' · ' + escapeHtml(t.author) : ''}</span><span>${escapeHtml(fmtHhMm(t.created))}</span></div>
         <div>${escapeHtml(txt)}${t.status ? ` <span class="db-cc-hist-status">[${escapeHtml(t.status)}]</span>` : ''}</div>
       </div>`;
-    }).join('') : '<div class="db-cc-status">কোনো history নেই</div>';
+    }).join('') : '<div class="db-cc-status">No history</div>';
   }
 
   // CC remark options catalog (ported from popup.js fetchCcDashboardRemarkOptions).
@@ -784,11 +784,11 @@
     if (section.style.display !== 'none') { section.style.display = 'none'; return; }
     section.style.display = '';
     if (section.dataset.loaded) return;
-    section.innerHTML = '<div class="db-cc-status">⏳ Remarks লোড হচ্ছে…</div>';
+    section.innerHTML = '<div class="db-cc-status">⏳ Loading remarks…</div>';
 
-    if (!ccIdToken) { section.innerHTML = '<div class="db-cc-status">⚠ Login করুন প্রথমে</div>'; return; }
+    if (!ccIdToken) { section.innerHTML = '<div class="db-cc-status">⚠ Log in first</div>'; return; }
     if (!card.agentSystemId) {
-      section.innerHTML = '<div class="db-cc-status">⚠ এই parcel-এ এখনো কোনো worker assign/touch করেনি, তাই remark save করা যাচ্ছে না</div>';
+      section.innerHTML = '<div class="db-cc-status">⚠ No worker assigned/touched this parcel yet, so remarks cannot be saved</div>';
       return;
     }
     let options;
@@ -804,14 +804,14 @@
       ? `<div class="db-cc-chip-row">${options.map((o, i) =>
           `<button type="button" class="db-cc-chip" data-opt="${i}" title="→ ${escapeHtml(o.target)}">${escapeHtml(o.label)}</button>`
         ).join('')}</div>`
-      : '<div class="db-cc-status">⚠ Config-এ কোনো remark সেট করা নেই। নোট হিসেবে লিখতে পারেন:</div>';
+      : '<div class="db-cc-status">⚠ No remark configured in Config. You can write a note:</div>';
 
     section.innerHTML = `
       ${chipsHtml}
-      <textarea class="db-cc-note" rows="2" placeholder="নোট লিখুন (ঐচ্ছিক)"></textarea>
+      <textarea class="db-cc-note" rows="2" placeholder="Write a note (optional)"></textarea>
       <div class="db-cc-remark-actions">
-        <button type="button" class="db-cc-cancel-btn">বন্ধ করুন</button>
-        <button type="button" class="db-cc-save-btn">সেভ করুন</button>
+        <button type="button" class="db-cc-cancel-btn">Close</button>
+        <button type="button" class="db-cc-save-btn">Save</button>
       </div>
       <div class="db-cc-status" data-role="msg" style="display:none"></div>`;
 
@@ -836,7 +836,7 @@
     saveBtn.addEventListener('click', async () => {
       const note = noteEl.value.trim();
       const opt = selected >= 0 ? options[selected] : null;
-      if (!opt && !note) { say('একটি রিমার্কস বেছে নিন বা নোট লিখুন'); return; }
+      if (!opt && !note) { say('Select a remark or write a note'); return; }
       saveBtn.disabled = true;
       saveBtn.textContent = '⏳ …';
       try {
@@ -854,12 +854,12 @@
         });
         const data = await res.json().catch(() => ({}));
         if (!res.ok || data.ok === false) throw new Error(data.error || `HTTP ${res.status}`);
-        say('✓ রিমার্কস সেভ হয়েছে — reload হচ্ছে…');
+        say('✓ Remark saved — reloading…');
         setTimeout(() => { if (ccBodyEl) loadAndRender(ccBodyEl, { quiet: true }); }, 800);
       } catch (e) {
         say(`⚠ Save failed — ${e.message || 'network error'}`);
         saveBtn.disabled = false;
-        saveBtn.textContent = 'সেভ করুন';
+        saveBtn.textContent = 'Save';
       }
     });
   }
@@ -883,14 +883,14 @@
     }
     try {
     const idToken = await getValidFirebaseIdToken();
-    if (!idToken) { bodyEl.innerHTML = '<div class="db-cc-status">⚠ Extension-এ Google দিয়ে login করুন প্রথমে</div>'; return; }
+    if (!idToken) { bodyEl.innerHTML = '<div class="db-cc-status">⚠ Log in with Google in the extension first</div>'; return; }
     ccIdToken = idToken;
     ccBodyEl = bodyEl;
     const { google_uid } = await chrome.storage.local.get(['google_uid']);
-    if (!google_uid) { bodyEl.innerHTML = '<div class="db-cc-status">⚠ Google login পাওয়া যায়নি</div>'; return; }
+    if (!google_uid) { bodyEl.innerHTML = '<div class="db-cc-status">⚠ Google login not found</div>'; return; }
 
     const { ids: branchIds, names: branchNames } = await fetchMyBranches(google_uid, idToken);
-    if (!branchIds.length) { bodyEl.innerHTML = '<div class="db-cc-status">⚠ কোনো branch assigned নেই</div>'; return; }
+    if (!branchIds.length) { bodyEl.innerHTML = '<div class="db-cc-status">⚠ No branch assigned</div>'; return; }
 
     const dateKey  = ccDateKey || todayBdDateKey();
     const startIso = new Date(`${dateKey}T00:00:00+06:00`).toISOString();
@@ -924,7 +924,7 @@
                 liveIdsByBranch[t.branchId] = [...(liveIdsByBranch[t.branchId] || []), ...r.ids];
               }
             } catch (e) {
-              const msg = e?.message || 'sheet পড়া যায়নি';
+              const msg = e?.message || 'could not read sheet';
               console.warn('[DB CC] live fetch failed:', t.branchId, msg);
               liveProblems.push(`${sheetLabel}: ${msg}`);
             }
@@ -944,11 +944,11 @@
           } else {
             // Specific reason (app-er note-er moto) — access / tab / filter / column.
             ccLiveNote = 'Live: ' + (liveProblems.length ? liveProblems.slice(0, 2).join(' · ')
-              : `${liveScanned} row দেখা${liveDropped ? `, ${liveDropped} filter-e bad` : ''} — filter/scope মিলছে না`);
+              : `${liveScanned} rows scanned${liveDropped ? `, ${liveDropped} filtered out` : ''} — filter/scope mismatch`);
             if (ccMode === 'live') summaryRows = [];
           }
         } else {
-          ccLiveNote = 'Live: এই date-এ কোনো CC binding নেই — CallCenter 🔌 থেকে sheet bind করো (scope দেখো)';
+          ccLiveNote = 'Live: no CC binding for this date — bind a sheet from the CallCenter socket (check scope)';
           if (ccMode === 'live') summaryRows = [];
         }
       }
@@ -963,7 +963,7 @@
     } catch (e) {
       console.error('[DB CC Panel] load failed:', e);
       if (ccBodyEl === bodyEl) {
-        bodyEl.innerHTML = '<div class="db-cc-status">⚠ Load failed — console (F12) দেখো</div>';
+        bodyEl.innerHTML = '<div class="db-cc-status">⚠ Load failed — check console (F12)</div>';
         if (prevBulkMsg) bulkSay(prevBulkMsg);
       }
     } finally {
@@ -1119,8 +1119,8 @@
   async function sheetsGet(token, url) {
     const res = await fetch(url, { headers: { 'Authorization': `Bearer ${token}` } });
     if (!res.ok) {
-      if (res.status === 401 || res.status === 403) throw new Error('এই Google account-এর sheet access নেই — sheet-টি login mail-এ share করো');
-      if (res.status === 404) throw new Error('Sheet/tab পাওয়া যায়নি — sheet ID ও tab name মিলিয়ে দেখো');
+      if (res.status === 401 || res.status === 403) throw new Error('This Google account has no sheet access — share the sheet with the login email');
+      if (res.status === 404) throw new Error('Sheet/tab not found — check sheet ID and tab name');
       throw new Error(`Sheets API ${res.status}`);
     }
     return res.json();
@@ -1436,26 +1436,26 @@
     const lookups = effectiveLookups(conn);
     const writes = effectiveWrites(conn).filter(r =>
       r.kind === 'feedback' || r.kind === 'validation' || r.kind === 'validator_name');
-    if (!lookups.length || !writes.length) throw new Error('lookup/write rule নেই');
+    if (!lookups.length || !writes.length) throw new Error('no lookup/write rule');
     const cidRule = lookups.find(r => r.kind === 'consignment');
-    if (!cidRule) throw new Error('consignment lookup নেই — কোন column দিযে মিলাবো বোঝা যাচ্ছে না');
+    if (!cidRule) throw new Error('no consignment lookup — unclear which column to match on');
     const tab = resolveConnTab(conn.tabPattern, dateKey);
     const hr = (conn.headerRow >= 1 && conn.headerRow <= 20) ? conn.headerRow : 1;
     const headerCache = {};
     const cidLetter = await resolveLetter(token, conn.sheetId, tab, cidRule, hr, headerCache);
-    if (!cidLetter) throw new Error(`consignment column '${cidRule.colRef}' পাওয়া যায়নি`);
+    if (!cidLetter) throw new Error(`consignment column '${cidRule.colRef}' not found`);
     // Date lookups verify the row is really today's (tab-scoped safety).
     const dateRules = lookups.filter(r => r.kind === 'today' || r.kind === 'created_at');
     const dateLetters = new Map();
     for (const rule of dateRules) {
       const letter = await resolveLetter(token, conn.sheetId, tab, rule, hr, headerCache);
-      if (!letter) throw new Error(`lookup column '${rule.colRef}' পাওয়া যায়নি`);
+      if (!letter) throw new Error(`lookup column '${rule.colRef}' not found`);
       dateLetters.set(rule, letter);
     }
     const writeLetters = [];
     for (const rule of writes) {
       const letter = await resolveLetter(token, conn.sheetId, tab, rule, hr, headerCache);
-      if (!letter) throw new Error(`write column '${rule.colRef}' পাওয়া যায়নি`);
+      if (!letter) throw new Error(`write column '${rule.colRef}' not found`);
       writeLetters.push({ rule, letter });
     }
     // One fetch per column (shared across all rows of this connection).
@@ -1512,18 +1512,18 @@
     const orig = btn ? btn.textContent : '';
     if (btn) { btn.disabled = true; btn.textContent = '⏳ …'; }
     try {
-      if (!ccIdToken) throw new Error('login missing — extension-এ Google দিয়ে login করুন');
+      if (!ccIdToken) throw new Error('login missing — log in with Google in the extension');
       const branchIds = (ccBranchIdsCache && ccBranchIdsCache.length)
         ? ccBranchIdsCache.slice()
         : [...new Set((summaryRows || []).map(r => r.branchId).filter(Boolean))];
-      if (!branchIds.length) throw new Error('কোনো branch পাওয়া যায়নি — আগে reload করুন');
+      if (!branchIds.length) throw new Error('No branch found — reload first');
       const dateKey = ccDateKey || todayBdDateKey();
       const dateLabel = dateKeyToDdMmYyyy(dateKey);
-      bulkSay('⏳ Consolidated CC বানানো হচ্ছে…');
+      bulkSay('⏳ Building consolidated CC…');
       const consolidated = await buildConsolidatedCc();
-      if (!consolidated.size) throw new Error(`Supabase-এ ${dateLabel}-এর কোনো CC remark নেই — লেখার কিছু নেই`);
+      if (!consolidated.size) throw new Error(`No CC remarks for ${dateLabel} in Supabase — nothing to write`);
       const { token, error } = await getSheetsToken();
-      if (!token) throw new Error(error || 'Sheets permission নেই — extension popup থেকে re-login করুন');
+      if (!token) throw new Error(error || 'No Sheets permission — re-login from the extension popup');
       let totConns = 0, totScanned = 0, totFilled = 0, totRows = 0, totCells = 0, totNoCc = 0;
       const errs = [];
       // NEW all-in-one bindings (socket 🔌 + library) — fetchCcTargets scope
@@ -1550,14 +1550,14 @@
              ...(adaptedByBranch[branchId] || [])],
             dateKey);
         } catch (e) {
-          errs.push(`${branchId}: connection পড়া যায়নি`);
+          errs.push(`${branchId}: connection unreadable`);
           continue;
         }
         if (!conns.length) continue; // আজকের scope-এ remark connection নেই — skip (error না)
         for (const conn of conns) {
           totConns++;
           const label = conn.sheetName || conn.sheetId || branchId;
-          bulkSay(`⏳ ${label} — sheet পড়ছে…`);
+          bulkSay(`⏳ ${label} — reading sheet…`);
           try {
             const r = await bulkSyncOneConnection(token, branchId, conn, consolidated, dateKey);
             totScanned += r.scanned; totFilled += r.filled;
@@ -1567,8 +1567,8 @@
           }
         }
       }
-      if (!totConns) throw new Error(`${dateLabel}-এর জন্য কোনো branch-এ remark connection নেই (scope দেখুন)`);
-      let msg = `✓ ${totRows} row synced (${totCells} cells) · ${totFilled} already filled · ${totNoCc} no CC yet · ${totScanned} sheet rows দেখা (${totConns} connection)`;
+      if (!totConns) throw new Error(`No remark connection in any branch for ${dateLabel} (check scope)`);
+      let msg = `✓ ${totRows} row synced (${totCells} cells) · ${totFilled} already filled · ${totNoCc} no CC yet · ${totScanned} sheet rows scanned (${totConns} connection)`;
       if (errs.length) msg += ` · ⚠ ${errs.length} error: ${errs.slice(0, 2).join('; ')}${errs.length > 2 ? '…' : ''}`;
       bulkSay(msg);
       if (btn) btn.textContent = '✓ Done';

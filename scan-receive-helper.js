@@ -1112,7 +1112,7 @@
       const result = await chrome.storage.local.get([memKey]);
       const mem = result[memKey];
       if (!mem || !mem.ids.length) return;
-      if (!confirm('সব saved ID delete হবে। নিশ্চিত?')) return;
+      if (!confirm('All saved IDs will be deleted. Continue?')) return;
       mem.ids = [];
       await chrome.storage.local.set({ [memKey]: mem });
       refreshPanel(appState);
@@ -1323,7 +1323,7 @@
     const badgeCls = e => e.verdict === 'warn' ? 'db-rp-badge-warn' : e.verdict === 'ok' ? 'db-rp-badge-ok' : e.verdict === 'cc' ? 'db-rp-badge-ok' : e.verdict === 'co' ? 'db-rp-badge-warn' : 'db-rp-badge-mute';
     const dayBadge = e => !e.dateKey ? '' : e.carried
       ? `<span class="db-rp-day">📅 ${escapeHtml(e.dateKey)}</span>`
-      : `<span class="db-rp-day">আজ</span>`;
+      : `<span class="db-rp-day">Today</span>`;
     const dot = e => `<span class="db-dot" style="background:${statusColor(e.st === '?' ? '' : e.st)}"></span>`;
     bd.innerHTML = `
       <div id="db-report-modal">
@@ -1451,7 +1451,7 @@
     }
     if (!cfd.items.length) { el.innerHTML = ''; return; }
     el.innerHTML =
-      `<div class="db-xc-bar db-xc-bar-ok"><span>✅ Confirmed (${cfd.items.length}) — copy করলেই list থেকে যাবে</span>` +
+      `<div class="db-xc-bar db-xc-bar-ok"><span>✅ Confirmed (${cfd.items.length}) — leaves the list once copied</span>` +
       `<span class="db-xc-refresh" id="db-cfd-refresh" title="Ekhon abar check koro">🔄</span></div>` +
       `<div class="db-xc-list">${cfd.items.map(e => `
         <span class="db-cf-item">
@@ -2004,7 +2004,7 @@
       co.forEach(e => L.push(`• ${e.id} — ${e.dateKey || ''}, run: ${e.st}`));
     }
     if (validated.length) {
-      L.push('✅ ঠিক আছে:');
+      L.push('✅ OK:');
       validated.forEach(e => L.push(`• ${e.id} — ${e.tag}`));
     }
     return L.join('\n');

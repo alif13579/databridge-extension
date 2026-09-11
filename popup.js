@@ -1273,10 +1273,9 @@ async function finishGoogleLoginFromPending() {
   // which the paired device never looks at, with no indication anything changed.
   if (currentUserId && currentUserId !== uid) {
     const proceed = confirm(
-      `⚠️ এই extension বর্তমানে অন্য একটি connected device-এর সাথে link করা আছে।\n\n` +
-      `${email} দিয়ে sign in করলে data এখন থেকে সেই device-এর container-এ না গিয়ে এই ` +
-      `Google account-এর নিজস্ব container-এ যাবে — connected device সেটা দেখতে পাবে না।\n\n` +
-      `তবুও continue করবেন?`
+      `⚠️ This extension is currently linked to another connected device.\n\n` +
+      `Signing in with ${email} will send data to this Google account\u2019s own container instead of that device\u2019s container — the connected device will not see it.\n\n` +
+      `Continue anyway?`
     );
     if (!proceed) {
       await chrome.storage.local.remove(['google_pending_login']);
@@ -1456,7 +1455,7 @@ function setupSettings() {
   const clearBtn = document.getElementById('clear-history-btn');
   if (!clearBtn) return;
   clearBtn.addEventListener('click', async () => {
-    if (!confirm('সব history permanently delete হবে। নিশ্চিত?')) return;
+    if (!confirm('All history will be permanently deleted. Continue?')) return;
     clearBtn.textContent = '⏳';
     clearBtn.disabled = true;
     try {
@@ -1525,7 +1524,7 @@ async function setupUnhideSettings() {
     if (!v) return;
     if (!validSelector(v)) {
       input.value = '';
-      input.placeholder = '⚠ Invalid selector — আবার চেষ্টা করো';
+      input.placeholder = '⚠ Invalid selector — try again';
       setTimeout(() => { input.placeholder = 'e.g. .eye-btn, #show-phone'; }, 2000);
       return;
     }
@@ -2427,7 +2426,7 @@ function setupScanTab() {
   const clearBtn = document.getElementById('clear-scan-btn');
   if (clearBtn) {
     clearBtn.addEventListener('click', () => {
-      if (!confirm('সব scan records delete হবে। নিশ্চিত?')) return;
+      if (!confirm('All scan records will be deleted. Continue?')) return;
       chrome.storage.local.remove(['scan_log'], () => {
         if (chrome.runtime.lastError) {
           console.warn('[Scan] clear failed:', chrome.runtime.lastError.message);
@@ -2622,7 +2621,7 @@ async function renderPerfBranchDropdown() {
   if (!sel) return;
 
   if (!ccBranchIds.length) {
-    sel.innerHTML = '<option value="">কোনো branch assigned নেই</option>';
+    sel.innerHTML = '<option value="">No branch assigned</option>';
     return;
   }
 
@@ -2860,11 +2859,11 @@ function renderHvBranchCheckboxes() {
   if (!listEl) return;
 
   if (!currentGoogleUid) {
-    listEl.innerHTML = '<div class="dash-hv-branch-empty">Google দিয়ে লগইন করুন প্রথমে</div>';
+    listEl.innerHTML = '<div class="dash-hv-branch-empty">Log in with Google first</div>';
     return;
   }
   if (!ccBranchIds.length) {
-    listEl.innerHTML = '<div class="dash-hv-branch-empty">কোনো branch assigned নেই</div>';
+    listEl.innerHTML = '<div class="dash-hv-branch-empty">No branch assigned</div>';
     return;
   }
 
@@ -3090,25 +3089,25 @@ function getSelectedHvBranchIds() {
     const lookups = hvEffectiveRules(conn, 'lookup');
     const writes = hvEffectiveRules(conn, 'write').filter(r =>
       r.kind === 'feedback' || r.kind === 'validation' || r.kind === 'validator_name');
-    if (!lookups.length || !writes.length) throw new Error('lookup/write rule নেই');
+    if (!lookups.length || !writes.length) throw new Error('no lookup/write rule');
     const cidRule = lookups.find(r => r.kind === 'consignment');
-    if (!cidRule) throw new Error('consignment lookup নেই — কোন column দিয়ে মিলাবো বোঝা যাচ্ছে না');
+    if (!cidRule) throw new Error('no consignment lookup — unclear which column to match on');
     const tab = hvResolveConnTab(conn.tabPattern, dateKey);
     const hr = (conn.headerRow >= 1 && conn.headerRow <= 20) ? conn.headerRow : 1;
     const headerCache = {};
     const cidLetter = await hvResolveLetter(token, conn.sheetId, tab, cidRule, hr, headerCache);
-    if (!cidLetter) throw new Error(`consignment column '${cidRule.colRef}' পাওয়া যায়নি`);
+    if (!cidLetter) throw new Error(`consignment column '${cidRule.colRef}' not found`);
     const dateRules = lookups.filter(r => r.kind === 'today' || r.kind === 'created_at');
     const dateLetters = new Map();
     for (const rule of dateRules) {
       const letter = await hvResolveLetter(token, conn.sheetId, tab, rule, hr, headerCache);
-      if (!letter) throw new Error(`lookup column '${rule.colRef}' পাওয়া যায়নি`);
+      if (!letter) throw new Error(`lookup column '${rule.colRef}' not found`);
       dateLetters.set(rule, letter);
     }
     const writeLetters = [];
     for (const rule of writes) {
       const letter = await hvResolveLetter(token, conn.sheetId, tab, rule, hr, headerCache);
-      if (!letter) throw new Error(`write column '${rule.colRef}' পাওয়া যায়নি`);
+      if (!letter) throw new Error(`write column '${rule.colRef}' not found`);
       writeLetters.push({ rule, letter });
     }
     async function colValues(letter) {
@@ -3176,13 +3175,13 @@ function getSelectedHvBranchIds() {
     const setStatus = msg => { if (statusEl) statusEl.textContent = msg; };
     const orig      = btn ? btn.textContent : '';
 
-    if (!fromInput?.value || !toInput?.value) { setStatus('⚠ From এবং To — দুটো date-ই select করুন'); return; }
+    if (!fromInput?.value || !toInput?.value) { setStatus('⚠ Select both From and To dates'); return; }
     const fromDate = bdDateInputToIso(fromInput.value);
     const toDate   = bdDateInputToIso(toInput.value);
-    if (!fromDate || !toDate) { setStatus('⚠ Date format ঠিক নেই'); return; }
-    if (fromDate > toDate) { setStatus('⚠ From date, To date-এর পরে হতে পারবে না'); return; }
+    if (!fromDate || !toDate) { setStatus('⚠ Invalid date format'); return; }
+    if (fromDate > toDate) { setStatus('⚠ From date cannot be after To date'); return; }
     const branchesToQuery = getSelectedHvBranchIds();
-    if (!branchesToQuery.length) { setStatus('⚠ অন্তত একটা branch select করো'); return; }
+    if (!branchesToQuery.length) { setStatus('⚠ Select at least one branch'); return; }
 
     // Day list (Dhaka keys), capped — per-day tab + per-day consolidated CC.
     const dayKeys = [];
@@ -3191,16 +3190,16 @@ function getSelectedHvBranchIds() {
       if (dayKeys.length >= HV_SYNC_MAX_DAYS) break;
     }
     if (new Date(toDate).getTime() - new Date(fromDate).getTime() > (HV_SYNC_MAX_DAYS - 1) * 24 * 3600 * 1000) {
-      setStatus(`⚠ Range বেশি বড় — সর্বোচ্চ ${HV_SYNC_MAX_DAYS} দিন একবারে sync করা যাবে`);
+      setStatus(`⚠ Range too large — max ${HV_SYNC_MAX_DAYS} days per sync`);
       return;
     }
 
     if (btn) { btn.disabled = true; btn.textContent = '⏳ Syncing…'; }
     try {
       const idToken = await getValidFirebaseIdToken().catch(() => null);
-      if (!idToken) { setStatus('⚠ Login করুন প্রথমে'); return; }
+      if (!idToken) { setStatus('⚠ Log in first'); return; }
 
-      setStatus('⏳ Supabase থেকে validation data আনা হচ্ছে…');
+      setStatus('⏳ Loading validation data from Supabase…');
       const startIso = fromDate;
       const endIso   = new Date(new Date(toDate).getTime() + 24 * 3600 * 1000).toISOString();
       const allRows = [];
@@ -3209,11 +3208,11 @@ function getSelectedHvBranchIds() {
         return { branchId, rows };
       }));
       settled.forEach(r => { if (r.status === 'fulfilled') allRows.push(...r.value.rows); });
-      if (!allRows.length) { setStatus('এই date range/branch-এ কোনো validation data পাওয়া যায়নি'); return; }
+      if (!allRows.length) { setStatus('No validation data in this date range/branch'); return; }
 
       const catMap = await hvFetchRemarkCategories(idToken);
       const { token, error } = await hvGetSheetsToken();
-      if (!token) { setStatus(`⚠ ${error || 'Sheets permission নেই — re-login করুন'}`); return; }
+      if (!token) { setStatus(`⚠ ${error || 'No Sheets permission — re-login'}`); return; }
 
       // Connectors per branch (once), scope selected per day below.
       // NEW all-in-one path (app + CC panel-এর মতো): sheetBindings/{branch}/cc
@@ -3258,7 +3257,7 @@ function getSelectedHvBranchIds() {
           for (const conn of conns) {
             totConns++;
             const label = `${conn.sheetName || conn.sheetId || branchId} (${dateKeyToDdMmYyyy(dateKey)})`;
-            setStatus(`⏳ ${label} — sheet পড়ছে…`);
+            setStatus(`⏳ ${label} — reading sheet…`);
             try {
               const r = await hvBulkSyncOneConnection(token, branchId, conn, consolidated, dateKey);
               totScanned += r.scanned; totFilled += r.filled;
@@ -3269,7 +3268,7 @@ function getSelectedHvBranchIds() {
           }
         }
       }
-      if (!totConns) { setStatus('এই range-এ কোনো branch-এ remark connection নেই (scope দেখুন)'); return; }
+      if (!totConns) { setStatus('No remark connection in any branch for this range (check scope)'); return; }
       let msg = `✓ ${totDays} day(s): ${totRows} row synced (${totCells} cells) · ${totFilled} already filled · ${totNoCc} no CC yet · ${totScanned} sheet rows দেখা (${totConns} connection)`;
       if (errs.length) msg += ` · ⚠ ${errs.length} error: ${errs.slice(0, 2).join('; ')}${errs.length > 2 ? '…' : ''}`;
       setStatus(msg);
@@ -3293,29 +3292,29 @@ async function generateHoldValidationReport({ skipRender = false } = {}) {
   if (!skipRender && reportEl) reportEl.innerHTML = '';
 
   if (!fromInput?.value || !toInput?.value) {
-    setStatus('⚠ From এবং To — দুটো date-ই select করুন');
+    setStatus('⚠ Select both From and To dates');
     return;
   }
   const fromDate = bdDateInputToIso(fromInput.value);
   const toDate   = bdDateInputToIso(toInput.value);
   if (!fromDate || !toDate) {
-    setStatus('⚠ Date format ঠিক নেই');
+    setStatus('⚠ Invalid date format');
     return;
   }
   if (fromDate > toDate) {
-    setStatus('⚠ From date, To date-এর পরে হতে পারবে না');
+    setStatus('⚠ From date cannot be after To date');
     return;
   }
 
   const branchesToQuery = getSelectedHvBranchIds();
   if (!branchesToQuery.length) {
-    setStatus('⚠ অন্তত একটা branch select করো');
+    setStatus('⚠ Select at least one branch');
     return;
   }
 
   const idToken = await getValidFirebaseIdToken().catch(() => null);
   if (!idToken) {
-    setStatus('⚠ Login করুন প্রথমে');
+    setStatus('⚠ Log in first');
     return;
   }
 
@@ -3330,7 +3329,7 @@ async function generateHoldValidationReport({ skipRender = false } = {}) {
     // paginated via Edge Function report action). Replaces the old
     // runs_by_branchId → run_routes → remarks_by_consignment chain.
     // source='WORKER' = validation request; source='CC' = CC resolution.
-    setStatus('⏳ Supabase থেকে validation data আনা হচ্ছে…');
+    setStatus('⏳ Loading validation data from Supabase…');
     const allRows = [];
     // One branch failing (401/500) must not discard the others.
     const settled = await Promise.allSettled(branchesToQuery.map(async branchId => {
@@ -3344,11 +3343,11 @@ async function generateHoldValidationReport({ skipRender = false } = {}) {
     });
     if (failedBranches.length) {
       console.warn('[DB] report: branches failed:', failedBranches);
-      setStatus(`⚠ ${failedBranches.length} branch-এ data আসেনি — বাকিগুলো দেখানো হচ্ছে`);
+      setStatus(`⚠ No data for ${failedBranches.length} branch(es) — showing the rest`);
     }
 
     if (!allRows.length) {
-      setStatus('এই date range/branch-এ কোনো validation data পাওয়া যায়নি');
+      setStatus('No validation data in this date range/branch');
       return;
     }
 
@@ -3372,7 +3371,7 @@ async function generateHoldValidationReport({ skipRender = false } = {}) {
     const validGroups = Object.values(groups).filter(g => g.rows.some(r => r.source === 'WORKER'));
 
     if (!validGroups.length) {
-      setStatus('এই date range/branch-এ কোনো validation request পাওয়া যায়নি');
+      setStatus('No validation requests in this date range/branch');
       return;
     }
 
@@ -3449,11 +3448,11 @@ async function generateHoldValidationReport({ skipRender = false } = {}) {
       const pendingCount = hvReportRows.filter(r => r.stillPending).length;
       setStatus(`✓ Total ${hvReportRows.length} · Validated ${hvReportRows.length - pendingCount} · Pending ${pendingCount}`);
     } else {
-      setStatus(`✓ ${hvReportRows.length}টা remark পাওয়া গেছে`);
+      setStatus(`✓ ${hvReportRows.length}remarks found`);
     }
   } catch (e) {
     console.error('[DB] generateHoldValidationReport failed:', e);
-    setStatus('⚠ Report load failed — console (F12) দেখো');
+    setStatus('⚠ Report load failed — check console (F12)');
   }
 }
 
@@ -3513,7 +3512,7 @@ function renderHvReportSummary(reportEl) {
         </div>
         <div class="dash-hv-remark-section" data-idx="${idx}" style="display:none"></div>
       </div>`;
-  }).join('') : `<div class="dash-hv-branch-empty">এই filter-এ কোনো entry নেই</div>`;
+  }).join('') : `<div class="dash-hv-branch-empty">No entries for this filter</div>`;
 
   reportEl.innerHTML = `
     <div class="dash-hv-summary-grid">
@@ -3614,12 +3613,12 @@ async function toggleHvRemarkSection(reportEl, sorted, idx) {
   if (section.style.display !== 'none') { section.style.display = 'none'; return; }
   section.style.display = '';
   if (section.dataset.loaded) return;
-  section.innerHTML = '<div class="dash-hv-status">⏳ Remarks লোড হচ্ছে…</div>';
+  section.innerHTML = '<div class="dash-hv-status">⏳ Loading remarks…</div>';
 
   const idToken = await getValidFirebaseIdToken().catch(() => null);
-  if (!idToken) { section.innerHTML = '<div class="dash-hv-status">⚠ Login করুন প্রথমে</div>'; return; }
+  if (!idToken) { section.innerHTML = '<div class="dash-hv-status">⚠ Log in first</div>'; return; }
   if (!card.agentSystemId) {
-    section.innerHTML = '<div class="dash-hv-status">⚠ এই parcel-এ এখনো কোনো worker assign/touch করেনি, তাই remark save করা যাচ্ছে না</div>';
+    section.innerHTML = '<div class="dash-hv-status">⚠ No worker assigned/touched this parcel yet, so remarks cannot be saved</div>';
     return;
   }
 
@@ -3636,14 +3635,14 @@ async function toggleHvRemarkSection(reportEl, sorted, idx) {
     ? `<div class="dash-hv-chip-row">${options.map((o, i) =>
         `<button type="button" class="dash-hv-chip" data-opt="${i}" title="→ ${escapeHtml(o.target)}">${escapeHtml(o.label)}</button>`
       ).join('')}</div>`
-    : '<div class="dash-hv-status">⚠ Config-এ কোনো remark সেট করা নেই। নোট হিসেবে লিখতে পারেন:</div>';
+    : '<div class="dash-hv-status">⚠ No remark configured in Config. You can write a note:</div>';
 
   section.innerHTML = `
     ${chipsHtml}
-    <textarea class="dash-hv-note" rows="2" placeholder="নোট লিখুন (ঐচ্ছিক)"></textarea>
+    <textarea class="dash-hv-note" rows="2" placeholder="Write a note (optional)"></textarea>
     <div class="dash-hv-remark-actions">
-      <button type="button" class="dash-hv-cancel-btn">বন্ধ করুন</button>
-      <button type="button" class="dash-hv-save-btn">সেভ করুন</button>
+      <button type="button" class="dash-hv-cancel-btn">Close</button>
+      <button type="button" class="dash-hv-save-btn">Save</button>
     </div>
     <div class="dash-hv-status" data-role="msg" style="display:none"></div>`;
 
@@ -3670,7 +3669,7 @@ async function toggleHvRemarkSection(reportEl, sorted, idx) {
   saveBtn.addEventListener('click', async () => {
     const note = noteEl.value.trim();
     const opt = selected >= 0 ? options[selected] : null;
-    if (!opt && !note) { say('একটি রিমার্কস বেছে নিন বা নোট লিখুন'); return; }
+    if (!opt && !note) { say('Select a remark or write a note'); return; }
     saveBtn.disabled = true;
     saveBtn.textContent = '⏳ …';
     try {
@@ -3688,12 +3687,12 @@ async function toggleHvRemarkSection(reportEl, sorted, idx) {
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok || data.ok === false) throw new Error(data.error || `HTTP ${res.status}`);
-      say('✓ রিমার্কস সেভ হয়েছে — report refresh হচ্ছে…');
+      say('✓ Remark saved — refreshing report…');
       setTimeout(() => { generateHoldValidationReport(); }, 800);
     } catch (e) {
       say(`⚠ Save failed — ${e.message || 'network error'}`);
       saveBtn.disabled = false;
-      saveBtn.textContent = 'সেভ করুন';
+      saveBtn.textContent = 'Save';
     }
   });
 }
@@ -3748,7 +3747,7 @@ function buildHvFilename(fromVal, toVal, selectedIds) {
 function downloadHvReport() {
   if (!hvReportRows.length) {
     const statusEl = document.getElementById('dash-hv-status');
-    if (statusEl) statusEl.textContent = '⚠ আগে "Report দেখুন"-এ ক্লিক করো';
+    if (statusEl) statusEl.textContent = '⚠ Click "View report" first';
     return;
   }
   const fromInput = document.getElementById('dash-hv-from');
@@ -3857,29 +3856,29 @@ async function generateTeamPerformanceReport() {
   if (reportEl) reportEl.innerHTML = '';
 
   if (!fromInput?.value || !toInput?.value) {
-    setStatus('⚠ From এবং To — দুটো date-ই select করুন');
+    setStatus('⚠ Select both From and To dates');
     return;
   }
   const fromDate = bdDateInputToIso(fromInput.value);
   const toDate   = bdDateInputToIso(toInput.value);
   if (!fromDate || !toDate) {
-    setStatus('⚠ Date format ঠিক নেই');
+    setStatus('⚠ Invalid date format');
     return;
   }
   if (fromDate > toDate) {
-    setStatus('⚠ From date, To date-এর পরে হতে পারবে না');
+    setStatus('⚠ From date cannot be after To date');
     return;
   }
   const branchId = branchSel?.value;
   if (!branchId) {
-    setStatus('⚠ Branch select করো');
+    setStatus('⚠ Select a branch');
     return;
   }
   const mode = modeSel?.value === 'agent' ? 'agent' : 'team';
 
   const idToken = await getValidFirebaseIdToken().catch(() => null);
   if (!idToken) {
-    setStatus('⚠ Login করুন প্রথমে');
+    setStatus('⚠ Log in first');
     return;
   }
 
@@ -3889,12 +3888,12 @@ async function generateTeamPerformanceReport() {
   const endIso   = new Date(new Date(toDate).getTime() + 24 * 60 * 60 * 1000).toISOString();
 
   try {
-    setStatus('⏳ Supabase থেকে data আনা হচ্ছে…');
+    setStatus('⏳ Loading data from Supabase…');
     const allRows = await fetchSupabaseReportRows(branchId, startIso, endIso, idToken);
     const ccRows  = allRows.filter(r => r.source === 'CC');
 
     if (!ccRows.length) {
-      setStatus('এই date range/branch-এ কোনো CC resolution পাওয়া যায়নি');
+      setStatus('No CC resolutions in this date range/branch');
       return;
     }
 
@@ -3960,10 +3959,10 @@ async function generateTeamPerformanceReport() {
     }
 
     renderPerfReport(reportEl, mode, { totalUnique, counts }, modeRows);
-    setStatus(`✓ ${totalUnique}টা unique consignment · ${ccRows.length}টা CC entry`);
+    setStatus(`✓ ${totalUnique} unique consignments · ${ccRows.length} CC entries`);
   } catch (e) {
     console.error('[DB] generateTeamPerformanceReport failed:', e);
-    setStatus('⚠ Report load failed — console (F12) দেখো');
+    setStatus('⚠ Report load failed — check console (F12)');
   }
 }
 
@@ -4317,7 +4316,7 @@ async function fetchRoutingViaSocket(statusEl) {
   const incoming = [], outgoing = [];
   let tab = '';
   for (const t of targets) {
-    setStatus(`⏳ ${t.lib.nickname || t.lib.sheetName || 'Sheet'} পড়ছে…`);
+    setStatus(`⏳ Reading ${t.lib.nickname || t.lib.sheetName || 'Sheet'}…`);
     let fetched;
     try {
       fetched = await fetchRoutingRowsFromTarget(token, t);

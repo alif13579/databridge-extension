@@ -29,7 +29,7 @@
   function rowHtml(r) {
     const meta = [];
     if (r.st) meta.push(`run: ${esc(r.st)}`);
-    if (r.dateKey) meta.push(r.carried ? `📅 ${esc(r.dateKey)}` : 'আজ');
+    if (r.dateKey) meta.push(r.carried ? `📅 ${esc(r.dateKey)}` : 'Today');
     if (r.note) meta.push(`📝 ${esc(r.note)}`);
     return `<div class="rr-row">
       <div><span class="rr-id">${esc(r.id)}</span>${badge(r)}</div>

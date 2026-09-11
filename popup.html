@@ -86,7 +86,7 @@
         <span class="dash-cc-label">To</span>
         <input type="date" class="dash-cc-date" id="dash-hv-to">
       </div>
-      <button class="dash-export-btn dash-cc-export-btn" id="generate-hv-btn">🔍 Report দেখুন</button>
+      <button class="dash-export-btn dash-cc-export-btn" id="generate-hv-btn">🔍 View report</button>
       <button class="dash-export-btn dash-cc-export-btn" id="sync-hv-btn">⇪ Sheet Sync</button>
       <div class="dash-cc-status" id="dash-hv-status"></div>
       <div class="dash-hv-report" id="dash-hv-report"></div>
@@ -116,7 +116,7 @@
         <span class="dash-cc-label">To</span>
         <input type="date" class="dash-cc-date" id="dash-perf-to">
       </div>
-      <button class="dash-export-btn dash-cc-export-btn" id="generate-perf-btn">🔍 Report দেখুন</button>
+      <button class="dash-export-btn dash-cc-export-btn" id="generate-perf-btn">🔍 View report</button>
       <div class="dash-cc-status" id="dash-perf-status"></div>
       <div class="dash-hv-report" id="dash-perf-report"></div>
     </div>
@@ -128,7 +128,7 @@
   <div class="tab-content" id="tab-run">
     <div class="dash-cc-section">
       <div class="dash-sec-title">🚚 Run Validation Report</div>
-      <div class="dash-cc-status" id="run-report-status">Hermes run-route tab khola thakle ekhan theke report asbe।</div>
+      <div class="dash-cc-status" id="run-report-status">Open a Hermes run-route tab to load the report here.</div>
       <div class="dash-cc-row">
         <button class="dash-export-btn dash-cc-export-btn" id="run-report-load-btn" style="flex:1">🔄 Report ano</button>
         <button class="dash-export-btn dash-cc-export-btn" id="run-report-details-btn" style="flex:1">🔍 Sob details</button>
@@ -143,7 +143,7 @@
   <div class="tab-content" id="tab-routing">
     <div class="dash-cc-section">
       <div class="dash-sec-title">🛣️ Routing Approval</div>
-      <div class="dash-cc-status" id="routing-status">Sheet connect koro — ajker tab theke data asbe।</div>
+      <div class="dash-cc-status" id="routing-status">Connect a sheet — data comes from today\u2019s tab.</div>
       <div class="routing-cfg-toggle" id="routing-cfg-toggle">⚙️ Sheet settings ▸</div>
       <div id="routing-cfg" style="display:none">
         <div class="dash-cc-row">
@@ -185,7 +185,7 @@
   <div class="tab-content" id="tab-connect">
     <div class="screen active" id="screen-google-login">
       <div class="connect-title">
-        Google দিয়ে লগইন করুন — App এ same Google account লগইন থাকলে automatically connect হবে
+        Log in with Google — stays connected automatically if the same Google account is logged into the app
       </div>
       <button id="google-login-btn" class="google-login-btn">
         <span class="google-icon">G</span> Sign in with Google
@@ -193,17 +193,17 @@
     </div>
     <div class="screen" id="screen-connect">
       <div class="connect-title">
-        মোবাইল App দিয়ে QR Code স্ক্যান করুন<br>অথবা Extension ID টি App এ দিন
+        Scan the QR code with the mobile app<br>or enter this Extension ID in the app
       </div>
       <div class="qr-wrapper" id="qrcode"></div>
       <div class="extension-id-box">
         <div>
-          <div class="extension-id-label">আপনার Extension ID</div>
+          <div class="extension-id-label">Your Extension ID</div>
           <div class="extension-id-value" id="extension-id-display">Loading...</div>
         </div>
         <button class="copy-btn" id="copy-btn">📋</button>
       </div>
-      <div class="extension-id-hint">Extension ID টি App এ paste করেও connect করা যাবে</div>
+      <div class="extension-id-hint">You can also connect by pasting this Extension ID in the app</div>
     </div>
     <div class="screen" id="screen-connected">
       <div class="agent-info">
@@ -227,7 +227,7 @@
           <button class="copy-btn" id="copy-connected-uid-btn">📋</button>
         </div>
       </div>
-      <button id="disconnect-btn">🔌 Disconnect করুন</button>
+      <button id="disconnect-btn">🔌 Disconnect</button>
     </div>
   </div>
 
@@ -246,7 +246,7 @@
         <span>Auto-click eye buttons</span>
         <label class="toggle"><input type="checkbox" id="unhide-enabled-toggle" checked><span class="toggle-slider"></span></label>
       </div>
-        <div class="settings-hint">Eye button বা তার container-এর class/id (যেকোনো CSS selector, jemon .masked-field) — ভেতরের button auto-click হবে, একবার করে।</div>
+        <div class="settings-hint">Eye button or its container's class/id (any CSS selector, e.g. .masked-field) — the inner button auto-clicks once.</div>
       <div class="autofill-url-row">
         <input type="text" id="unhide-selector-input" placeholder="e.g. .eye-btn, #show-phone">
         <button id="unhide-selector-add-btn">Add</button>
