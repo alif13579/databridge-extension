@@ -487,7 +487,13 @@
         paintModes();
         filter = 'all';
         ccVisibleCount = CC_RENDER_LIMIT;
-        if (ccBodyEl) await loadAndRender(ccBodyEl);
+        // loadAndRender paints the spinner synchronously before its first
+        // await, so the switch always gives instant feedback, then
+        // force-loads past any quiet in-flight refresh.
+        try {
+          const body = ccBodyEl || panel.querySelector('#db-cc-body');
+          if (body) await loadAndRender(body, { force: true });
+        } catch (e) { console.warn('[DB CC Panel] mode switch failed:', e?.message || e); }
       }));
 
     panel.querySelector('#db-cc-sync-sheet').addEventListener('click', async (e) => {
@@ -862,7 +868,11 @@
   // post-save reload-এ spinner flash হবে না)। Default (mode/date/manual)
   // → spinner দেখিয়ে বোঝায় fresh data আসছে।
   async function loadAndRender(bodyEl, opts = {}) {
-    if (ccLoading) return;
+    // Mode/date/manual clicks force past a quiet auto-refresh that may be
+    // in flight (otherwise the click paints the mode but loads nothing and
+    // the user never sees a spinner). Concurrent finish order is harmless:
+    // both render the same current mode.
+    if (ccLoading && !opts.force) return;
     ccLoading = true;
     // Preserve bulk-sync status across render() — render() overwrites
     // bodyEl.innerHTML which would otherwise destroy #db-cc-bulk-msg.

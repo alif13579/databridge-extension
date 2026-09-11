@@ -4037,9 +4037,9 @@ const ROUTING_SHEET_CFG_KEY = 'routing_sheet_cfg';
 // Default decision buttons — settings theke bodlano jay. value-te {input}
 // thakle press-e prompt kore bosiye K-te lekhe.
 const ROUTING_DEFAULT_BUTTONS = [
-  { id: 'approved', label: '✅ Approved', value: 'Approved' },
-  { id: 'wrong_hub', label: '🏢 Wrong Hub', value: 'Wrong Hub' },
-  { id: 'update_address', label: '📝 Update Address', value: '{input}' },
+  { id: 'approved', label: '✅ Approved', value: 'Approved', col: '' },
+  { id: 'wrong_hub', label: '🏢 Wrong Hub', value: 'Wrong Hub', col: '' },
+  { id: 'update_address', label: '📝 Update Address', value: '{input}', col: '' },
 ];
 
 function routingButtons(cfg) {
@@ -4050,6 +4050,9 @@ function routingButtons(cfg) {
       id: String(b.id || ('btn' + (i + 1))),
       label: String(b.label).trim(),
       value: String(b.value != null ? b.value : '').trim(),
+      // Write column for THIS button (letter/header). Blank = socket
+      // binding-এর confirm column, else local K setting.
+      col: String(b.col != null ? b.col : '').trim().toUpperCase(),
     }));
 }
 
@@ -4137,11 +4140,201 @@ async function fetchRoutingSheetRows(cfg) {
       hermesAddress: '', hermesStatus: '', hub: '', lastMile: '',
       merchant: '', cod: '', history: [],
     };
-    // Destination wins: To == self → incoming, else From == self → outgoing.
-    if (to.toLowerCase() === own) incoming.push(row);
-    else if (from.toLowerCase() === own) outgoing.push(row);
+  // Destination wins: To == self → incoming, else From == self → outgoing.
+  if (to.toLowerCase() === own) incoming.push(row);
+  else if (from.toLowerCase() === own) outgoing.push(row);
   }
   return { tab, incoming, outgoing };
+}
+
+// ── ROUTING SOCKET (app 🔌 parity) ─────────────────────────────────────
+// App-er RoutingApprovalFragment 🔌 theke bound library + columns Firebase-e
+// (config/sheetBindings/{branch}/routing + neutral libraries) — extension
+// ekhan thekei pore, tai socket bodlale app + extension eksathe bodlay.
+// Local sheet settings sudhu fallback (binding na thakle).
+
+function routingDhakaDateKey() {
+  try {
+    return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Dhaka', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
+  } catch { return new Date().toISOString().slice(0, 10); }
+}
+
+function routingScopeCovers(scopeType, scopeMonth, scopeFrom, scopeTo, dateKey) {
+  const t = String(scopeType || 'global');
+  if (t === 'month') {
+    const m = String(scopeMonth || '').slice(0, 7);
+    return !!m && String(dateKey || '').slice(0, 7) === m;
+  }
+  if (t === 'range') {
+    const d = String(dateKey || '');
+    if (scopeFrom && d < String(scopeFrom).slice(0, 10)) return false;
+    if (scopeTo && d > String(scopeTo).slice(0, 10)) return false;
+    return true;
+  }
+  return true; // global
+}
+
+async function fetchRoutingOwnBranches(idToken) {
+  const out = { ids: [], names: {} };
+  try {
+    const { google_uid } = await chrome.storage.local.get(['google_uid']);
+    if (!google_uid) return out;
+    const authQuery = idToken ? `?auth=${idToken}` : '';
+    const res = await fetch(`${FIREBASE_URL}/users/${google_uid}/profile/company_info/branch_ids.json${authQuery}`);
+    const data = await res.json().catch(() => null);
+    const ids = Array.isArray(data) ? data.filter(Boolean) : Object.values(data || {}).filter(Boolean);
+    out.ids = [...new Set(ids.map(String))];
+    if (!out.ids.length) return out;
+    try {
+      const r = await fetch(`${SUPABASE_URL}/rest/v1/branches?select=branch_id,name`, {
+        headers: { 'apikey': SUPABASE_ANON_KEY, 'Authorization': `Bearer ${idToken}`, 'Accept': 'application/json' },
+      });
+      const rows = await r.json().catch(() => []);
+      (Array.isArray(rows) ? rows : []).forEach(b => {
+        if (b && b.branch_id) out.names[b.branch_id] = b.name || b.branch_id;
+      });
+    } catch { /* id fallback below */ }
+    out.ids.forEach(id => { if (!out.names[id]) out.names[id] = id; });
+  } catch (e) {
+    console.warn('[DB] routing own branches failed:', e?.message || e);
+  }
+  return out;
+}
+
+async function fetchRoutingTargets(idToken, branchIds, dateKey) {
+  const authQuery = idToken ? `?auth=${idToken}` : '';
+  const out = [];
+  await Promise.all(branchIds.map(async branchId => {
+    try {
+      const [bRes, lRes] = await Promise.all([
+        fetch(`${FIREBASE_URL}/config/sheetBindings/${encodeURIComponent(branchId)}/routing.json${authQuery}`),
+        fetch(`${FIREBASE_URL}/config/connectors/${encodeURIComponent(branchId)}/current.json${authQuery}`),
+      ]);
+      const bObj = await bRes.json().catch(() => null) || {};
+      const lObj = await lRes.json().catch(() => null) || {};
+      const libs = {};
+      Object.entries(lObj).forEach(([lid, l]) => {
+        if (l && l.isLibrary && l.enabled !== false) libs[lid] = l;
+      });
+      Object.entries(bObj).forEach(([bid, b]) => {
+        if (!b || b.enabled === false || !b.libraryId) return;
+        const lib = libs[b.libraryId];
+        if (!lib) return;
+        if (!routingScopeCovers(lib.scopeType || 'global', lib.scopeMonth || '', lib.scopeFrom || '', lib.scopeTo || '', dateKey)) return;
+        if (!((b.idCol || {}).colRef || '').trim()) return;
+        out.push({ branchId, bindingId: bid, binding: b, lib });
+      });
+    } catch (e) {
+      console.warn('[DB] routing bindings read failed:', branchId, e?.message || e);
+    }
+  }));
+  return out;
+}
+
+async function fetchRoutingTabValues(token, sheetId, tab) {
+  const res = await fetch(
+    `https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values/${routingSheetRange(tab)}`,
+    { headers: { 'Authorization': `Bearer ${token}` } });
+  if (!res.ok) {
+    if (res.status === 404) throw new Error(`Tab "${tab}" paini`);
+    throw new Error(`Sheets read failed (${res.status})`);
+  }
+  const data = await res.json().catch(() => ({}));
+  return Array.isArray(data.values) ? data.values : [];
+}
+
+// Column ref (letter/number/header-text + mode) → 0-based index.
+async function routingResolveCol(token, sheetId, tab, ref, mode, headerRow) {
+  const t = String((ref || {}).colRef ?? ref ?? '').trim();
+  if (!t) return -1;
+  if (mode !== 'text') {
+    if (/^[A-Za-z]{1,3}$/.test(t)) return routingColToIndex(t);
+    if (/^\d+$/.test(t)) return parseInt(t, 10) - 1;
+    return -1;
+  }
+  const res = await fetch(
+    `https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values/${routingSheetRange(`${tab}!${headerRow}:${headerRow}`)}`,
+    { headers: { 'Authorization': `Bearer ${token}` } });
+  if (!res.ok) return -1;
+  const data = await res.json().catch(() => ({}));
+  const headers = (((data.values || [])[0]) || []);
+  const idx = headers.findIndex(h => String(h || '').trim() === t);
+  return idx;
+}
+
+async function fetchRoutingRowsFromTarget(token, target) {
+  const { binding: b, lib } = target;
+  const tab = routingResolveTab(lib.tabPattern || 'Routing {dd}');
+  const headerRow = Math.max(1, parseInt(lib.headerRow, 10) || 1);
+  const sheetId = routingExtractSheetId(lib.sheetId);
+  if (!sheetId) throw new Error('Library-te sheet ID nei');
+  const col = async (ref, mode) => routingResolveCol(token, sheetId, tab, ref, mode, headerRow);
+  const [idIdx, fromIdx, toIdx, confirmIdx] = await Promise.all([
+    col(b.idCol, (b.idCol || {}).mode),
+    col(b.fromCol, (b.fromCol || {}).mode),
+    col(b.toCol, (b.toCol || {}).mode),
+    col(b.confirmCol, (b.confirmCol || {}).mode),
+  ]);
+  if (idIdx < 0) throw new Error('ID column paini');
+  const values = await fetchRoutingTabValues(token, sheetId, tab);
+  const rows = [];
+  for (let i = headerRow; i < values.length; i++) {
+    const r = values[i] || [];
+    const id = String(r[idIdx] || '').trim();
+    if (!id) continue;
+    rows.push({
+      id,
+      from: fromIdx >= 0 ? String(r[fromIdx] || '').trim() : '',
+      to: toIdx >= 0 ? String(r[toIdx] || '').trim() : '',
+      confirm: confirmIdx >= 0 ? String(r[confirmIdx] || '').trim() : '',
+      rowNum: i + 1,
+      sheetAddress: '',
+      phone: '', customer: '',
+      hermesAddress: '', hermesStatus: '', hub: '', lastMile: '',
+      merchant: '', cod: '', history: [],
+      _target: { sheetId, tab, confirmCol: ((b.confirmCol || {}).colRef || 'K').trim() || 'K', confirmMode: (b.confirmCol || {}).mode || 'index', headerRow },
+    });
+  }
+  return { tab, rows, label: lib.nickname || lib.sheetName || sheetId };
+}
+
+// Socket-first orchestration: branches → bindings → sheets → classify.
+async function fetchRoutingViaSocket(statusEl) {
+  const setStatus = (t) => { if (statusEl) statusEl.textContent = t; };
+  let idToken = null;
+  try { idToken = await getValidFirebaseIdToken().catch(() => null); } catch {}
+  if (!idToken) return null;
+  const own = await fetchRoutingOwnBranches(idToken);
+  if (!own.ids.length) return null;
+  const dateKey = routingDhakaDateKey();
+  const targets = await fetchRoutingTargets(idToken, own.ids, dateKey);
+  if (!targets.length) return null;
+  const { token, error } = await hvGetSheetsToken();
+  if (!token) throw new Error(error || 'Sheets auth nei');
+  const ownSet = new Set([...own.ids, ...Object.values(own.names)].map(s => String(s || '').trim().toLowerCase()).filter(Boolean));
+  const ownLabel = own.ids.map(id => own.names[id] || id).join(', ');
+  const seen = new Set();
+  const incoming = [], outgoing = [];
+  let tab = '';
+  for (const t of targets) {
+    setStatus(`⏳ ${t.lib.nickname || t.lib.sheetName || 'Sheet'} পড়ছে…`);
+    let fetched;
+    try {
+      fetched = await fetchRoutingRowsFromTarget(token, t);
+    } catch (e) {
+      console.warn('[DB] routing socket sheet read failed:', t.branchId, e?.message || e);
+      continue;
+    }
+    tab = tab || fetched.tab;
+    fetched.rows.forEach(row => {
+      if (seen.has(row.id)) return;
+      seen.add(row.id);
+      // Destination wins (app parity): To == own → incoming, else From == own → outgoing.
+      if (row.to.trim().toLowerCase() && ownSet.has(row.to.trim().toLowerCase())) incoming.push(row);
+      else if (row.from.trim().toLowerCase() && ownSet.has(row.from.trim().toLowerCase())) outgoing.push(row);
+    });
+  }
+  return { tab, incoming, outgoing, ownLabel };
 }
 
 // Decision button editor (settings): label + K value rows.
@@ -4161,11 +4354,16 @@ function renderRoutingDecisionEditor(buttons) {
     val.placeholder = 'K value ({input}?)'; val.value = b.value != null ? b.value : '';
     val.dataset.rval = '1';
     val.dataset.rid = b.id || ('btn' + (i + 1));
+    const col = document.createElement('input');
+    col.type = 'text'; col.className = 'dash-cc-date'; col.style.flex = '0 0 52px';
+    col.placeholder = 'Col'; col.title = 'Kon column-e likhbe (khali = socket confirm column)';
+    col.value = b.col || '';
+    col.dataset.rcol = '1';
     const del = document.createElement('button');
     del.className = 'dash-export-btn'; del.textContent = '✕'; del.title = 'Delete';
     del.style.flex = '0 0 auto';
     del.addEventListener('click', () => { row.remove(); });
-    row.appendChild(lab); row.appendChild(val); row.appendChild(del);
+    row.appendChild(lab); row.appendChild(val); row.appendChild(col); row.appendChild(del);
     box.appendChild(row);
   });
 }
@@ -4177,10 +4375,11 @@ function collectRoutingDecisionEditor() {
   box.querySelectorAll('.dash-cc-row').forEach(row => {
     const lab = row.querySelector('[data-rlab]');
     const val = row.querySelector('[data-rval]');
+    const col = row.querySelector('[data-rcol]');
     if (!lab) return;
     const label = (lab.value || '').trim();
     if (!label) return;
-    out.push({ id: (val && val.dataset.rid) || ('btn' + (out.length + 1)), label, value: ((val || {}).value || '').trim() });
+    out.push({ id: (val && val.dataset.rid) || ('btn' + (out.length + 1)), label, value: ((val || {}).value || '').trim(), col: ((col || {}).value || '').trim().toUpperCase() });
   });
   return out;
 }
@@ -4247,38 +4446,63 @@ async function loadRoutingTab() {
   const statusEl = document.getElementById('routing-status');
   const summaryEl = document.getElementById('routing-summary');
   if (!listEl) return;
+  if (routingLoading) return; // Reload double-click guard
+  routingLoading = true;
+  const reloadBtn = document.getElementById('routing-refresh-btn');
+  const reloadOrig = reloadBtn ? reloadBtn.textContent : '';
+  if (reloadBtn) { reloadBtn.disabled = true; reloadBtn.textContent = '⏳ Loading…'; }
   bindRoutingSettingsOnce();
+  bindRoutingSubTabsOnce();
+  // Instant spinner — sheet + Hermes enrich sesh howa porjonto thakbe.
+  if (statusEl) statusEl.innerHTML = '<span class="spinner"></span> Sheet theke ajker data ana hocche…';
+  listEl.innerHTML = '<div class="dash-cc-status"><span class="spinner"></span> ⏳ Loading…</div>';
+  try {
   const cfg = await loadRoutingSheetCfg();
   fillRoutingSettings(cfg);
-  const reloadBtn = document.getElementById('routing-refresh-btn');
   if (reloadBtn) reloadBtn.onclick = () => loadRoutingTab();
   let decisions = {};
   try {
     const r = await chrome.storage.local.get([ROUTING_DECISIONS_KEY, 'routing_decisions_demo']);
     decisions = r[ROUTING_DECISIONS_KEY] || r['routing_decisions_demo'] || {};
   } catch { /* proceeds without saved state */ }
-  if (!cfg || !routingExtractSheetId(cfg.sheetId)) {
-    if (statusEl) statusEl.textContent = 'Sheet settings-e Sheet ID daw (⚙️ kholo) — tarpor ajker tab theke data asbe।';
-    listEl.innerHTML = '';
-    if (summaryEl) summaryEl.textContent = '';
-    return;
-  }
-  if (statusEl) statusEl.textContent = '⏳ Sheet theke ajker data ana hocche…';
-  listEl.innerHTML = '';
+  // Source 1 (preferred): app routing 🔌 socket — Firebase bindings +
+  // libraries, so app ar extension sobsomoy same sheet/columns dekhe.
+  // Source 2 (fallback): local sheet settings (back-compat).
   let tab = '', incoming = [], outgoing = [];
+  let viaSocket = false, ownLabel = '';
   try {
-    const fetched = await fetchRoutingSheetRows(cfg);
-    tab = fetched.tab; incoming = fetched.incoming; outgoing = fetched.outgoing;
+    const sock = await fetchRoutingViaSocket(statusEl);
+    if (sock && sock.rows.length) {
+      tab = sock.tab; incoming = sock.incoming; outgoing = sock.outgoing;
+      viaSocket = true; ownLabel = sock.ownLabel;
+    }
   } catch (e) {
-    if (statusEl) statusEl.textContent = `⚠ ${e.message || e}`;
-    if (summaryEl) summaryEl.textContent = '';
-    return;
+    console.warn('[DB] routing socket failed, local settings-e porchi:', e?.message || e);
+  }
+  if (!incoming.length && !outgoing.length) {
+    if (!cfg || !routingExtractSheetId(cfg.sheetId)) {
+      if (statusEl) statusEl.textContent = 'Sheet settings-e Sheet ID daw (⚙️ kholo) — tarpor ajker tab theke data asbe।';
+      listEl.innerHTML = '';
+      if (summaryEl) summaryEl.textContent = '';
+      return;
+    }
+    try {
+      const fetched = await fetchRoutingSheetRows(cfg);
+      tab = fetched.tab; incoming = fetched.incoming; outgoing = fetched.outgoing;
+    } catch (e) {
+      if (statusEl) statusEl.textContent = `⚠ ${e.message || e}`;
+      if (summaryEl) summaryEl.textContent = '';
+      return;
+    }
   }
   routingState.cfg = cfg;
   routingState.tab = tab;
   routingState.incoming = incoming;
   routingState.outgoing = outgoing;
   routingState.decisions = decisions;
+  routingState.viaSocket = viaSocket;
+  routingState.ownLabel = ownLabel;
+  paintRoutingSubTabs();
   renderRoutingList();
   // Hermes enrich: cached instant, bakigulo background-e fetch — seshe re-render.
   try {
@@ -4289,23 +4513,70 @@ async function loadRoutingTab() {
     console.warn('[DB] routing hermes enrich failed:', e?.message || e);
   }
   renderRoutingList();
+  } finally {
+    routingLoading = false;
+    if (reloadBtn) { reloadBtn.disabled = false; reloadBtn.textContent = reloadOrig || '🔄 Reload'; }
+  }
 }
 
-let routingState = { cfg: null, tab: '', incoming: [], outgoing: [], decisions: {} };
+let routingState = { cfg: null, tab: '', incoming: [], outgoing: [], decisions: {}, subTab: 'incoming', viaSocket: false, ownLabel: '' };
+let routingLoading = false; // in-flight guard — Reload double-click-e parallel sheet storm hobe na
+const ROUTING_SUBTAB_KEY = 'routing_subtab';
+
+function paintRoutingSubTabs() {
+  const { incoming, outgoing, subTab } = routingState;
+  const bIn = document.getElementById('routing-tab-incoming');
+  const bOut = document.getElementById('routing-tab-outgoing');
+  if (bIn) {
+    bIn.textContent = `⬇️ Incoming (${incoming.length})`;
+    bIn.classList.toggle('active', subTab !== 'outgoing');
+  }
+  if (bOut) {
+    bOut.textContent = `⬆️ Outgoing (${outgoing.length})`;
+    bOut.classList.toggle('active', subTab === 'outgoing');
+  }
+}
+
+function bindRoutingSubTabsOnce() {
+  if (bindRoutingSubTabsOnce.done) return;
+  bindRoutingSubTabsOnce.done = true;
+  const pick = (t) => {
+    routingState.subTab = t;
+    try { chrome.storage.local.set({ [ROUTING_SUBTAB_KEY]: t }); } catch {}
+    paintRoutingSubTabs();
+    renderRoutingList();
+  };
+  const bIn = document.getElementById('routing-tab-incoming');
+  const bOut = document.getElementById('routing-tab-outgoing');
+  if (bIn) bIn.addEventListener('click', () => pick('incoming'));
+  if (bOut) bOut.addEventListener('click', () => pick('outgoing'));
+  try {
+    chrome.storage.local.get([ROUTING_SUBTAB_KEY], r => {
+      if (r && (r[ROUTING_SUBTAB_KEY] === 'incoming' || r[ROUTING_SUBTAB_KEY] === 'outgoing')) {
+        routingState.subTab = r[ROUTING_SUBTAB_KEY];
+        paintRoutingSubTabs();
+      }
+    });
+  } catch {}
+}
 
 function renderRoutingList() {
   const listEl = document.getElementById('routing-list');
   const statusEl = document.getElementById('routing-status');
   const summaryEl = document.getElementById('routing-summary');
   if (!listEl) return;
-  const { cfg, tab, incoming, outgoing, decisions } = routingState;
-  const ownBranch = String((cfg || {}).ownBranch || 'Madanpur').trim();
-  const sheetRows = [...incoming, ...outgoing];
-  if (statusEl && sheetRows.length) statusEl.textContent = `📄 ${tab} · ⬇️ ${incoming.length} incoming · ⬆️ ${outgoing.length} outgoing`;
-  const addrMismatch = (row) => !!(row.hermesAddress || '').trim() && (row.sheetAddress || '').trim() !== (row.hermesAddress || '').trim();
-  if (!sheetRows.length) {
-    listEl.innerHTML = '<div class="card-meta">Ajker tab-e kono row nei।</div>';
-    if (summaryEl) summaryEl.textContent = `📄 ${tab} · 0 rows`;
+  const { cfg, tab, incoming, outgoing, decisions, subTab, viaSocket, ownLabel } = routingState;
+  const ownBranch = viaSocket
+    ? (ownLabel || 'My branch')
+    : String((cfg || {}).ownBranch || 'Madanpur').trim();
+  const showIncoming = subTab !== 'outgoing';
+  const rows = showIncoming ? incoming : outgoing;
+  if (statusEl && (incoming.length || outgoing.length)) {
+    statusEl.textContent = `📄 ${tab} · ${viaSocket ? '🔌 socket' : '⚙️ local'} · ${ownBranch} · ⬇️ ${incoming.length} incoming · ⬆️ ${outgoing.length} outgoing`;
+  }
+  if (!rows.length) {
+    listEl.innerHTML = `<div class="card-meta">${showIncoming ? '⬇️ Incoming-e kono parcel nei।' : '⬆️ Outgoing-e kono parcel nei।'}</div>`;
+    if (summaryEl) summaryEl.textContent = `📄 ${tab} · ⬇️${incoming.length} ⬆️${outgoing.length}`;
     return;
   }
   const renderRow = (row) => {
@@ -4319,20 +4590,20 @@ function renderRoutingList() {
       const sign = routingParcelSign(h.status, h.hub, ownBranch);
       return `<div class="routing-hist-row">
         <span class="routing-sign">${sign}</span>
-        <span><b>${escapeHtml(h.id)}</b> · ${escapeHtml(h.address || '—')}<br>
-        <span class="card-meta">${escapeHtml(h.status)} · last-mile: ${escapeHtml(h.hub)}</span></span>
+        <span><b>${escapeHtml(h.address || '—')}</b><br>
+        <span class="card-meta">${escapeHtml(h.id)} · ${escapeHtml(h.status)} · last-mile: ${escapeHtml(h.hub)}</span></span>
       </div>`;
     }).join('');
     const histBlock = hist.length
-      ? `<button class="routing-hist-toggle" data-route-hist="${escapeHtml(row.id)}">📞 Same number (${hist.length})${warnCount ? ` · ⚠️ ${warnCount}` : ''} ▸</button>
+      ? `<button class="routing-hist-toggle" data-route-hist="${escapeHtml(row.id)}">🕘 Previous delivery (${hist.length})${warnCount ? ` · ⚠️ ${warnCount}` : ''} ▸</button>
          <div class="routing-hist-list" id="rhist-${escapeHtml(row.id)}" style="display:none">${histRows || '<div class="card-meta">—</div>'}</div>`
       : `<div class="card-meta">📞 Hermes info asle history asbe</div>`;
+    const addr = (row.hermesAddress || '').trim() || '—';
     return `<div class="history-card routing-card">
       <div class="card-main">
         <div class="card-text">${escapeHtml(row.id)}${row.cod ? ` <span class="routing-cod">৳${escapeHtml(String(row.cod))}</span>` : ''}${row.confirm ? ` <span class="routing-diff" style="background:#dcfce7;color:#15803d">✔ ${escapeHtml(row.confirm)}</span>` : ''}</div>
-        <div class="card-meta">🛣️ ${escapeHtml(row.from || '?')} → ${escapeHtml(row.to || '?')}</div>
-        <div class="routing-addr">📄 Sheet: ${escapeHtml(row.sheetAddress || '—')}</div>
-        <div class="routing-addr">🏢 Hermes: ${escapeHtml(row.hermesAddress || '—')}${addrMismatch(row) ? ' <span class="routing-diff">≠ mismatch</span>' : ''}</div>
+        <div class="card-meta">From: <b>${escapeHtml(row.from || '?')}</b> → To: <b>${escapeHtml(row.to || '?')}</b></div>
+        <div class="routing-addr">📍 ${escapeHtml(addr)}</div>
         <div class="card-meta">${(row.hermesStatus || row.hub) ? `Status: <b>${escapeHtml(row.hermesStatus || '—')}</b> · Hub: ${escapeHtml(row.hub || '—')} → Last mile: ${escapeHtml(row.lastMile || '—')}` : 'Status: — (Hermes porer step-e)'}</div>
         ${histBlock}
         ${stateLine}
@@ -4342,10 +4613,8 @@ function renderRoutingList() {
       </div>
     </div>`;
   };
-  const groupHdr = (t) => `<div class="dash-sec-title" style="margin-top:10px">${t}</div>`;
-  listEl.innerHTML =
-    (incoming.length ? groupHdr(`⬇️ Incoming — ${ownBranch} (${incoming.length})`) + incoming.map(renderRow).join('') : '') +
-    (outgoing.length ? groupHdr(`⬆️ Outgoing — ${ownBranch} theke (${outgoing.length})`) + outgoing.map(renderRow).join('') : '');
+  listEl.innerHTML = rows.map(renderRow).join('');
+  const sheetRows = [...incoming, ...outgoing];
   const counts = {};
   Object.values(decisions).forEach((d) => { const k = (d && d.act) || '?'; counts[k] = (counts[k] || 0) + 1; });
   const decided = sheetRows.filter((r) => decisions[r.id]).length;
@@ -4370,7 +4639,7 @@ function renderRoutingList() {
 
 async function decideRouting(id, act, btn) {
   const buttons = routingButtons(routingState.cfg);
-  const def = buttons.find(b => b.id === act) || { id: act, label: act, value: act };
+  const def = buttons.find(b => b.id === act) || { id: act, label: act, value: act, col: '' };
   let kValue = def.value;
   let extra = '';
   if (kValue.includes('{input}')) {
@@ -4385,8 +4654,8 @@ async function decideRouting(id, act, btn) {
   if (btn) btn.textContent = '⏳…';
   try {
     await saveRoutingDecision(id, def.id, def.label, extra);
-    // Sheet K (confirm) column-e configured value.
-    await routingWriteConfirm(id, kValue);
+    // Confirm column: per-button override → socket binding default → local K.
+    await routingWriteConfirm(id, kValue, def.col || '');
   } catch (e) {
     if (btn) btn.textContent = orig;
     return;
@@ -4394,18 +4663,42 @@ async function decideRouting(id, act, btn) {
   renderRoutingList();
 }
 
-// Decision → sheet confirm column (settings K, default K) at that row.
-async function routingWriteConfirm(id, value) {
+// 0-based index → column letter.
+function routingIndexToLetter(n) {
+  let s = '', x = (n | 0) + 1;
+  while (x > 0) { const m = (x - 1) % 26; s = String.fromCharCode(65 + m) + s; x = ((x - 1) / 26) | 0; }
+  return s || 'A';
+}
+
+// Decision → confirm column at that row. Column priority: per-button Col →
+// socket binding-এর confirm column → local K setting. Header-text refs
+// resolve via the tab's header row (socket TEXT mode parity).
+async function routingWriteConfirm(id, value, colOverride) {
   const { cfg, incoming, outgoing } = routingState;
-  if (!cfg) return;
   const row = [...incoming, ...outgoing].find(r => r.id === id);
   if (!row || !row.rowNum) return;
-  const letter = String(cfg.confirmCol || 'K').trim().toUpperCase() || 'K';
-  if (!/^[A-Z]{1,3}$/.test(letter)) return;
   const { token, error } = await hvGetSheetsToken();
   if (!token) throw new Error(error || 'Sheets auth nei');
-  const tab = routingResolveTab(cfg.tabPattern);
-  const sheetId = routingExtractSheetId(cfg.sheetId);
+  let sheetId, tab, headerRow = 1, ref = '', mode = 'index';
+  if (row._target) {
+    sheetId = row._target.sheetId;
+    tab = row._target.tab;
+    headerRow = row._target.headerRow || 1;
+    ref = String(colOverride || row._target.confirmCol || 'K').trim();
+  } else {
+    if (!cfg) return;
+    sheetId = routingExtractSheetId(cfg.sheetId);
+    tab = routingResolveTab(cfg.tabPattern);
+    headerRow = Math.max(1, parseInt(cfg.headerRow, 10) || 1);
+    ref = String(colOverride || cfg.confirmCol || 'K').trim();
+  }
+  let letter = ref.toUpperCase();
+  if (!/^[A-Z]{1,3}$/.test(letter)) {
+    // Header-text (or numeric) ref → resolve to a letter first.
+    const idx = await routingResolveCol(token, sheetId, tab, ref, /^\d+$/.test(ref) ? 'index' : 'text', headerRow);
+    if (idx == null || idx < 0) throw new Error(`Confirm column "${ref}" paini`);
+    letter = routingIndexToLetter(idx);
+  }
   const range = routingSheetRange(`${tab}!${letter}${row.rowNum}`);
   const res = await fetch(
     `https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values/${range}?valueInputOption=RAW`,

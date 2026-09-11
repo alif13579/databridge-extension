@@ -167,11 +167,15 @@
           <input type="text" class="dash-cc-date" id="routing-header-row" placeholder="Hdr (1)" style="flex:1;max-width:60px">
         </div>
         <button class="dash-export-btn dash-cc-export-btn" id="routing-save-btn">💾 Save settings</button>
-        <div class="dash-cc-label" style="margin-top:8px">DECISION BUTTONS (label → K-te ja likhbe; {input} thakle press-e jigges korbe)</div>
+        <div class="dash-cc-label" style="margin-top:8px">DECISION BUTTONS (label → value; Col khali = socket confirm column)</div>
         <div id="routing-decision-list"></div>
         <button class="dash-export-btn dash-cc-export-btn" id="routing-decision-add-btn">＋ Add button</button>
       </div>
       <button class="dash-export-btn dash-cc-export-btn" id="routing-refresh-btn">🔄 Reload</button>
+      <div class="dash-cc-row" id="routing-subtabs" style="margin-top:8px">
+        <button class="dash-hv-mode-btn" id="routing-tab-incoming" style="flex:1">⬇️ Incoming (0)</button>
+        <button class="dash-hv-mode-btn" id="routing-tab-outgoing" style="flex:1">⬆️ Outgoing (0)</button>
+      </div>
       <div id="routing-list"></div>
       <div class="dash-cc-status" id="routing-summary"></div>
     </div>
