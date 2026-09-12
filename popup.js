@@ -4947,8 +4947,6 @@ function renderRunReport(rep) {
   const noN = rows.filter(r => r.verdict === 'none').length;
   const verifyReqN = c.verifyRequest || 0;
   const verifiedN = c.verified ?? ((c.holdVerified || 0) + (c.returnVerified || 0));
-  const holdN = c.holdVerified || 0;
-  const returnN = c.returnVerified || 0;
   const deliveryReqN = c.deliveryRequest || 0;
   const achievementN = c.achievement || 0;
   const checked = rep.checkedAt
@@ -4960,12 +4958,12 @@ function renderRunReport(rep) {
     `<tr class="run-sum-click" data-run-q="${q}"><td>${icon} ${label}</td><td class="num">${n}</td><td class="num">›</td></tr>`;
   sumEl.innerHTML = `<table class="run-sum-table">` +
     sumRow('📦', 'total: run parcels', rep.total || 0, '?view=all') +
-    sumRow('📞', 'verify_request: distinct today', verifyReqN, '?view=all') +
+    sumRow('📞', 'Verify Requested:', verifyReqN, '?view=all') +
     sumRow('📋', 'today_cc: validations found', ccN, '?view=today') +
-    sumRow('✅', 'validated:', okN, '?verdict=ok') +
-    sumRow('🔒', `verified: (hold ${holdN} + return ${returnN})`, verifiedN, '?verdict=ok') +
-    sumRow('📦', 'delivery_request:', deliveryReqN, '?verdict=warn') +
-    sumRow('🏆', 'achievement: delivered', achievementN, '?verdict=ok') +
+    sumRow('✅', 'Validated:', okN, '?verdict=ok') +
+    sumRow('🔒', 'Verified:', verifiedN, '?verdict=ok') +
+    sumRow('📦', 'Delivery_Request:', deliveryReqN, '?verdict=warn') +
+    sumRow('🏆', 'Achievement:', achievementN, '?verdict=ok') +
     sumRow('🚫', 'warning: not delivered', warnN, '?verdict=warn') +
     sumRow('➖', 'no_request:', noN, '?verdict=none') +
     `</table>`;

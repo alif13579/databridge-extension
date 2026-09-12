@@ -1333,7 +1333,7 @@
       <div id="db-report-modal">
         <div class="db-rp-hdr"><span>📊 CC Validation — Run ${escapeHtml(getRunId())}</span><span class="db-rp-close" id="db-rp-close">✕</span></div>
         <div class="db-rp-sub">
-          <span>verify_request: ${vrN} (distinct, today)</span><span>validated: ${v}</span><span>verified: ${hvN} (hold + return)</span><span>delivery_request: ${drqN}</span><span>achievement: ${achN} (delivered)</span><span>warning: ${drN} (not delivered)</span><span>previous_days: ${coN}</span><span>today_cc: ${ccN}</span><span>no_request: ${noneCount}</span>
+          <span>Verify Requested: ${vrN}</span><span>Validated: ${v}</span><span>Verified: ${hvN}</span><span>Delivery_Request: ${drqN}</span><span>Achievement: ${achN}</span><span>warning: ${drN} (not delivered)</span><span>previous_days: ${coN}</span><span>today_cc: ${ccN}</span><span>no_request: ${noneCount}</span>
           ${xcheck.checkedAt ? `<span style="margin-left:auto">Checked ${escapeHtml(xcheckCheckedTime())}</span>` : ''}
           ${runSync.at ? `<span title="Run status → Supabase validations">🔄 ${escapeHtml(runSync.last)}</span>` : ''}
         </div>
@@ -2206,7 +2206,7 @@
       const hvN = (xcheck.holdVerified || 0) + (xcheck.returnVerified || 0);
       const drqN = xcheck.deliveryRequest || 0;
       const achN = xcheck.achievement || 0;
-      const summaryBar = `<div class="db-xc-bar db-xc-bar-idle" id="db-xc-sumbar"><span>verify_request: ${vrN} (distinct, today) · validated: ${v.length} · verified: ${hvN} (hold ${xcheck.holdVerified || 0} + return ${xcheck.returnVerified || 0}) · delivery_request: ${drqN} · achievement: ${achN} (delivered)</span>${(!dr.length && !co.length && !v.length) ? refreshBtn : ''}</div>`;
+      const summaryBar = `<div class="db-xc-bar db-xc-bar-idle" id="db-xc-sumbar"><span>Verify Requested: ${vrN} · Validated: ${v.length} · Verified: ${hvN} · Delivery_Request: ${drqN} · Achievement: ${achN}</span>${(!dr.length && !co.length && !v.length) ? refreshBtn : ''}</div>`;
       // warnings are delivery_request mismatches only —
       // generic warn bar shows only for non-delivery warnings.
       const otherWarn = w.filter(e => dr.indexOf(e) === -1);
@@ -2267,7 +2267,7 @@
               (xcheck.warnOpen ? `<div class="db-xc-list">${otherWarn.map(e => item(e, 'db-xc-item-warn')).join('')}</div>` : '')
             : '') +
           (v.length
-            ? `<div class="db-xc-bar db-xc-bar-ok" id="db-xc-okbar"><span>validated: ${v.length} (verified: ${hvN} · delivery_request: ${drqN} · achievement: ${achN})</span>${(!dr.length && !co.length && !otherWarn.length) ? refreshBtn : ''}</div>` +
+            ? `<div class="db-xc-bar db-xc-bar-ok" id="db-xc-okbar"><span>Validated: ${v.length} (Verified: ${hvN} · Delivery_Request: ${drqN} · Achievement: ${achN})</span>${(!dr.length && !co.length && !otherWarn.length) ? refreshBtn : ''}</div>` +
               (xcheck.okOpen ? `<div class="db-xc-list">${v.map(e => item(e, 'db-xc-item-ok')).join('')}</div>` : '')
             : '') +
           ccBar +
