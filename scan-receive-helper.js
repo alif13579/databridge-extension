@@ -2207,17 +2207,17 @@
         try { return new Set(parcelRows().map(rowId).filter(id => id && ID_REGEX.test(id))).size; }
         catch { return 0; }
       })();
-      const pct = n => runTotal > 0 ? `${Math.round((n / runTotal) * 100)}%` : '—';
-      const sumTableRow = (label, n) =>
-        `<tr><td>${label}</td><td class="num">${n}</td><td class="num">${pct(n)}</td></tr>`;
+      const pctOf = (n, base) => base > 0 ? `${Math.round((n / base) * 100)}%` : '—';
+      const sumTableRow = (label, n, p) =>
+        `<tr><td>${label}</td><td class="num">${n}</td><td class="num">${p}</td></tr>`;
       const summaryBar = `<div class="db-xc-bar db-xc-bar-idle" id="db-xc-sumbar">` +
         `<table class="db-table">` +
-        `<thead><tr><th>Run Status (% of run)</th><th class="num">Count</th><th class="num">%</th></tr></thead><tbody>` +
-        sumTableRow('Verify Requested', vrN) +
-        sumTableRow('Validated', v.length) +
-        sumTableRow('Verified', hvN) +
-        sumTableRow('Delivery_Request', drqN) +
-        sumTableRow('Achievement', achN) +
+        `<thead><tr><th>Run Status</th><th class="num">Count</th><th class="num">%</th></tr></thead><tbody>` +
+        sumTableRow('Verify Requested', vrN, pctOf(vrN, runTotal)) +
+        sumTableRow('Validated', v.length, pctOf(v.length, vrN)) +
+        sumTableRow('Verified', hvN, pctOf(hvN, v.length)) +
+        sumTableRow('Delivery_Request', drqN, pctOf(drqN, v.length)) +
+        sumTableRow('Achievement', achN, pctOf(achN, drqN)) +
         `</tbody></table>` +
         `${(!dr.length && !co.length && !v.length) ? refreshBtn : ''}</div>`;
       // warnings are delivery_request mismatches only —
