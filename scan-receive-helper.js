@@ -2122,12 +2122,11 @@
     };
   }
 
-  // ── FIREBASE RUN STATUS SYNC (run → courier/run_routes/delivery_run) ──
-  // Supabase sync-er moto run khullei chole: prottek consignment-er status
-  // (source of truth: courier/consignments/{id}/status — app-er backfill
-  // pattern, WorkerSpaceFragment) delivery_run node-er consignments map-e
-  // lekha hoy. Sudhu diff thakle single PATCH; unchanged run-e write na.
-  // Node delivery_run-e na thakle skip (notun node banano hoy na).
+  // ── FIREBASE RUN STATUS SYNC (run → courier/consignments + delivery_run) ──
+  // Supabase sync-er moto run khullei chole, 2 step-e:
+  // 1. courier/consignments/{id}/status ← live page status (known only).
+  // 2. delivery_run node-er consignments map ← source status (app-er backfill
+  //    pattern, WorkerSpaceFragment). Sudhu diff-te PATCH; node na thakle skip.
   const fbRunSync = { sig: null, inflight: false };
 
   async function maybeSyncFirebaseRunStatus() {
@@ -2144,29 +2143,58 @@
       const base = `${XCHECK_FB_URL}/courier/run_routes/delivery_run/${encodeURIComponent(runId)}/consignments`;
       const curRes = await fetch(`${base}.json?auth=${token}`);
       if (curRes.status === 401 || curRes.status === 403) { fbRunSync.sig = null; return; }
-      if (!curRes.ok) return;
-      const cur = await curRes.json().catch(() => null);
-      if (!cur || typeof cur !== 'object' || Array.isArray(cur)) return;
+      const cur = curRes.ok ? await curRes.json().catch(() => null) : null;
       const norm = v => {
         if (typeof v === 'string') return v.trim();
         if (v && typeof v === 'object') return String(v.status || '').trim();
         return '';
       };
-      const diffs = {};
+      const same = (a, b) => String(a || '').trim().toLowerCase() === String(b || '').trim().toLowerCase();
+      const isKnown = s => !!s && KNOWN_RUN_STATUSES.has(String(s).toLowerCase());
+      const pageStatus = new Map();
+      parcelRows().forEach(r => {
+        const id = rowId(r);
+        if (id) pageStatus.set(id, (rowStatus(r) || '').trim());
+      });
+      // 1. courier/consignments/{id}/status ← live page status (known only).
+      const consSrc = {}; // id -> effective source status
+      const consDiffs = {};
       await Promise.all(ids.map(async id => {
         try {
           const r = await fetch(`${XCHECK_FB_URL}/courier/consignments/${encodeURIComponent(id)}/status.json?auth=${token}`);
           if (!r.ok) return;
           const body = await r.json().catch(() => null);
           if (body === null || body === undefined) return; // node nei — app-er moto skip
-          const src = String(body).trim();
-          if (!src) return;
-          if (norm(cur[id]) !== src) diffs[id] = src;
+          const curSt = String(body).trim();
+          if (!curSt) return;
+          consSrc[id] = curSt;
+          const pageSt = pageStatus.get(id) || '';
+          if (isKnown(pageSt) && !same(pageSt, curSt)) {
+            consDiffs[id] = { status: pageSt };
+            consSrc[id] = pageSt;
+          }
         } catch (_) {}
       }));
+      const consKeys = Object.keys(consDiffs);
+      if (consKeys.length) {
+        const w1 = await fetch(`${XCHECK_FB_URL}/courier/consignments.json?auth=${token}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(consDiffs)
+        });
+        if (!w1.ok) throw new Error(`HTTP ${w1.status}`);
+        console.log(`[DB FbRunSync] run ${runId}: updated ${consKeys.length} courier/consignments statuses from live page`);
+      }
+      // 2. run_routes backfill (app pattern) — node na thakle skip, banano hoy na.
+      if (!cur || typeof cur !== 'object' || Array.isArray(cur)) return;
+      const diffs = {};
+      ids.forEach(id => {
+        if (!consSrc[id] || same(norm(cur[id]), consSrc[id])) return;
+        diffs[id] = consSrc[id];
+      });
       const keys = Object.keys(diffs);
       if (!keys.length) {
-        console.log(`[DB FbRunSync] run ${runId}: all ${ids.length} consignment statuses already in sync`);
+        console.log(`[DB FbRunSync] run ${runId}: all ${ids.length} run_routes statuses already in sync`);
         return;
       }
       const w = await fetch(`${base}.json?auth=${token}`, {
