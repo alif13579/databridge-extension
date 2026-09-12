@@ -127,22 +127,99 @@ function askContentScript(tabId) {
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (sender.id !== chrome.runtime.id) return;
   if (message?.action === 'get_sheets_token') {
-    try {
-      chrome.identity.getAuthToken({ interactive: false }, (token) => {
-        if (chrome.runtime.lastError || !token) {
-          chrome.identity.getAuthToken({ interactive: true }, (token2) => {
-            if (chrome.runtime.lastError || !token2) {
-              sendResponse({ token: null, error: chrome.runtime.lastError?.message || 'Sheets consent needed' });
-            } else sendResponse({ token: token2 });
-          });
-        } else sendResponse({ token });
-      });
-    } catch (e) {
-      sendResponse({ token: null, error: e.message });
-    }
+    (async () => {
+      try {
+        const sw = await getSwitchedSheets();
+        if (sw) return sendResponse({ token: sw.token });
+      } catch (_) {}
+      try {
+        chrome.identity.getAuthToken({ interactive: false }, (token) => {
+          if (chrome.runtime.lastError || !token) {
+            chrome.identity.getAuthToken({ interactive: true }, (token2) => {
+              if (chrome.runtime.lastError || !token2) {
+                sendResponse({ token: null, error: chrome.runtime.lastError?.message || 'Sheets consent needed' });
+              } else sendResponse({ token: token2 });
+            });
+          } else sendResponse({ token });
+        });
+      } catch (e) {
+        sendResponse({ token: null, error: e.message });
+      }
+    })();
     return true; // async sendResponse
   }
 });
+// ── Sheets account switch (Run tab) ────────────────────────────────────
+// chrome.identity token = Chrome profile account — sheet access sekhane
+// na thakle ekhane web-OAuth flow-te (app-er Switch account parity)
+// onno account choose kora jay. get_sheets_token switched token-ke prefer
+// kore (50min valid), nahole ager chrome.identity flow-te pore.
+const SHEETS_SWITCH_KEY = 'db_sheets_switch'; // {email, token, at}
+const SHEETS_SWITCH_TTL_MS = 50 * 60 * 1000;
+
+async function getSwitchedSheets() {
+  try {
+    const r = await chrome.storage.local.get([SHEETS_SWITCH_KEY]);
+    const s = r[SHEETS_SWITCH_KEY];
+    if (s && s.token && Date.now() - (s.at || 0) < SHEETS_SWITCH_TTL_MS) return s;
+    if (s) { try { await chrome.storage.local.remove([SHEETS_SWITCH_KEY]); } catch (_) {} }
+  } catch (_) {}
+  return null;
+}
+
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (sender.id !== chrome.runtime.id) return;
+  if (message?.action === 'get_sheets_account') {
+    getSwitchedSheets().then(s => sendResponse({ email: s ? (s.email || '') : '' }));
+    return true;
+  }
+  if (message?.action === 'db_sheets_clear') {
+    chrome.storage.local.remove([SHEETS_SWITCH_KEY]).then(() => sendResponse({ ok: true }));
+    return true;
+  }
+  if (message?.action === 'db_sheets_switch') {
+    runSheetsSwitchFlow().then(
+      s => sendResponse({ ok: true, email: s.email || '' }),
+      (e) => sendResponse({ ok: false, error: e?.message || 'Sheets account switch failed' })
+    );
+    return true; // async sendResponse (user chooser-e somoy nite pare)
+  }
+});
+
+function runSheetsSwitchFlow() {
+  return new Promise((resolve, reject) => {
+    const redirectUri = chrome.identity.getRedirectURL();
+    const scopes = [
+      'https://www.googleapis.com/auth/userinfo.email',
+      'https://www.googleapis.com/auth/spreadsheets'
+    ];
+    const authUrl = 'https://accounts.google.com/o/oauth2/v2/auth' +
+      `?client_id=${encodeURIComponent(GOOGLE_OAUTH_WEB_CLIENT_ID)}` +
+      `&response_type=token` +
+      `&redirect_uri=${encodeURIComponent(redirectUri)}` +
+      `&scope=${encodeURIComponent(scopes.join(' '))}` +
+      `&prompt=select_account`;
+    chrome.identity.launchWebAuthFlow({ url: authUrl, interactive: true }, async (redirectUrl) => {
+      try {
+        if (chrome.runtime.lastError || !redirectUrl) {
+          throw chrome.runtime.lastError || new Error('No redirect URL returned');
+        }
+        const fragment = redirectUrl.split('#')[1] || '';
+        const accessToken = new URLSearchParams(fragment).get('access_token');
+        if (!accessToken) throw new Error('No access_token in redirect URL');
+        const ures = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
+          headers: { 'Authorization': `Bearer ${accessToken}` }
+        });
+        const u = await ures.json().catch(() => ({}));
+        const rec = { email: u.email || '', token: accessToken, at: Date.now() };
+        await chrome.storage.local.set({ [SHEETS_SWITCH_KEY]: rec });
+        resolve(rec);
+      } catch (e) {
+        reject(e);
+      }
+    });
+  });
+}
 // ── Google login relay ───────────────────────────────────────────────
 // popup.js থেকে chrome.identity.launchWebAuthFlow() চালালে auth window
 // খোলার সাথে সাথে popup focus হারিয়ে বন্ধ হয়ে যেত — popup-এর JS context

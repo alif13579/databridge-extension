@@ -104,7 +104,7 @@ function setupNavigation() {
       switchTab(tab);
       if (tab === 'history' && isInitialized) loadHistory(false);
       if (tab === 'scan') loadScanHistory();
-      if (tab === 'run') loadRunReport(false);
+      if (tab === 'run') { bindSheetsAccountOnce(); refreshSheetsAccountRow(); loadRunReport(false); }
       if (tab === 'routing') loadRoutingTab();
       if (tab === 'dashboard') {
         loadDashboardTabAndAutoGenerate();
@@ -4902,6 +4902,59 @@ function openRunDetails(query) {
     url: chrome.runtime.getURL('run-report.html') + (query || ''),
     type: 'popup', width: 560, height: 640,
   }).catch(e => console.warn('[DB] run details window failed:', e?.message || e));
+}
+
+// ── Sheets account (Run tab) ──────────────────────────────────────────
+// Sheet reads use the Chrome profile account by default — access sekhane
+// na thakle Switch-e onno account choose kora jay (app parity). Firebase
+// login (library resolution) ete bodlay na — sudhu Sheets token bodlay.
+function sendBgMessage(msg) {
+  return new Promise(resolve => {
+    try {
+      chrome.runtime.sendMessage(msg, res => resolve(res || {}));
+    } catch (e) { resolve({}); }
+  });
+}
+
+async function refreshSheetsAccountRow() {
+  const emailEl = document.getElementById('sheets-acct-email');
+  if (!emailEl) return;
+  try {
+    const res = await sendBgMessage({ action: 'get_sheets_account' });
+    emailEl.textContent = (res && res.email) ? res.email : 'Chrome profile account';
+    emailEl.title = (res && res.email) ? `Sheet reads use ${res.email}` : 'Sheet reads use the Chrome profile account';
+  } catch {
+    emailEl.textContent = 'Chrome profile account';
+  }
+}
+
+let sheetsAcctBound = false;
+function bindSheetsAccountOnce() {
+  if (sheetsAcctBound) return;
+  sheetsAcctBound = true;
+  const btn = document.getElementById('sheets-acct-switch-btn');
+  if (btn) btn.addEventListener('click', async () => {
+    const statusEl = document.getElementById('run-report-status');
+    const setStatus = (t) => { if (statusEl) statusEl.textContent = t; };
+    const orig = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = '⏳ Account picker…';
+    try {
+      const res = await sendBgMessage({ action: 'db_sheets_switch' });
+      if (res && res.ok) {
+        await refreshSheetsAccountRow();
+        setStatus(`Sheet account: ${res.email || 'switched'} — reloading report…`);
+        await loadRunReport(true);
+      } else {
+        setStatus(`Account switch failed (${(res && res.error) || 'cancelled'}) — previous account still active.`);
+      }
+    } catch (e) {
+      setStatus(`Account switch failed (${e?.message || e}) — previous account still active.`);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = orig;
+    }
+  });
 }
 
 async function loadRunReport(force) {
