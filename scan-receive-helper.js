@@ -578,6 +578,9 @@
       }
       .db-table td   { padding: 3px 2px; vertical-align: middle; }
       .db-table .num { text-align: right; font-variant-numeric: tabular-nums; }
+      .db-xc-sumrow { cursor: pointer; }
+      .db-xc-sumrow:hover td { background: #f1f5f9; }
+      .db-xc-sumrow.on td { background: #e0f2fe; font-weight: 700; }
       .db-copy-btn {
         background: none; border: none; cursor: pointer; padding: 2px 4px;
         color: #94a3b8; font-size: 16px; line-height: 1; vertical-align: middle;
@@ -1785,6 +1788,7 @@
     carried: [], carriedById: new Map(), coOpen: true,
     verifyRequestIds: [], verifyRequestCount: 0,
     holdVerified: 0, returnVerified: 0, deliveryRequest: 0, achievement: 0,
+    sumOpen: null,
     bnMap: null, checkedAt: 0,
     inflight: false, warnOpen: true, okOpen: false,
     reportFilter: 'all', escBound: false,
@@ -2208,17 +2212,36 @@
         catch { return 0; }
       })();
       const pctOf = (n, base) => base > 0 ? `${Math.round((n / base) * 100)}%` : '—';
-      const sumTableRow = (label, n, p) =>
-        `<tr><td>${label}</td><td class="num">${n}</td><td class="num">${p}</td></tr>`;
+      const sumTableRow = (key, label, n, p) =>
+        `<tr class="db-xc-sumrow${xcheck.sumOpen === key ? ' on' : ''}" data-sum="${key}"><td>${label}</td><td class="num">${n}</td><td class="num">${p}</td></tr>`;
+      const sumIdsFor = key => {
+        const isDelivery = e => (e.remarksStatus || '').toLowerCase() === 'delivery_request';
+        const isVerified = e => ['hold_verified', 'return_verified'].includes((e.remarksStatus || '').toLowerCase());
+        if (key === 'vr') return (xcheck.verifyRequestIds || []).map(id => ({ id, st: '', tag: 'Verify requested today' }));
+        if (key === 'ok') return (xcheck.validated || []).slice();
+        if (key === 'verified') return (xcheck.validated || []).filter(isVerified);
+        if (key === 'drq') return (xcheck.validated || []).filter(isDelivery).concat(xcheck.drUndelivered || []);
+        if (key === 'ach') return (xcheck.validated || []).filter(isDelivery);
+        return [];
+      };
+      const sumList = (() => {
+        if (!xcheck.sumOpen) return '';
+        const ids = sumIdsFor(xcheck.sumOpen);
+        if (!ids.length) return `<div class="db-xc-list"><span style="opacity:.65">No IDs</span></div>`;
+        return `<div class="db-xc-list">${ids.map(e =>
+          `<span class="db-xc-item" data-scroll-id="${escapeHtml(e.id)}" title="${escapeHtml(e.tag || '')}">${escapeHtml(e.id)}${e.st ? ` <span class="db-xc-st">${escapeHtml(e.st)}</span>` : ''}</span>`
+        ).join('')}</div>`;
+      })();
       const summaryBar = `<div class="db-xc-bar db-xc-bar-idle" id="db-xc-sumbar">` +
         `<table class="db-table">` +
         `<thead><tr><th>Run Status</th><th class="num">Count</th><th class="num">%</th></tr></thead><tbody>` +
-        sumTableRow('Verify Requested', vrN, pctOf(vrN, runTotal)) +
-        sumTableRow('Validated', v.length, pctOf(v.length, vrN)) +
-        sumTableRow('Verified', hvN, pctOf(hvN, v.length)) +
-        sumTableRow('Delivery_Request', drqN, pctOf(drqN, v.length)) +
-        sumTableRow('Achievement', achN, pctOf(achN, drqN)) +
+        sumTableRow('vr', 'Verify Requested', vrN, pctOf(vrN, runTotal)) +
+        sumTableRow('ok', 'Validated', v.length, pctOf(v.length, vrN)) +
+        sumTableRow('verified', 'Verified', hvN, pctOf(hvN, v.length)) +
+        sumTableRow('drq', 'Delivery_Request', drqN, pctOf(drqN, v.length)) +
+        sumTableRow('ach', 'Achievement', achN, pctOf(achN, drqN)) +
         `</tbody></table>` +
+        sumList +
         `${(!dr.length && !co.length && !v.length) ? refreshBtn : ''}</div>`;
       // warnings are delivery_request mismatches only —
       // generic warn bar shows only for non-delivery warnings.
@@ -2291,6 +2314,12 @@
         });
       }
     }
+    el.querySelectorAll('[data-sum]').forEach(tr => {
+      tr.addEventListener('click', () => {
+        xcheck.sumOpen = xcheck.sumOpen === tr.dataset.sum ? null : tr.dataset.sum;
+        renderXcheck();
+      });
+    });
     el.querySelectorAll('[data-scroll-id]').forEach(n => {
       n.addEventListener('click', () => scrollToRow(n.dataset.scrollId));
     });
@@ -2314,6 +2343,7 @@
         xcheck.verifyRequestIds = []; xcheck.verifyRequestCount = 0;
         xcheck.holdVerified = 0; xcheck.returnVerified = 0;
         xcheck.deliveryRequest = 0; xcheck.achievement = 0;
+        xcheck.sumOpen = null;
         xcheck.checkedAt = 0;
         closeReport();
         renderXcheck();
