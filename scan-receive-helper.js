@@ -2179,11 +2179,9 @@
   }
 
   function runSyncBar() {
-    // Supabase write status — run khulle latest status update holo kina.
-    // +updated ~unchanged ?missing (missing = oi din-er validation row nei).
-    if (runSync.err) return `<div class="db-xc-bar db-xc-bar-idle"><span title="${escapeHtml(runSync.err)}">⚪ Supabase update fail — ${escapeHtml(runSync.err)}</span></div>`;
-    if (!runSync.at) return '';
-    return `<div class="db-xc-bar db-xc-bar-idle"><span title="Run status → Supabase validations.consignment_status">🔄 Supabase update: ${escapeHtml(runSync.last)}</span></div>`;
+    // Display removed — the run-status sync still runs silently in the
+    // background (maybeSyncRunStatus), only the visible bar is gone.
+    return '';
   }
 
   function renderXcheck() {
@@ -2199,7 +2197,6 @@
       el.innerHTML = `<div class="db-xc-bar db-xc-bar-idle"><span>⚪ CC check failed (network/RLS) — press 🔄 to retry</span>${refreshBtn}</div>`;
     } else {
       const w = xcheck.warnings, v = xcheck.validated;
-      const cc = xcheck.todayCc || [];
       const dr = xcheck.drUndelivered || [];
       const co = xcheck.carried || [];
       const vrN = xcheck.verifyRequestCount || 0;
@@ -2226,19 +2223,9 @@
         ? `<div class="db-xc-bar db-xc-bar-warn" id="db-xc-cobar" style="border-color:#d97706"><span>📅 ${co.length} previous-day delivery requests still undelivered</span></div>` +
           (xcheck.coOpen ? `<div class="db-xc-list">${co.map(coItem).join('')}</div>` : '')
         : '';
-      const ccItem = (c) => {
-        const label = c.remarksStatus || c.remarkEn || 'CC remark';
-        const title = `${label}${c.remarkEn && c.remarkEn !== label ? ` — ${c.remarkBn || c.remarkEn}` : (c.remarkBn ? ` — ${c.remarkBn}` : '')} — run: ${c.st}${c.note ? ` — 📝 ${c.note}` : ''}`;
-        return `<span class="db-xc-item" data-scroll-id="${escapeHtml(c.id)}" title="${escapeHtml(title)}">` +
-          `${escapeHtml(c.id)} <span class="db-xc-st">${escapeHtml(label)}</span></span>`;
-      };
-      const ccBar =
-        `<div class="db-xc-bar db-xc-bar-ok" id="db-xc-ccbar"><span>📋 Today\u2019s CC remarks: ${cc.length}</span>${(!w.length && !v.length) ? refreshBtn : ''}</div>` +
-        (xcheck.ccOpen && cc.length ? `<div class="db-xc-list">${cc.map(ccItem).join('')}</div>` : '') +
-        (!cc.length ? `<div class="db-xc-list"><span style="opacity:.65">No CC remarks for this run today</span></div>` : '');
       const hasActivity = dr.length || co.length || otherWarn.length || v.length;
       if (!hasActivity) {
-        el.innerHTML = summaryBar + drBar + coBar + ccBar + runSyncBar();
+        el.innerHTML = summaryBar + drBar + coBar + runSyncBar();
         const db = document.getElementById('db-xc-drbar');
         if (db) db.addEventListener('click', e => {
           if (e.target.id === 'db-xcheck-refresh') return;
@@ -2248,11 +2235,6 @@
         if (cob0) cob0.addEventListener('click', e => {
           if (e.target.id === 'db-xcheck-refresh') return;
           xcheck.coOpen = !xcheck.coOpen; renderXcheck();
-        });
-        const cb = document.getElementById('db-xc-ccbar');
-        if (cb) cb.addEventListener('click', e => {
-          if (e.target.id === 'db-xcheck-refresh') return;
-          xcheck.ccOpen = !xcheck.ccOpen; renderXcheck();
         });
       } else {
         const item = (e, cls) =>
@@ -2270,7 +2252,6 @@
             ? `<div class="db-xc-bar db-xc-bar-ok" id="db-xc-okbar"><span>Validated: ${v.length} (Verified: ${hvN} · Delivery_Request: ${drqN} · Achievement: ${achN})</span>${(!dr.length && !co.length && !otherWarn.length) ? refreshBtn : ''}</div>` +
               (xcheck.okOpen ? `<div class="db-xc-list">${v.map(e => item(e, 'db-xc-item-ok')).join('')}</div>` : '')
             : '') +
-          ccBar +
           runSyncBar();
         const db = document.getElementById('db-xc-drbar');
         if (db) db.addEventListener('click', e => {
@@ -2291,11 +2272,6 @@
         if (ob) ob.addEventListener('click', e => {
           if (e.target.id === 'db-xcheck-refresh') return;
           xcheck.okOpen = !xcheck.okOpen; renderXcheck();
-        });
-        const cb = document.getElementById('db-xc-ccbar');
-        if (cb) cb.addEventListener('click', e => {
-          if (e.target.id === 'db-xcheck-refresh') return;
-          xcheck.ccOpen = !xcheck.ccOpen; renderXcheck();
         });
       }
     }

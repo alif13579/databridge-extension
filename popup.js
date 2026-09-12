@@ -4953,7 +4953,7 @@ function renderRunReport(rep) {
     ? new Date(rep.checkedAt).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })
     : '—';
   if (statusEl) statusEl.textContent =
-    `Run ${rep.runId} · ${rep.total} parcels · checked ${checked}` + (rep.sync ? ` · 🔄 ${rep.sync}` : '');
+    `Run ${rep.runId} · ${rep.total} parcels · checked ${checked}`;
   const sumRow = (icon, label, n, q) =>
     `<tr class="run-sum-click" data-run-q="${q}"><td>${icon} ${label}</td><td class="num">${n}</td><td class="num">›</td></tr>`;
   sumEl.innerHTML = `<table class="run-sum-table">` +

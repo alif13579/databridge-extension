@@ -78,7 +78,7 @@
     if (titleEl) titleEl.textContent = `🔍 Run ${snap.runId} — ${scope} (${rows.length})`;
     if (subEl) {
       const checked = snap.checkedAt ? new Date(snap.checkedAt).toLocaleString('en-GB', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : '—';
-      subEl.textContent = `Check: ${checked}` + (snap.sync ? ` · 🔄 Supabase update: ${snap.sync}` : '');
+      subEl.textContent = `Checked: ${checked}`;
     }
     if (!rows.length) {
       if (listEl) listEl.innerHTML = '<div class="rr-empty">Nothing here.</div>';
