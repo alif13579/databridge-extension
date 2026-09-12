@@ -2563,6 +2563,12 @@ async function loadDashboardTabAndAutoGenerate() {
   if (fromInput) fromInput.value = todayBd;
   if (toInput)   toInput.value   = todayBd;
 
+  // Team Performance: Today selected by default (same Dhaka day).
+  const perfFrom = document.getElementById('dash-perf-from');
+  const perfTo   = document.getElementById('dash-perf-to');
+  if (perfFrom) perfFrom.value = todayBd;
+  if (perfTo)   perfTo.value   = todayBd;
+
   if (currentGoogleUid && ccBranchIds.length) generateHoldValidationReport();
 }
 
