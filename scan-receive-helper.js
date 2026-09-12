@@ -789,6 +789,13 @@
       const el = document.getElementById(id);
       if (el) el.style.display = show ? '' : 'none';
     });
+    // Exclusive views: validation strip open → whole Run Summary + Pending
+    // body hides, so validation and run summary never show together.
+    // (Memory popover controls #db-summary itself; minimized wins overall.)
+    try {
+      const body = document.getElementById('db-body');
+      if (body && typeof minimized !== 'undefined') body.style.display = (!minimized && !show) ? '' : 'none';
+    } catch (_) {}
   }
 
   // Header toggle badge — sobsomoy graph-chart icon (📈/📉): undelivered
@@ -802,7 +809,7 @@
     if (xcheck.status !== 'done' || (!dr && !v)) b.textContent = '📈';
     else if (dr > 0) b.textContent = `📉${dr > 9 ? '9+' : dr}`;
     else b.textContent = '📈';
-    b.title = `CC validation report (${dr ? dr + ' undelivered' : v ? v + ' validated' : 'no activity'}) — click to show/hide`;
+    b.title = `Validation (${dr ? dr + ' undelivered' : v ? v + ' validated' : 'no activity'}) — click to switch views`;
   }
 
   function createPanel() {
@@ -813,7 +820,7 @@
         <span>📦 DataBridge Reconcile</span>
         <div class="db-hdr-actions">
           <button id="db-sheet-copy-btn" title="Copy Delivered/Hold/Return IDs for the sheet">📋</button>
-          <button id="db-xcheck-toggle" title="CC validation report — click to show/hide">📈</button>
+          <button id="db-xcheck-toggle" title="Validation / Run Summary — click to switch views">📈</button>
           <button id="db-report-btn" title="CC Validation Report">📊</button>
           <button id="db-memory-toggle" title="Save to memory">🧠</button>
           <button id="db-min">−</button>
@@ -851,7 +858,15 @@
 
     document.getElementById('db-min').addEventListener('click', () => {
       minimized = !minimized;
-      document.getElementById('db-body').style.display = minimized ? 'none' : '';
+      // Exclusive views: expanding restores the body only when the
+      // validation strip is not open (else both would show together).
+      let memOpenNow = false;
+      try {
+        const p = document.getElementById('db-memory-popover');
+        memOpenNow = !!(p && !p.classList.contains('hidden'));
+      } catch (_) {}
+      document.getElementById('db-body').style.display =
+        (!minimized && !(xcheckOpen && !memOpenNow)) ? '' : 'none';
       document.getElementById('db-min').textContent = minimized ? '+' : '−';
 
       // Bug: the memory popover is a sibling of #db-body, not inside it, so
@@ -974,8 +989,9 @@
     const reportBtn = document.getElementById('db-report-btn');
     if (reportBtn) reportBtn.addEventListener('click', e => { e.stopPropagation(); openReport(); });
 
-    // CC report strips toggle — Memory-style icon. Collapse keeps Run
-    // Summary visible; the icon badge (🚫N/✅/📋) still shows the state.
+    // CC report strips toggle — exclusive views: strip open hides the
+    // Run Summary + Pending body so validation and summary never show
+    // together; closing the strip brings the body back.
     const xcToggle = document.getElementById('db-xcheck-toggle');
     if (xcToggle) xcToggle.addEventListener('click', e => {
       e.stopPropagation();
