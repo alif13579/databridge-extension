@@ -4775,14 +4775,23 @@ async function routingHermesFetch(path) {
     target: { tabId: tab.id },
     func: async (p) => {
       try {
+        // Hermes (Laravel) session calls carry X-Requested-With + CSRF —
+        // bina header-e API 401 ("Invalid access token") dey.
+        let csrf = '';
+        try {
+          const m = document.querySelector('meta[name="csrf-token"]');
+          csrf = (m && m.getAttribute('content')) || '';
+        } catch (_) {}
+        const headers = { 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' };
+        if (csrf) headers['X-CSRF-TOKEN'] = csrf;
         const res = await fetch(p, {
-          headers: { 'Accept': 'application/json' },
+          headers,
           credentials: 'include',
         });
         const text = await res.text();
         let data = null;
         try { data = JSON.parse(text); } catch { data = text; }
-        return { ok: res.ok, status: res.status, data };
+        return { ok: res.ok, status: res.status, data, csrf: !!csrf };
       } catch (e) {
         return { ok: false, status: 0, data: null, error: String((e && e.message) || e) };
       }
@@ -4801,6 +4810,7 @@ async function routingHermesFetch(path) {
     console.warn('[DB] routing hermes HTTP fail:', clean,
       '| status:', r.status,
       '| tab:', tab.id, (tab.url || '').slice(0, 80),
+      '| csrfMeta:', r.csrf ? 'yes' : 'NO',
       '| body:', bodyPrev || '(empty)',
       '| loginPage:', /login|sign-?in|auth/i.test(bodyPrev) ? 'YES' : 'no');
     throw new Error(`Hermes ${r.status || 'fetch failed'}`);
