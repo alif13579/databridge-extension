@@ -4959,15 +4959,15 @@ function renderRunReport(rep) {
   const sumRow = (icon, label, n, q) =>
     `<tr class="run-sum-click" data-run-q="${q}"><td>${icon} ${label}</td><td class="num">${n}</td><td class="num">›</td></tr>`;
   sumEl.innerHTML = `<table class="run-sum-table">` +
-    sumRow('📦', 'Run Parcels (Total)', rep.total || 0, '?view=all') +
-    sumRow('📞', 'Verify Requests (distinct, today)', verifyReqN, '?view=all') +
-    sumRow('📋', 'Validations Found Today', ccN, '?view=today') +
-    sumRow('✅', 'Validated Today', okN, '?verdict=ok') +
-    sumRow('🔒', `Verified (Hold ${holdN} + Return ${returnN})`, verifiedN, '?verdict=ok') +
-    sumRow('📦', 'Delivery Request', deliveryReqN, '?verdict=warn') +
-    sumRow('🏆', 'Achievement (delivered from request)', achievementN, '?verdict=ok') +
-    sumRow('🚫', 'Warning / Not Delivered', warnN, '?verdict=warn') +
-    sumRow('➖', 'No CC Request', noN, '?verdict=none') +
+    sumRow('📦', 'total: run parcels', rep.total || 0, '?view=all') +
+    sumRow('📞', 'verify_request: distinct today', verifyReqN, '?view=all') +
+    sumRow('📋', 'today_cc: validations found', ccN, '?view=today') +
+    sumRow('✅', 'validated:', okN, '?verdict=ok') +
+    sumRow('🔒', `verified: (hold ${holdN} + return ${returnN})`, verifiedN, '?verdict=ok') +
+    sumRow('📦', 'delivery_request:', deliveryReqN, '?verdict=warn') +
+    sumRow('🏆', 'achievement: delivered', achievementN, '?verdict=ok') +
+    sumRow('🚫', 'warning: not delivered', warnN, '?verdict=warn') +
+    sumRow('➖', 'no_request:', noN, '?verdict=none') +
     `</table>`;
   sumEl.querySelectorAll('[data-run-q]').forEach(tr => {
     tr.addEventListener('click', () => openRunDetails(tr.dataset.runQ));
@@ -4987,7 +4987,7 @@ function renderRunReport(rep) {
   byStEl.innerHTML = groups.length ? groups.map(g =>
     `<div class="run-st-row">
       <span class="run-st-name">${escapeHtml(g.st)}</span>
-      <span class="run-st-counts">${g.total} · <b class="ok">✅${g.ok}</b> · <b class="warn">🚫${g.warn}</b></span>
+      <span class="run-st-counts">total: ${g.total} · validated: ${g.ok} · warning: ${g.warn}</span>
       <button class="run-eye-btn" data-run-st="${escapeHtml(g.st)}">👁</button>
     </div>`).join('')
     : '<div class="dash-cc-status">No parcels.</div>';

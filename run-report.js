@@ -96,7 +96,7 @@
       const ok = rs.filter(r => r.verdict === 'ok').length;
       const warn = rs.filter(r => r.verdict === 'warn').length;
       return `<div class="rr-group">
-        <div class="rr-group-hdr">${esc(st)} — ${rs.length} parcels · ✅ ${ok} · 🚫 ${warn}</div>
+        <div class="rr-group-hdr">${esc(st)} — total: ${rs.length} · validated: ${ok} · warning: ${warn}</div>
         ${rs.map(rowHtml).join('')}
       </div>`;
     }).join('');

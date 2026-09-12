@@ -1147,7 +1147,7 @@
       </tr>`;
     });
     document.getElementById('db-summary').innerHTML = `
-      <div class="db-sec-title">📊 Run hisab</div>
+      <div class="db-sec-title">📊 Run Summary</div>
       <table class="db-table">
         <thead><tr><th>Status</th><th class="num">Qty</th><th class="num">Amount</th></tr></thead>
         <tbody>${rows}</tbody>
@@ -1333,17 +1333,17 @@
       <div id="db-report-modal">
         <div class="db-rp-hdr"><span>📊 CC Validation — Run ${escapeHtml(getRunId())}</span><span class="db-rp-close" id="db-rp-close">✕</span></div>
         <div class="db-rp-sub">
-          <span>📞 Verify Requests: ${vrN} (distinct, today)</span><span>✅ Validated Today: ${v}</span><span>🔒 Verified: ${hvN} (Hold + Return)</span><span>📦 Delivery Request: ${drqN}</span><span>🏆 Achievement: ${achN} (delivered)</span><span>🚫 Not Delivered: ${drN}</span><span>📅 Previous Days: ${coN}</span><span>📋 Today CC: ${ccN}</span><span>➖ No Request: ${noneCount}</span>
+          <span>verify_request: ${vrN} (distinct, today)</span><span>validated: ${v}</span><span>verified: ${hvN} (hold + return)</span><span>delivery_request: ${drqN}</span><span>achievement: ${achN} (delivered)</span><span>warning: ${drN} (not delivered)</span><span>previous_days: ${coN}</span><span>today_cc: ${ccN}</span><span>no_request: ${noneCount}</span>
           ${xcheck.checkedAt ? `<span style="margin-left:auto">Checked ${escapeHtml(xcheckCheckedTime())}</span>` : ''}
           ${runSync.at ? `<span title="Run status → Supabase validations">🔄 ${escapeHtml(runSync.last)}</span>` : ''}
         </div>
         <div class="db-rp-chips">
           ${chip('all', `All (${all.length})`)}
-          ${chip('dr', `🚫 Not Delivered (${drN})`)}
-          ${chip('co', `📅 Previous Days (${coN})`)}
-          ${chip('ok', `✅ Validated (${v})`)}
-          ${chip('cc', `📋 Today CC (${ccN})`)}
-          ${chip('none', `➖ No request (${noneCount})`)}
+          ${chip('dr', `Warning (${drN})`)}
+          ${chip('co', `Previous Days (${coN})`)}
+          ${chip('ok', `Validated (${v})`)}
+          ${chip('cc', `Today CC (${ccN})`)}
+          ${chip('none', `No Request (${noneCount})`)}
           <span class="db-rp-chip" id="db-rp-refresh" title="Check again now">🔄</span>
         </div>
         <div class="db-rp-table">${
@@ -2206,7 +2206,7 @@
       const hvN = (xcheck.holdVerified || 0) + (xcheck.returnVerified || 0);
       const drqN = xcheck.deliveryRequest || 0;
       const achN = xcheck.achievement || 0;
-      const summaryBar = `<div class="db-xc-bar db-xc-bar-idle" id="db-xc-sumbar"><span>📞 Verify Requests: ${vrN} (distinct, today) · ✅ Validated Today: ${v.length} · 🔒 Verified: ${hvN} (Hold + Return) · 📦 Delivery Request: ${drqN} · 🏆 Achievement: ${achN} (delivered)</span>${(!dr.length && !co.length && !v.length) ? refreshBtn : ''}</div>`;
+      const summaryBar = `<div class="db-xc-bar db-xc-bar-idle" id="db-xc-sumbar"><span>verify_request: ${vrN} (distinct, today) · validated: ${v.length} · verified: ${hvN} (hold ${xcheck.holdVerified || 0} + return ${xcheck.returnVerified || 0}) · delivery_request: ${drqN} · achievement: ${achN} (delivered)</span>${(!dr.length && !co.length && !v.length) ? refreshBtn : ''}</div>`;
       // warnings are delivery_request mismatches only —
       // generic warn bar shows only for non-delivery warnings.
       const otherWarn = w.filter(e => dr.indexOf(e) === -1);
@@ -2267,7 +2267,7 @@
               (xcheck.warnOpen ? `<div class="db-xc-list">${otherWarn.map(e => item(e, 'db-xc-item-warn')).join('')}</div>` : '')
             : '') +
           (v.length
-            ? `<div class="db-xc-bar db-xc-bar-ok" id="db-xc-okbar"><span>✅ ${v.length} validated today (Verified ${hvN} · Delivery Request ${drqN} · Achievement ${achN})</span>${(!dr.length && !co.length && !otherWarn.length) ? refreshBtn : ''}</div>` +
+            ? `<div class="db-xc-bar db-xc-bar-ok" id="db-xc-okbar"><span>validated: ${v.length} (verified: ${hvN} · delivery_request: ${drqN} · achievement: ${achN})</span>${(!dr.length && !co.length && !otherWarn.length) ? refreshBtn : ''}</div>` +
               (xcheck.okOpen ? `<div class="db-xc-list">${v.map(e => item(e, 'db-xc-item-ok')).join('')}</div>` : '')
             : '') +
           ccBar +
