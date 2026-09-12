@@ -212,14 +212,14 @@
         + 'Capture: browser-level (CSP-proof) — use the site normally '
         + '(orders search, run-route); calls land here live.</div>';
       html += '<div style="display:flex;gap:6px;margin:8px 0">'
-        + '<input data-role="probe-id" placeholder="Consignment ID (jemon DR070926TXSTGS)" '
+        + '<input data-role="probe-id" placeholder="Consignment ID (e.g. DR070926TXSTGS)" '
         + 'style="flex:1;border:1px solid #cbd5e1;border-radius:6px;padding:4px 6px;font-size:12px"/>'
-        + '<button data-act="probe">Details ano</button></div>'
+        + '<button data-act="probe">Fetch Details</button></div>'
         + '<div data-role="probe-out" style="display:none;max-height:160px;overflow:auto;'
         + 'background:#f8fafc;border:1px solid #e2e8f0;border-radius:6px;padding:6px;'
         + 'white-space:pre-wrap;word-break:break-all;font-size:11px"></div>';
       if (!list.length) {
-        html += '<div style="color:#94a3b8">Ekhono kichu capture hoyni.</div>';
+        html += '<div style="color:#94a3b8">Nothing captured yet.</div>';
       } else {
         html += '<div>' + list.map(function (e) {
           return '<div style="padding:3px 0;border-top:1px solid #f1f5f9">'

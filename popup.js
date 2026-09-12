@@ -4945,6 +4945,12 @@ function renderRunReport(rep) {
   const warnN = rows.filter(r => r.verdict === 'warn').length;
   const ccN = c.todayCc || 0;
   const noN = rows.filter(r => r.verdict === 'none').length;
+  const verifyReqN = c.verifyRequest || 0;
+  const verifiedN = c.verified ?? ((c.holdVerified || 0) + (c.returnVerified || 0));
+  const holdN = c.holdVerified || 0;
+  const returnN = c.returnVerified || 0;
+  const deliveryReqN = c.deliveryRequest || 0;
+  const achievementN = c.achievement || 0;
   const checked = rep.checkedAt
     ? new Date(rep.checkedAt).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })
     : '—';
@@ -4953,17 +4959,21 @@ function renderRunReport(rep) {
   const sumRow = (icon, label, n, q) =>
     `<tr class="run-sum-click" data-run-q="${q}"><td>${icon} ${label}</td><td class="num">${n}</td><td class="num">›</td></tr>`;
   sumEl.innerHTML = `<table class="run-sum-table">` +
-    sumRow('📦', 'Run parcel (mot)', rep.total || 0, '?view=all') +
-    sumRow('📋', 'Validations found today', ccN, '?view=today') +
-    sumRow('✅', 'Validated (OK)', okN, '?verdict=ok') +
-    sumRow('🚫', 'Warning / vul', warnN, '?verdict=warn') +
-    sumRow('➖', 'No CC request', noN, '?verdict=none') +
+    sumRow('📦', 'Run Parcels (Total)', rep.total || 0, '?view=all') +
+    sumRow('📞', 'Verify Requests (distinct, today)', verifyReqN, '?view=all') +
+    sumRow('📋', 'Validations Found Today', ccN, '?view=today') +
+    sumRow('✅', 'Validated Today', okN, '?verdict=ok') +
+    sumRow('🔒', `Verified (Hold ${holdN} + Return ${returnN})`, verifiedN, '?verdict=ok') +
+    sumRow('📦', 'Delivery Request', deliveryReqN, '?verdict=warn') +
+    sumRow('🏆', 'Achievement (delivered from request)', achievementN, '?verdict=ok') +
+    sumRow('🚫', 'Warning / Not Delivered', warnN, '?verdict=warn') +
+    sumRow('➖', 'No CC Request', noN, '?verdict=none') +
     `</table>`;
   sumEl.querySelectorAll('[data-run-q]').forEach(tr => {
     tr.addEventListener('click', () => openRunDetails(tr.dataset.runQ));
   });
-  // Status-wise breakdown: protita run status-e koyta parcel, koyta
-  // validated / warning — Details click-e oi status-er remarks.
+  // Status-wise breakdown: per run status — parcel count,
+  // validated / warning — Details opens remarks for that status.
   const bySt = new Map();
   rows.forEach(r => {
     const key = (r.st || '?').trim() || '?';

@@ -67,13 +67,13 @@
       return;
     }
     let rows = snap.rows.slice();
-    let scope = 'Sob parcel';
+    let scope = 'All Parcels';
     if (fStatus) { rows = rows.filter(r => (r.st || '') === fStatus); scope = `Status: ${fStatus}`; }
     else if (fVerdict) {
       rows = rows.filter(r => r.verdict === fVerdict);
-      scope = fVerdict === 'ok' ? 'Validated' : fVerdict === 'warn' ? 'Warning / vul'
-        : fVerdict === 'none' ? 'No CC request' : fVerdict === 'cc' ? 'CC remarks' : fVerdict;
-    } else if (fView === 'today') { rows = rows.filter(r => r.dateKey && !r.carried); scope = 'Latest CC remarks today'; }
+      scope = fVerdict === 'ok' ? 'Validated' : fVerdict === 'warn' ? 'Warning / Not Delivered'
+        : fVerdict === 'none' ? 'No CC Request' : fVerdict === 'cc' ? 'CC Remarks' : fVerdict;
+    } else if (fView === 'today') { rows = rows.filter(r => r.dateKey && !r.carried); scope = 'Latest CC Remarks Today'; }
 
     if (titleEl) titleEl.textContent = `🔍 Run ${snap.runId} — ${scope} (${rows.length})`;
     if (subEl) {
@@ -84,7 +84,7 @@
       if (listEl) listEl.innerHTML = '<div class="rr-empty">Nothing here.</div>';
       return;
     }
-    // Status-wise grouping (status filter thakle single group).
+    // Status-wise grouping (single group when a status filter is active).
     const groups = new Map();
     rows.forEach(r => {
       const key = (r.st || '?').trim() || '?';
@@ -96,7 +96,7 @@
       const ok = rs.filter(r => r.verdict === 'ok').length;
       const warn = rs.filter(r => r.verdict === 'warn').length;
       return `<div class="rr-group">
-        <div class="rr-group-hdr">${esc(st)} — ${rs.length}ta parcel · ✅ ${ok}ta · 🚫 ${warn}ta</div>
+        <div class="rr-group-hdr">${esc(st)} — ${rs.length} parcels · ✅ ${ok} · 🚫 ${warn}</div>
         ${rs.map(rowHtml).join('')}
       </div>`;
     }).join('');
@@ -107,7 +107,7 @@
       try {
         await navigator.clipboard.writeText(toTsv(rows));
         copyBtn.textContent = '✓ Copied';
-      } catch { copyBtn.textContent = '✗ Hoyni'; }
+      } catch { copyBtn.textContent = '✗ Failed'; }
       setTimeout(() => { copyBtn.textContent = orig; }, 1500);
     });
     const closeBtn = document.getElementById('rr-close-btn');

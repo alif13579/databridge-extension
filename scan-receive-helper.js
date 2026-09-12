@@ -820,7 +820,7 @@
         <input id="db-memory-save-input" type="text" placeholder="Scan, type or paste (1 per line) + Enter">
         <div class="db-memory-cols">
           <div class="db-memory-col">
-            <div class="db-memory-col-hdr">Save kora ID <span class="db-mem-clear-all hidden" id="db-mem-clear-all" title="Sob ID muchho">Sob muchho</span></div>
+            <div class="db-memory-col-hdr">Saved IDs <span class="db-mem-clear-all hidden" id="db-mem-clear-all" title="Clear all IDs">Clear all</span></div>
             <div class="db-memory-list" id="db-memory-list"></div>
           </div>
           <div class="db-memory-col">
@@ -1179,7 +1179,7 @@
     const holdPending   = (st.holdExpected   || []).filter(id => !st.holdReceived.includes(id));
     const returnPending = (st.returnExpected || []).filter(id => !st.returnReceived.includes(id));
 
-    let pendHTML = '<div class="db-sec-title">⏳ Scan baki</div>';
+    let pendHTML = '<div class="db-sec-title">⏳ Pending Scans</div>';
 
     function pendingGroup(label, color, ids) {
       if (!ids.length) return '';
@@ -1309,6 +1309,10 @@
     const ccN = (xcheck.todayCc || []).length;
     const drN = (xcheck.drUndelivered || []).length;
     const coN = (xcheck.carried || []).length;
+    const vrN = xcheck.verifyRequestCount || 0;
+    const hvN = (xcheck.holdVerified || 0) + (xcheck.returnVerified || 0);
+    const drqN = xcheck.deliveryRequest || 0;
+    const achN = xcheck.achievement || 0;
     const all = [...xcheck.warnings, ...xcheck.validated];
     const noneCount = (() => {
       try {
@@ -1329,14 +1333,14 @@
       <div id="db-report-modal">
         <div class="db-rp-hdr"><span>📊 CC Validation — Run ${escapeHtml(getRunId())}</span><span class="db-rp-close" id="db-rp-close">✕</span></div>
         <div class="db-rp-sub">
-          <span>🚫 ${drN}ta deya hoyni</span><span>📅 ${coN}ta ager (baki)</span><span>✅ ${v}ta validated</span><span>📋 ${ccN}ta ajker CC</span><span>➖ ${noneCount}ta-te request nei</span>
-          ${xcheck.checkedAt ? `<span style="margin-left:auto">${escapeHtml(xcheckCheckedTime())}-te check</span>` : ''}
+          <span>📞 Verify Requests: ${vrN} (distinct, today)</span><span>✅ Validated Today: ${v}</span><span>🔒 Verified: ${hvN} (Hold + Return)</span><span>📦 Delivery Request: ${drqN}</span><span>🏆 Achievement: ${achN} (delivered)</span><span>🚫 Not Delivered: ${drN}</span><span>📅 Previous Days: ${coN}</span><span>📋 Today CC: ${ccN}</span><span>➖ No Request: ${noneCount}</span>
+          ${xcheck.checkedAt ? `<span style="margin-left:auto">Checked ${escapeHtml(xcheckCheckedTime())}</span>` : ''}
           ${runSync.at ? `<span title="Run status → Supabase validations">🔄 ${escapeHtml(runSync.last)}</span>` : ''}
         </div>
         <div class="db-rp-chips">
-          ${chip('all', `Sob (${all.length})`)}
-          ${chip('dr', `🚫 Deya hoyni (${drN})`)}
-          ${chip('co', `📅 Backlog (${coN})`)}
+          ${chip('all', `All (${all.length})`)}
+          ${chip('dr', `🚫 Not Delivered (${drN})`)}
+          ${chip('co', `📅 Previous Days (${coN})`)}
           ${chip('ok', `✅ Validated (${v})`)}
           ${chip('cc', `📋 Today CC (${ccN})`)}
           ${chip('none', `➖ No request (${noneCount})`)}
@@ -1779,6 +1783,8 @@
     todayCc: [], todayCcById: new Map(), ccOpen: true,
     drUndelivered: [], drOpen: true,
     carried: [], carriedById: new Map(), coOpen: true,
+    verifyRequestIds: [], verifyRequestCount: 0,
+    holdVerified: 0, returnVerified: 0, deliveryRequest: 0, achievement: 0,
     bnMap: null, checkedAt: 0,
     inflight: false, warnOpen: true, okOpen: false,
     reportFilter: 'all', escBound: false,
@@ -1861,6 +1867,33 @@
     return out;
   }
 
+  async function xcheckFetchVerifyRequests(ids) {
+    // Delivery agent verify requests: WORKER + VERIFY_REQUEST, today (Dhaka)
+    // only, distinct consignment IDs within this run.
+    if (!ids.length) return [];
+    const token = await xcheckIdToken();
+    const gte = dhakaMidnightIso(0);
+    const base = `${XCHECK_URL}/rest/v1/validations` +
+      `?select=consignment,created_at` +
+      `&source=eq.WORKER` +
+      `&remarks_status=eq.VERIFY_REQUEST` +
+      `&created_at=gte.${encodeURIComponent(gte)}` +
+      `&order=created_at.desc`;
+    const headers = { 'apikey': XCHECK_ANON, 'Authorization': `Bearer ${token}`, 'Accept': 'application/json' };
+    const out = [];
+    const chunks = [];
+    for (let i = 0; i < ids.length; i += XCHECK_CHUNK) chunks.push(ids.slice(i, i + XCHECK_CHUNK));
+    await Promise.all(chunks.map(async ch => {
+      const res = await fetch(`${base}&consignment=in.(${ch.map(encodeURIComponent).join(',')})`, { headers });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const arr = await res.json().catch(() => []);
+      if (Array.isArray(arr)) out.push(...arr);
+    }));
+    const runSet = new Set(ids);
+    const distinct = [...new Set(out.map(r => r && r.consignment).filter(id => id && runSet.has(id)))].sort();
+    return distinct;
+  }
+
   function xcheckClassify(todayRows, pageStatus) {
     // Latest row per consignment decides (server desc per chunk, cross-chunk
     // order not guaranteed → compare created_at client-side).
@@ -1926,23 +1959,26 @@
       }
       if (rs === 'delivery_request') {
         if (XCHECK_DELIVERY.has(run)) {
-          // Ajkei delivered hole validated; age delivered hole dorkar nei.
           if (isToday) entry(id, row, 'ok', 'Delivered', runRaw);
         } else if (isToday) {
-          drUndelivered.push(entry(id, row, 'warn', 'Delivery request — deya hoyni', runRaw));
+          drUndelivered.push(entry(id, row, 'warn', 'Delivery Request — Not Delivered', runRaw));
         } else {
           carryEntry(id, row, runRaw);
         }
       } else if (rs === 'hold_verified') {
-        if (isToday) entry(id, row, 'ok', 'Hold OK', runRaw);
+        if (isToday) entry(id, row, 'ok', 'Hold Verified', runRaw);
       } else if (rs === 'return_verified') {
-        if (isToday) entry(id, row, 'ok', 'Return OK', runRaw);
+        if (isToday) entry(id, row, 'ok', 'Return Verified', runRaw);
       }
     });
     todayCc.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
     drUndelivered.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
     carried.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
-    return { warnings, validated, details, todayCc, todayCcById, drUndelivered, carried, carriedById };
+    const holdVerified = validated.filter(e => (e.remarksStatus || '').toLowerCase() === 'hold_verified').length;
+    const returnVerified = validated.filter(e => (e.remarksStatus || '').toLowerCase() === 'return_verified').length;
+    const achievement = validated.filter(e => (e.remarksStatus || '').toLowerCase() === 'delivery_request').length;
+    const deliveryRequest = achievement + drUndelivered.length;
+    return { warnings, validated, details, todayCc, todayCcById, drUndelivered, carried, carriedById, holdVerified, returnVerified, deliveryRequest, achievement };
   }
 
   // Bangla remark labels (validation_remarks catalog, CC) — cached per load.
@@ -1994,9 +2030,9 @@
     const L = [];
     const co = Array.isArray(carried) ? carried : [];
     L.push(`📦 Run ${runId} — CC Validation (${d && m && y ? `${d}-${m}-${y}` : dateKey || ''})`);
-    L.push(`✅ Thik: ${validated.length} | 🚫 Deya hoyni: ${warnings.length} | 📅 Ager baki: ${co.length}`);
+    L.push(`✅ Validated: ${validated.length} | 🚫 Not Delivered: ${warnings.length} | 📅 Previous Days Pending: ${co.length}`);
     if (warnings.length) {
-      L.push('🚫 Deya hoyni:');
+      L.push('🚫 Not Delivered:');
       warnings.forEach(e => L.push(`• ${e.id} — ${e.tag}, run: ${e.st}`));
     }
     if (co.length) {
@@ -2004,7 +2040,7 @@
       co.forEach(e => L.push(`• ${e.id} — ${e.dateKey || ''}, run: ${e.st}`));
     }
     if (validated.length) {
-      L.push('✅ OK:');
+      L.push('✅ Validated:');
       validated.forEach(e => L.push(`• ${e.id} — ${e.tag}`));
     }
     return L.join('\n');
@@ -2018,9 +2054,9 @@
   }
 
   // ── POPUP RUN REPORT (snapshot for popup Run tab + details window) ───────
-  // Run-এর sob parcel (ID + live run status) + protitar CC verdict/remark —
+  // All run parcels (ID + live run status) + per-parcel CC verdict/remark —
   // verdict: ok (validated) / warn (delivery_request undelivered) /
-  // cc (ajker onno CC remark) / none (CC request nei).
+  // cc (other CC remark today) / none (no CC request).
   function buildRunReport() {
     const seen = new Set();
     const rows = [];
@@ -2055,6 +2091,12 @@
         warnings: xcheck.warnings.length,
         undelivered: (xcheck.drUndelivered || []).length,
         todayCc: (xcheck.todayCc || []).length,
+        verifyRequest: xcheck.verifyRequestCount || 0,
+        holdVerified: xcheck.holdVerified || 0,
+        returnVerified: xcheck.returnVerified || 0,
+        verified: (xcheck.holdVerified || 0) + (xcheck.returnVerified || 0),
+        deliveryRequest: xcheck.deliveryRequest || 0,
+        achievement: xcheck.achievement || 0,
       },
       sync: runSync.at ? runSync.last : '',
     };
@@ -2160,15 +2202,20 @@
       const cc = xcheck.todayCc || [];
       const dr = xcheck.drUndelivered || [];
       const co = xcheck.carried || [];
-      // warnings এখন শুধু delivery_request mismatch (dr-এর same refs) —
-      // generic warn bar শুধু non-delivery warn থাকলে দেখাবে, নাহলে 🚫 bar-ই warning।
+      const vrN = xcheck.verifyRequestCount || 0;
+      const hvN = (xcheck.holdVerified || 0) + (xcheck.returnVerified || 0);
+      const drqN = xcheck.deliveryRequest || 0;
+      const achN = xcheck.achievement || 0;
+      const summaryBar = `<div class="db-xc-bar db-xc-bar-idle" id="db-xc-sumbar"><span>📞 Verify Requests: ${vrN} (distinct, today) · ✅ Validated Today: ${v.length} · 🔒 Verified: ${hvN} (Hold + Return) · 📦 Delivery Request: ${drqN} · 🏆 Achievement: ${achN} (delivered)</span>${(!dr.length && !co.length && !v.length) ? refreshBtn : ''}</div>`;
+      // warnings are delivery_request mismatches only —
+      // generic warn bar shows only for non-delivery warnings.
       const otherWarn = w.filter(e => dr.indexOf(e) === -1);
       const drItem = (e) =>
         `<span class="db-xc-item db-xc-item-warn" data-scroll-id="${escapeHtml(e.id)}" title="Delivery request — run: ${escapeHtml(e.st)}${e.remarkEn ? ` — ${escapeHtml(e.remarkBn || e.remarkEn)}` : ''}">` +
         `${escapeHtml(e.id)} <span class="db-xc-st">${escapeHtml(e.st)}</span></span>`;
-      // Ajkei delivery request, ekhono deya hoyni — sobcheye গুরুত্বপূর্ণ bar, সবার উপরে।
+      // Delivery request today, still not delivered — most important bar, on top.
       const drBar = dr.length
-        ? `<div class="db-xc-bar db-xc-bar-warn" id="db-xc-drbar"><span>🚫 ${dr.length}ta delivery request deya hoyni — agent delivery na kore eseche</span>${(!otherWarn.length && !v.length) ? refreshBtn : ''}</div>` +
+        ? `<div class="db-xc-bar db-xc-bar-warn" id="db-xc-drbar"><span>🚫 ${dr.length} delivery requests not delivered — agent returned without delivery</span>${(!otherWarn.length && !v.length) ? refreshBtn : ''}</div>` +
           (xcheck.drOpen ? `<div class="db-xc-list">${dr.map(drItem).join('')}</div>` : '')
         : '';
       // Ager din delivery request chilo, ekhono deya hoyni — alada kore, jeno clearly bojha jay.
@@ -2191,7 +2238,7 @@
         (!cc.length ? `<div class="db-xc-list"><span style="opacity:.65">No CC remarks for this run today</span></div>` : '');
       const hasActivity = dr.length || co.length || otherWarn.length || v.length;
       if (!hasActivity) {
-        el.innerHTML = drBar + coBar + ccBar + runSyncBar();
+        el.innerHTML = summaryBar + drBar + coBar + ccBar + runSyncBar();
         const db = document.getElementById('db-xc-drbar');
         if (db) db.addEventListener('click', e => {
           if (e.target.id === 'db-xcheck-refresh') return;
@@ -2212,6 +2259,7 @@
           `<span class="db-xc-item ${cls}" data-scroll-id="${escapeHtml(e.id)}" title="${escapeHtml(e.tag)} — run: ${escapeHtml(e.st)}">` +
           `${escapeHtml(e.id)} <span class="db-xc-st">${escapeHtml(e.st)}</span></span>`;
         el.innerHTML =
+          summaryBar +
           drBar +
           coBar +
           (otherWarn.length
@@ -2219,7 +2267,7 @@
               (xcheck.warnOpen ? `<div class="db-xc-list">${otherWarn.map(e => item(e, 'db-xc-item-warn')).join('')}</div>` : '')
             : '') +
           (v.length
-            ? `<div class="db-xc-bar db-xc-bar-ok" id="db-xc-okbar"><span>✅ ${v.length}ta validated</span>${(!dr.length && !co.length && !otherWarn.length) ? refreshBtn : ''}</div>` +
+            ? `<div class="db-xc-bar db-xc-bar-ok" id="db-xc-okbar"><span>✅ ${v.length} validated today (Verified ${hvN} · Delivery Request ${drqN} · Achievement ${achN})</span>${(!dr.length && !co.length && !otherWarn.length) ? refreshBtn : ''}</div>` +
               (xcheck.okOpen ? `<div class="db-xc-list">${v.map(e => item(e, 'db-xc-item-ok')).join('')}</div>` : '')
             : '') +
           ccBar +
@@ -2271,6 +2319,9 @@
         xcheck.todayCc = []; xcheck.todayCcById = new Map();
         xcheck.drUndelivered = [];
         xcheck.carried = []; xcheck.carriedById = new Map();
+        xcheck.verifyRequestIds = []; xcheck.verifyRequestCount = 0;
+        xcheck.holdVerified = 0; xcheck.returnVerified = 0;
+        xcheck.deliveryRequest = 0; xcheck.achievement = 0;
         xcheck.checkedAt = 0;
         closeReport();
         renderXcheck();
@@ -2284,13 +2335,16 @@
     try {
       const rows = parcelRows();
       const ids = [...new Set(rows.map(rowId).filter(id => id && ID_REGEX.test(id)))];
-      const todayRows = await xcheckFetchToday(ids);
+      const [todayRows, verifyIds] = await Promise.all([
+        xcheckFetchToday(ids),
+        xcheckFetchVerifyRequests(ids).catch(() => []),
+      ]);
       const pageStatus = new Map();
       parcelRows().forEach(r => {
         const id = rowId(r);
         if (id) pageStatus.set(id, rowStatus(r) || '');
       });
-      const { warnings, validated, details, todayCc, todayCcById, drUndelivered, carried, carriedById } = xcheckClassify(todayRows, pageStatus);
+      const { warnings, validated, details, todayCc, todayCcById, drUndelivered, carried, carriedById, holdVerified, returnVerified, deliveryRequest, achievement } = xcheckClassify(todayRows, pageStatus);
       try {
         const bn = await xcheckBnMap();
         details.forEach(e => {
@@ -2314,7 +2368,13 @@
       xcheck.drUndelivered = drUndelivered || [];
       xcheck.carried = carried || [];
       xcheck.carriedById = carriedById || new Map();
-      console.log(`[DB XCheck] run ${getRunId()}: ${ids.length} IDs → ${todayRows.length} CC rows (7d), today CC ${xcheck.todayCc.length}, undelivered ${xcheck.drUndelivered.length}, ager-baki ${xcheck.carried.length}, warn ${warnings.length}, ok ${validated.length}`);
+      xcheck.verifyRequestIds = Array.isArray(verifyIds) ? verifyIds : [];
+      xcheck.verifyRequestCount = xcheck.verifyRequestIds.length;
+      xcheck.holdVerified = holdVerified || 0;
+      xcheck.returnVerified = returnVerified || 0;
+      xcheck.deliveryRequest = deliveryRequest || 0;
+      xcheck.achievement = achievement || 0;
+      console.log(`[DB XCheck] run ${getRunId()}: ${ids.length} IDs → ${todayRows.length} CC rows (7d), today CC ${xcheck.todayCc.length}, verify requests ${xcheck.verifyRequestCount}, validated ${validated.length} (verified ${xcheck.holdVerified + xcheck.returnVerified}, delivery req ${xcheck.deliveryRequest}, achievement ${xcheck.achievement}), undelivered ${xcheck.drUndelivered.length}, previous days ${xcheck.carried.length}, warn ${warnings.length}, ok ${validated.length}`);
       xcheck.checkedAt = Date.now();
       xcheck.status = 'done';
     } catch (err) {
