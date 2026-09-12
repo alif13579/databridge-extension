@@ -4510,14 +4510,19 @@ async function loadRoutingTab() {
   paintRoutingSubTabs();
   renderRoutingList();
   // Hermes enrich: cached instant, bakigulo background-e fetch — seshe re-render.
+  let hermesAuthFailed = false;
   try {
-    await routingEnrichHermes(cfg, [...incoming, ...outgoing], (done, total) => {
+    const enriched = await routingEnrichHermes(cfg, [...incoming, ...outgoing], (done, total) => {
       if (statusEl) statusEl.textContent = `🔌 Hermes ${done}/${total}…`;
     });
+    hermesAuthFailed = !!(enriched && enriched.authFailed);
   } catch (e) {
     console.warn('[DB] routing hermes enrich failed:', e?.message || e);
   }
   renderRoutingList();
+  if (hermesAuthFailed && statusEl) {
+    statusEl.textContent += ' · ⚠ Hermes login expired — open the Hermes tab, log in again, then press Reload.';
+  }
   } finally {
     routingLoading = false;
     if (reloadBtn) { reloadBtn.disabled = false; reloadBtn.textContent = reloadOrig || '🔄 Reload'; }
@@ -4868,22 +4873,26 @@ async function routingEnrichHermes(cfg, rows, onProgress) {
     if (c) Object.assign(row, c, { history: Array.isArray(c.history) ? c.history : [] });
   });
   const pending = rows.filter(row => !cache[row.id]);
-  let done = 0;
+  let done = 0, authFailed = false;
   for (const row of pending) {
     try {
       const info = await routingEnrichOne(row.id);
       Object.assign(row, info);
       cache[row.id] = info;
     } catch (e) {
-      console.warn('[DB] routing enrich failed:', row.id, e?.message || e);
-      row.hermesError = e?.message || 'failed';
+      const msg = e?.message || 'failed';
+      console.warn('[DB] routing enrich failed:', row.id, msg);
+      row.hermesError = msg;
+      // Hermes 401 = login session expired in the browser — sob row-tei
+      // fail korbe, tai ekhanei thamo (fail fast) ar clear message dekhao.
+      if (/Hermes 401/.test(msg)) { authFailed = true; break; }
     }
     done++;
     try { onProgress && onProgress(done, pending.length); } catch {}
     await new Promise(r => setTimeout(r, 150));
   }
   try { await chrome.storage.local.set({ [cacheKey]: cache }); } catch {}
-  return rows;
+  return { rows, authFailed };
 }
 // ══════════════════════════════
 // 🚚 RUN VALIDATION REPORT TAB
