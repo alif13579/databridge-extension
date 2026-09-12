@@ -4111,7 +4111,7 @@ async function fetchRoutingSheetRows(cfg) {
     `https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values/${routingSheetRange(tab)}`,
     { headers: { 'Authorization': `Bearer ${token}` } });
   if (!res.ok) {
-    if (res.status === 404) throw new Error(`Tab "${tab}" paini`);
+    if (res.status === 404) throw new Error(`Tab "${tab}" not found`);
     throw new Error(`Sheets read failed (${res.status})`);
   }
   const data = await res.json().catch(() => ({}));
@@ -4235,7 +4235,7 @@ async function fetchRoutingTabValues(token, sheetId, tab) {
     `https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values/${routingSheetRange(tab)}`,
     { headers: { 'Authorization': `Bearer ${token}` } });
   if (!res.ok) {
-    if (res.status === 404) throw new Error(`Tab "${tab}" paini`);
+    if (res.status === 404) throw new Error(`Tab "${tab}" not found`);
     throw new Error(`Sheets read failed (${res.status})`);
   }
   const data = await res.json().catch(() => ({}));
@@ -4274,7 +4274,7 @@ async function fetchRoutingRowsFromTarget(token, target) {
     col(b.toCol, (b.toCol || {}).mode),
     col(b.confirmCol, (b.confirmCol || {}).mode),
   ]);
-  if (idIdx < 0) throw new Error('ID column paini');
+  if (idIdx < 0) throw new Error('ID column not found');
   const values = await fetchRoutingTabValues(token, sheetId, tab);
   const rows = [];
   for (let i = headerRow; i < values.length; i++) {
@@ -4695,7 +4695,7 @@ async function routingWriteConfirm(id, value, colOverride) {
   if (!/^[A-Z]{1,3}$/.test(letter)) {
     // Header-text (or numeric) ref → resolve to a letter first.
     const idx = await routingResolveCol(token, sheetId, tab, ref, /^\d+$/.test(ref) ? 'index' : 'text', headerRow);
-    if (idx == null || idx < 0) throw new Error(`Confirm column "${ref}" paini`);
+    if (idx == null || idx < 0) throw new Error(`Confirm column "${ref}" not found`);
     letter = routingIndexToLetter(idx);
   }
   const range = routingSheetRange(`${tab}!${letter}${row.rowNum}`);

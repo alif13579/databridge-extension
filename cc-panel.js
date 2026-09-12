@@ -1324,7 +1324,7 @@
     const fetchLetter = fetchRef
       ? await letterOf(fetchRef, b.fetchColMode)
       : indexToLetter(rangeStart);
-    if (!fetchLetter) return { ids: [], scanned: 0, dropped: 0, note: `ID column '${fetchRef}' paini` };
+    if (!fetchLetter) return { ids: [], scanned: 0, dropped: 0, note: `ID column '${fetchRef}' not found` };
     const rules = Array.isArray(b.filters) ? b.filters.filter(r => r && String(r.colRef || '').trim() && r.op) : [];
     const useOr = rules.length > 0 && b.filterLogic === 'OR';
     const colCache = {};
@@ -1348,7 +1348,7 @@
     const idCol = await colOf(
       fetchRef || indexToLetter(rangeStart),
       fetchRef ? (b.fetchColMode || 'index') : 'index');
-    if (!idCol) return { ids: [], scanned: 0, dropped: 0, note: 'ID column paini' };
+    if (!idCol) return { ids: [], scanned: 0, dropped: 0, note: 'ID column not found' };
     const ids = [];
     let dropped = 0;
     idCol.forEach((cell, i) => {
@@ -1359,7 +1359,7 @@
       if (!pass) { dropped++; return; }
       if (ids.indexOf(cid) === -1) ids.push(cid);
     });
-    return { ids, scanned: idCol.length, dropped, note: missing.length ? `column ${[...new Set(missing)].join(',')} paini (skip)` : null };
+    return { ids, scanned: idCol.length, dropped, note: missing.length ? `Column ${[...new Set(missing)].join(',')} not found (skipped)` : null };
   }
 
   // ── BULK SYNC TO SHEET (header) ────────────────────────────────

@@ -831,7 +831,7 @@
         <button id="db-memory-fill-btn" style="
           width:100%;padding:6px 0;background:#1e3a5f;border:1px solid #3b82f6;
           border-radius:5px;color:#7ab3e0;font-size:11px;font-weight:700;cursor:pointer;display:none">
-          🧠 Memory theke auto-fill
+          🧠 Auto-fill from Memory
         </button>
       </div>
       <div id="db-xcheck-strip"></div>
@@ -1216,7 +1216,7 @@
     renderFieldList();
     const fillBtn = document.getElementById('db-memory-fill-btn');
     if (fillBtn) {
-      fillBtn.textContent = `🧠 Memory theke auto-fill (${memCount})`;
+      fillBtn.textContent = `🧠 Auto-fill from Memory (${memCount})`;
       fillBtn.style.display = memCount > 0 ? '' : 'none';
     }
     const clearAllBtn = document.getElementById('db-mem-clear-all');
@@ -1603,7 +1603,7 @@
             const b = document.createElement('span');
             b.className = 'db-tick db-xbadge';
             b.style.background = '#d97706';
-            b.textContent = '📅 BAKI';
+            b.textContent = '📅 PENDING';
             b.title = `Previous day (${co.dateKey || ''}) delivery request — still undelivered` +
               (co.remarkEn ? ` — ${co.remarkBn || co.remarkEn}` : '') +
               ` — run: ${co.st}`;
@@ -2559,7 +2559,7 @@
       ? fields.map((f, i) =>
           `<div class="db-field-row${f.el === selectedFieldEl ? ' selected' : ''}" data-field-idx="${i}">${escapeHtml(f.label)}</div>`
         ).join('')
-      : '<div class="db-field-empty">Kono input field paini</div>';
+      : '<div class="db-field-empty">No input field found</div>';
     listEl.querySelectorAll('[data-field-idx]').forEach((el, i) => {
       el.addEventListener('click', () => selectField(fields[i].el));
     });
