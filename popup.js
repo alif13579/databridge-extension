@@ -4471,7 +4471,7 @@ async function loadRoutingTab() {
   let viaSocket = false, ownLabel = '';
   try {
     const sock = await fetchRoutingViaSocket(statusEl);
-    if (sock && sock.rows.length) {
+    if (sock && ((sock.incoming || []).length || (sock.outgoing || []).length)) {
       tab = sock.tab; incoming = sock.incoming; outgoing = sock.outgoing;
       viaSocket = true; ownLabel = sock.ownLabel;
     }
@@ -4603,7 +4603,7 @@ function renderRoutingList() {
         <div class="card-text">${escapeHtml(row.id)}${row.cod ? ` <span class="routing-cod">৳${escapeHtml(String(row.cod))}</span>` : ''}${row.confirm ? ` <span class="routing-diff" style="background:#dcfce7;color:#15803d">✔ ${escapeHtml(row.confirm)}</span>` : ''}</div>
         <div class="card-meta">From: <b>${escapeHtml(row.from || '?')}</b> → To: <b>${escapeHtml(row.to || '?')}</b></div>
         <div class="routing-addr">📍 ${escapeHtml(addr)}</div>
-        <div class="card-meta">${(row.hermesStatus || row.hub) ? `Status: <b>${escapeHtml(row.hermesStatus || '—')}</b> · Hub: ${escapeHtml(row.hub || '—')} → Last mile: ${escapeHtml(row.lastMile || '—')}` : 'Status: — (Hermes porer step-e)'}</div>
+        <div class="card-meta">${(row.hermesStatus || row.hub) ? `Status: <b>${escapeHtml(row.hermesStatus || '—')}</b> · Hub: ${escapeHtml(row.hub || '—')} → Last mile: ${escapeHtml(row.lastMile || '—')}` : 'Status: — (loading Hermes info…)'}</div>
         ${histBlock}
         ${stateLine}
         <div class="card-actions">
@@ -4642,7 +4642,7 @@ async function decideRouting(id, act, btn) {
   let kValue = def.value;
   let extra = '';
   if (kValue.includes('{input}')) {
-    const val = prompt(`✏️ ${def.label} — likho:`, '');
+    const val = prompt(`✏️ ${def.label} — enter value:`, '');
     if (val === null) return; // cancelled
     extra = (val || '').trim();
     if (!extra) return;
