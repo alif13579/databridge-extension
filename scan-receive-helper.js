@@ -2258,7 +2258,7 @@
         sumTableRow('ach', 'Achievement', achN, pctOf(achN, drqN)) +
         `</tbody></table>` +
         sumList +
-        `${(!dr.length && !co.length && !v.length) ? refreshBtn : ''}</div>`;
+        `${refreshBtn}</div>`;
       // warnings are delivery_request mismatches only —
       // generic warn bar shows only for non-delivery warnings.
       const otherWarn = w.filter(e => dr.indexOf(e) === -1);
@@ -2267,7 +2267,7 @@
         `${escapeHtml(e.id)} <span class="db-xc-st">${escapeHtml(e.st)}</span></span>`;
       // Delivery request today, still not delivered — most important bar, on top.
       const drBar = dr.length
-        ? `<div class="db-xc-bar db-xc-bar-warn" id="db-xc-drbar"><span>🚫 ${dr.length} delivery requests not delivered — agent returned without delivery</span>${(!otherWarn.length && !v.length) ? refreshBtn : ''}</div>` +
+        ? `<div class="db-xc-bar db-xc-bar-warn" id="db-xc-drbar"><span>🚫 ${dr.length} delivery requests not delivered — agent returned without delivery</span></div>` +
           (xcheck.drOpen ? `<div class="db-xc-list">${dr.map(drItem).join('')}</div>` : '')
         : '';
       // Ager din delivery request chilo, ekhono deya hoyni — alada kore, jeno clearly bojha jay.
@@ -2300,12 +2300,8 @@
           drBar +
           coBar +
           (otherWarn.length
-            ? `<div class="db-xc-bar db-xc-bar-warn" id="db-xc-warnbar"><span>⚠️ ${otherWarn.length} need review — delivery/verify mismatch</span>${(!dr.length && !co.length) ? refreshBtn : ''}</div>` +
+            ? `<div class="db-xc-bar db-xc-bar-warn" id="db-xc-warnbar"><span>⚠️ ${otherWarn.length} need review — delivery/verify mismatch</span></div>` +
               (xcheck.warnOpen ? `<div class="db-xc-list">${otherWarn.map(e => item(e, 'db-xc-item-warn')).join('')}</div>` : '')
-            : '') +
-          (v.length
-            ? `<div class="db-xc-bar db-xc-bar-ok" id="db-xc-okbar"><span>Validated: ${v.length} (Verified: ${hvN} · Delivery_Request: ${drqN} · Achievement: ${achN})</span>${(!dr.length && !co.length && !otherWarn.length) ? refreshBtn : ''}</div>` +
-              (xcheck.okOpen ? `<div class="db-xc-list">${v.map(e => item(e, 'db-xc-item-ok')).join('')}</div>` : '')
             : '') +
           runSyncBar();
         const db = document.getElementById('db-xc-drbar');
@@ -2322,11 +2318,6 @@
         if (wb) wb.addEventListener('click', e => {
           if (e.target.id === 'db-xcheck-refresh') return;
           xcheck.warnOpen = !xcheck.warnOpen; renderXcheck();
-        });
-        const ob = document.getElementById('db-xc-okbar');
-        if (ob) ob.addEventListener('click', e => {
-          if (e.target.id === 'db-xcheck-refresh') return;
-          xcheck.okOpen = !xcheck.okOpen; renderXcheck();
         });
       }
     }
