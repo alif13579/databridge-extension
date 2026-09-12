@@ -4480,6 +4480,9 @@ async function loadRoutingTab() {
     if (sock && ((sock.incoming || []).length || (sock.outgoing || []).length)) {
       tab = sock.tab; incoming = sock.incoming; outgoing = sock.outgoing;
       viaSocket = true; ownLabel = sock.ownLabel;
+      console.log(`[DB] routing source: socket library (${incoming.length} incoming + ${outgoing.length} outgoing, tab ${tab}, branch ${ownLabel})`);
+    } else {
+      console.log('[DB] routing source: socket empty — local settings fallback');
     }
   } catch (e) {
     console.warn('[DB] routing socket failed, local settings-e porchi:', e?.message || e);
@@ -4516,6 +4519,7 @@ async function loadRoutingTab() {
       if (statusEl) statusEl.textContent = `🔌 Hermes ${done}/${total}…`;
     });
     hermesAuthFailed = !!(enriched && enriched.authFailed);
+    console.log(`[DB] routing enrich done: ${incoming.length + outgoing.length} rows, authFailed=${hermesAuthFailed}`);
   } catch (e) {
     console.warn('[DB] routing hermes enrich failed:', e?.message || e);
   }
@@ -4740,7 +4744,11 @@ function routingHermesCacheKey() {
 async function routingHermesTab() {
   const tabs = await chrome.tabs.query({ url: 'https://hermes.pathaointernal.com/*' });
   const active = (tabs || []).find(t => t.active) || (tabs || [])[0];
-  if (active) return active;
+  if (active) {
+    console.log(`[DB] routing hermes tab: reusing #${active.id} ${active.url || ''}`);
+    return active;
+  }
+  console.log('[DB] routing hermes tab: none open — creating background tab (fresh tab = Hermes login needed there too)');
   const created = await chrome.tabs.create({
     url: 'https://hermes.pathaointernal.com/orders/all', active: false,
   });
@@ -4782,8 +4790,21 @@ async function routingHermesFetch(path) {
     args: [clean],
   });
   const r = results && results[0] && results[0].result;
-  if (!r) throw new Error('Hermes tab-e exec failed');
-  if (!r.ok) throw new Error(`Hermes ${r.status || 'fetch failed'}`);
+  if (!r) {
+    console.warn('[DB] routing hermes exec failed:', clean,
+      '| lastError:', chrome.runtime.lastError?.message || 'none',
+      '| tab:', tab.id, (tab.url || '').slice(0, 80));
+    throw new Error('Hermes tab exec failed');
+  }
+  if (!r.ok) {
+    const bodyPrev = String(r.data == null ? '' : (typeof r.data === 'string' ? r.data : JSON.stringify(r.data))).slice(0, 300);
+    console.warn('[DB] routing hermes HTTP fail:', clean,
+      '| status:', r.status,
+      '| tab:', tab.id, (tab.url || '').slice(0, 80),
+      '| body:', bodyPrev || '(empty)',
+      '| loginPage:', /login|sign-?in|auth/i.test(bodyPrev) ? 'YES' : 'no');
+    throw new Error(`Hermes ${r.status || 'fetch failed'}`);
+  }
   return r.data;
 }
 
@@ -4838,7 +4859,13 @@ function routingExtractList(data) {
 
 async function routingEnrichOne(id) {
   const out = { id, hermesAddress: '', hermesStatus: '', hub: '', lastMile: '', phone: '', customer: '', cod: '', merchant: '', history: [] };
-  const details = await routingHermesFetch('/api/v1/orders/' + encodeURIComponent(id) + '/details');
+  let details;
+  try {
+    details = await routingHermesFetch('/api/v1/orders/' + encodeURIComponent(id) + '/details');
+  } catch (e) {
+    console.warn('[DB] routing enrich details step failed:', id, e?.message || e);
+    throw e;
+  }
   const d = routingExtractDetails(details);
   Object.assign(out, d);
   if (d.phone) {
