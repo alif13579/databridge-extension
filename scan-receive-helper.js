@@ -2203,7 +2203,23 @@
       const hvN = (xcheck.holdVerified || 0) + (xcheck.returnVerified || 0);
       const drqN = xcheck.deliveryRequest || 0;
       const achN = xcheck.achievement || 0;
-      const summaryBar = `<div class="db-xc-bar db-xc-bar-idle" id="db-xc-sumbar"><span>Verify Requested: ${vrN} · Validated: ${v.length} · Verified: ${hvN} · Delivery_Request: ${drqN} · Achievement: ${achN}</span>${(!dr.length && !co.length && !v.length) ? refreshBtn : ''}</div>`;
+      const runTotal = (() => {
+        try { return new Set(parcelRows().map(rowId).filter(id => id && ID_REGEX.test(id))).size; }
+        catch { return 0; }
+      })();
+      const pct = n => runTotal > 0 ? `${Math.round((n / runTotal) * 100)}%` : '—';
+      const sumTableRow = (label, n) =>
+        `<tr><td>${label}</td><td class="num">${n}</td><td class="num">${pct(n)}</td></tr>`;
+      const summaryBar = `<div class="db-xc-bar db-xc-bar-idle" id="db-xc-sumbar">` +
+        `<table class="db-table">` +
+        `<thead><tr><th>Run Status (% of run)</th><th class="num">Count</th><th class="num">%</th></tr></thead><tbody>` +
+        sumTableRow('Verify Requested', vrN) +
+        sumTableRow('Validated', v.length) +
+        sumTableRow('Verified', hvN) +
+        sumTableRow('Delivery_Request', drqN) +
+        sumTableRow('Achievement', achN) +
+        `</tbody></table>` +
+        `${(!dr.length && !co.length && !v.length) ? refreshBtn : ''}</div>`;
       // warnings are delivery_request mismatches only —
       // generic warn bar shows only for non-delivery warnings.
       const otherWarn = w.filter(e => dr.indexOf(e) === -1);
