@@ -2122,6 +2122,68 @@
     };
   }
 
+  // ── FIREBASE RUN STATUS SYNC (run → courier/run_routes/delivery_run) ──
+  // Supabase sync-er moto run khullei chole: prottek consignment-er status
+  // (source of truth: courier/consignments/{id}/status — app-er backfill
+  // pattern, WorkerSpaceFragment) delivery_run node-er consignments map-e
+  // lekha hoy. Sudhu diff thakle single PATCH; unchanged run-e write na.
+  // Node delivery_run-e na thakle skip (notun node banano hoy na).
+  const fbRunSync = { sig: null, inflight: false };
+
+  async function maybeSyncFirebaseRunStatus() {
+    const rows = parcelRows();
+    const ids = [...new Set(rows.map(rowId).filter(id => id && ID_REGEX.test(id)))];
+    if (!ids.length) return;
+    const sig = `${getRunId()}|${ids.slice().sort().join(',')}`;
+    if (sig === fbRunSync.sig || fbRunSync.inflight) return;
+    fbRunSync.sig = sig;
+    fbRunSync.inflight = true;
+    try {
+      const token = await xcheckIdToken();
+      const runId = getRunId();
+      const base = `${XCHECK_FB_URL}/courier/run_routes/delivery_run/${encodeURIComponent(runId)}/consignments`;
+      const curRes = await fetch(`${base}.json?auth=${token}`);
+      if (curRes.status === 401 || curRes.status === 403) { fbRunSync.sig = null; return; }
+      if (!curRes.ok) return;
+      const cur = await curRes.json().catch(() => null);
+      if (!cur || typeof cur !== 'object' || Array.isArray(cur)) return;
+      const norm = v => {
+        if (typeof v === 'string') return v.trim();
+        if (v && typeof v === 'object') return String(v.status || '').trim();
+        return '';
+      };
+      const diffs = {};
+      await Promise.all(ids.map(async id => {
+        try {
+          const r = await fetch(`${XCHECK_FB_URL}/courier/consignments/${encodeURIComponent(id)}/status.json?auth=${token}`);
+          if (!r.ok) return;
+          const body = await r.json().catch(() => null);
+          if (body === null || body === undefined) return; // node nei — app-er moto skip
+          const src = String(body).trim();
+          if (!src) return;
+          if (norm(cur[id]) !== src) diffs[id] = src;
+        } catch (_) {}
+      }));
+      const keys = Object.keys(diffs);
+      if (!keys.length) {
+        console.log(`[DB FbRunSync] run ${runId}: all ${ids.length} consignment statuses already in sync`);
+        return;
+      }
+      const w = await fetch(`${base}.json?auth=${token}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(diffs)
+      });
+      if (!w.ok) throw new Error(`HTTP ${w.status}`);
+      console.log(`[DB FbRunSync] run ${runId}: updated ${keys.length}/${ids.length} consignment statuses in delivery_run`);
+    } catch (err) {
+      if (err && err.code === 'no-token') fbRunSync.sig = null;
+      else console.warn('[DB FbRunSync] sync failed:', err);
+    } finally {
+      fbRunSync.inflight = false;
+    }
+  }
+
   // ── RUN STATUS SYNC (run → Supabase validations.consignment_status) ──
   // Run page-এর live status দিয়ে OI DIN-er (run kholar din, Dhaka bounds)
   // same consignment-এর SOB validation row-এর consignment_status update হয়
@@ -2351,6 +2413,7 @@
         xcheck.holdVerified = 0; xcheck.returnVerified = 0;
         xcheck.deliveryRequest = 0; xcheck.achievement = 0;
         xcheck.sumOpen = null;
+        fbRunSync.sig = null;
         xcheck.checkedAt = 0;
         closeReport();
         renderXcheck();
@@ -2414,6 +2477,7 @@
       renderXcheck();
       renderReport(); // no-op unless the modal is open
       try { maybeSyncRunStatus(); } catch {}
+      try { maybeSyncFirebaseRunStatus(); } catch {}
       // Paint the per-row VALIDATED / error signs with the fresh data.
       // refreshBorders' own injections (.db-tick/.db-row-badge) are observer-
       // skipped, so this can't loop.
