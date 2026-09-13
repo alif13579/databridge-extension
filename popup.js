@@ -3395,6 +3395,7 @@ async function generateHoldValidationReport({ skipRender = false } = {}) {
         const firstWorker = earliestOf(workerVerifyRows);
         const lastCc      = ccRows.length ? latestOf(ccRows) : null;
         const latestVerify = latestOf(workerVerifyRows);
+        const latestOfAll = latestOf(g.rows);
         const stillPending = !lastCc || latestMs(latestVerify) > latestMs(lastCc);
         return {
           dateKey:   g.dateKey,
