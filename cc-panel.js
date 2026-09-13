@@ -165,7 +165,7 @@
           }
           if (!c.validatorName && c.validatorSystemId) {
             const hit = nameMap.get(c.validatorSystemId);
-            if (hit?.name) { c.validatorName = hit.name; if (!c.validatorEmployeeId && hit.empId) c.validatorEmployeeId = hit.empId; }
+            if (hit?.name) { c.validatorName = hit.name; if (hit.empId) { if (!c.validatorEmpId) c.validatorEmpId = hit.empId; if (!c.validatorEmployeeId) c.validatorEmployeeId = hit.empId; } }
           }
           (c.trail || []).forEach(t => {
             if (!t.authorName && t.authorSystemId) {
@@ -194,7 +194,7 @@
     for (let i = 0; i < uniq.length; i += 200) {
       const ch = uniq.slice(i, i + 200);
       const res = await fetch(`${SUPABASE_URL}/rest/v1/validations` +
-        `?select=consignment,branch_id,assigned_to_system_id,author_system_id,source,remarks_status,remarks,note,customer_phone,created_at,author:users!validations_author_system_id_fkey(name,employee_id),assigned:users!validations_assigned_to_system_id_fkey(name,employee_id)` +
+        `?select=consignment,branch_id,assigned_to_system_id,author_system_id,source,remarks_status,consignment_status,remarks,note,customer_phone,created_at,author:users!validations_author_system_id_fkey(name,employee_id),assigned:users!validations_assigned_to_system_id_fkey(name,employee_id)` +
         `&consignment=in.(${ch.map(encodeURIComponent).join(',')})` +
         `&order=created_at.desc`, {
         headers: { 'apikey': SUPABASE_ANON_KEY, 'Authorization': `Bearer ${idToken}`, 'Accept': 'application/json' },
@@ -713,6 +713,7 @@
       const stillPending = !lastCc || latestMs(latestVerify) > latestMs(lastCc);
       const agentName = (g.rows.find(r => r.assigned?.name)?.assigned?.name || latestOfAll.assigned?.name || firstWorker.assigned?.name || '').trim();
       const validatorName = (lastCc?.author?.name || '').trim();
+      const validatorEmp = (lastCc?.author?.employee_id || '').trim();
       // Full chronological trail for the expandable history (already in memory —
       // no extra fetch). Now with author names for chat bubbles.
       const trail = g.rows.slice().sort((a, b) => latestMs(a) - latestMs(b)).map(r => ({
@@ -734,13 +735,17 @@
         agentName,
         validatorName,
         validatorSystemId: lastCc ? (lastCc.author_system_id || '') : '',
-        validatorEmployeeId: lastCc ? ((lastCc.author?.employee_id || '').trim() || lastCc.author_system_id || '') : '',
+        validatorEmpId: validatorEmp,
+        validatorEmployeeId: validatorEmp || (lastCc ? (lastCc.author_system_id || '') : ''),
         customerPhone:     (latestOfAll.customer_phone || '').trim(),
+        parcelStatus:      ((latestOfAll.consignment_status || (lastCc && lastCc.consignment_status) || firstWorker.consignment_status || '') + '').trim(),
         firstWorkerRemark: firstWorker.remarks || firstWorker.note || '',
         firstWorkerStatus: firstWorker.remarks_status || '',
+        firstWorkerTime:   fmtHhMm(firstWorker.created_at),
         lastCcRemark:      lastCc ? (lastCc.remarks || lastCc.note || '') : '',
         lastCcStatus:      lastCc ? (lastCc.remarks_status || '') : '',
         lastCcNote:        lastCc ? (lastCc.note || '') : '',
+        lastCcTime:        lastCc ? fmtHhMm(lastCc.created_at) : '',
         stillPending,
         trail,
       };
@@ -764,19 +769,24 @@
         const lastCc = ccRows.length ? ccRows[ccRows.length - 1] : null;
         const agentName = (latest?.assigned?.name || rows.find(r => r.assigned?.name)?.assigned?.name || '').trim();
         const validatorName = (lastCc?.author?.name || '').trim();
+        const validatorEmp = (lastCc?.author?.employee_id || '').trim();
         cards.push({
           dateLabel, branchId, cId,
           agentSystemId: latest ? (latest.assigned_to_system_id || '') : '',
           agentName,
           validatorName,
           validatorSystemId: lastCc ? (lastCc.author_system_id || '') : '',
-          validatorEmployeeId: lastCc ? ((lastCc.author?.employee_id || '').trim() || lastCc.author_system_id || '') : '',
+          validatorEmpId: validatorEmp,
+          validatorEmployeeId: validatorEmp || (lastCc ? (lastCc.author_system_id || '') : ''),
           customerPhone: latest ? (latest.customer_phone || '').trim() : '',
+          parcelStatus: latest ? ((latest.consignment_status || '') + '').trim() : '',
           firstWorkerRemark: firstWorker ? (firstWorker.remarks || firstWorker.note || '') : '',
           firstWorkerStatus: firstWorker ? (firstWorker.remarks_status || '') : '',
+          firstWorkerTime: firstWorker ? fmtHhMm(firstWorker.created_at) : '',
           lastCcRemark: lastCc ? (lastCc.remarks || lastCc.note || '') : '',
           lastCcStatus: lastCc ? (lastCc.remarks_status || '') : '',
           lastCcNote: lastCc ? (lastCc.note || '') : '',
+          lastCcTime: lastCc ? fmtHhMm(lastCc.created_at) : '',
           stillPending: latest ? latest.source === 'WORKER' : false,
           noActivity: !rows.length,
           trail: rows.map(r => ({
@@ -807,7 +817,10 @@
     const hiddenCount = filtered.length - visible.length;
     const rowsHtml = visible.length ? visible.map((r, idx) => {
       const agentDisplay = r.agentName || r.agentSystemId || '—';
-      const validatorDisplay = r.validatorName || r.validatorEmployeeId || '';
+      const vName = r.validatorName || '';
+      const vId = r.validatorEmpId || r.validatorSystemId || r.validatorEmployeeId || '';
+      const vWho = vName ? `${vName}${vId && vId !== vName ? ` (${vId})` : ''}` : (vId || 'CC');
+      const vShort = vName || vId || '';
       let chatHtml = '';
       if (r.noActivity) {
         chatHtml = `<div class="db-cc-chat"><div class="db-cc-bubble db-cc-bubble-pending">➖ No activity on this ID today</div></div>`;
@@ -815,14 +828,15 @@
         const workerBubble = `<div class="db-cc-bubble db-cc-bubble-worker">
             <div class="db-cc-bubble-label">🙋 ${escapeHtml(agentDisplay)}${r.firstWorkerStatus ? ' · ' + escapeHtml(r.firstWorkerStatus) : ''}</div>
             <div class="db-cc-bubble-text">${escapeHtml(r.firstWorkerRemark || '(no note)')}</div>
+            <div class="db-cc-bubble-meta">${escapeHtml(r.firstWorkerTime || '')} · 👤 ${escapeHtml(agentDisplay)}${r.agentSystemId && r.agentSystemId !== agentDisplay ? ` (${escapeHtml(r.agentSystemId)})` : ''}</div>
           </div>`;
         const ccBubble = r.stillPending
           ? `<div class="db-cc-bubble db-cc-bubble-pending">⏳ Awaiting CC reply…</div>`
           : `<div class="db-cc-bubble db-cc-bubble-cc">
-              <div class="db-cc-bubble-label">✓ ${escapeHtml(validatorDisplay || 'CC')}${r.lastCcStatus ? ' · ' + escapeHtml(r.lastCcStatus) : ''}</div>
+              <div class="db-cc-bubble-label">✓ CC${r.lastCcStatus ? ' · ' + escapeHtml(r.lastCcStatus) : ''}</div>
               ${r.lastCcRemark ? `<div class="db-cc-bubble-text">${escapeHtml(r.lastCcRemark)}</div>` : `<div class="db-cc-bubble-text" style="opacity:.6">(no CC text)</div>`}
               ${r.lastCcNote ? `<div class="db-cc-bubble-note">📝 ${escapeHtml(r.lastCcNote)}</div>` : ''}
-              ${validatorDisplay ? `<div class="db-cc-bubble-meta">👤 ${escapeHtml(validatorDisplay)}${r.validatorEmployeeId && r.validatorEmployeeId !== validatorDisplay ? ' · ' + escapeHtml(r.validatorEmployeeId) : ''}</div>` : ''}
+              <div class="db-cc-bubble-meta">${escapeHtml(r.lastCcTime || '')} · 👤 ${escapeHtml(vWho)}</div>
             </div>`;
         chatHtml = `<div class="db-cc-chat">${workerBubble}${ccBubble}</div>`;
       }
@@ -834,7 +848,7 @@
         </div>
         ${r.customerName ? `<div class="db-cc-row-meta">👤 ${escapeHtml(r.customerName)}${r.codAmount ? ` • ${escapeHtml(fmtTaka(r.codAmount))}` : ''}</div>` : (r.codAmount ? `<div class="db-cc-row-meta">${escapeHtml(fmtTaka(r.codAmount))}</div>` : '')}
         ${r.address ? `<div class="db-cc-row-meta">📍 ${escapeHtml(r.address)}</div>` : ''}
-        <div class="db-cc-row-meta">👤 ${escapeHtml(agentDisplay)}${!r.noActivity && validatorDisplay ? ' → ✓ ' + escapeHtml(validatorDisplay) : ''}</div>
+        <div class="db-cc-row-meta">👤 ${escapeHtml(agentDisplay)}${r.parcelStatus ? ` · 📦 ${escapeHtml(r.parcelStatus)}` : ''}${!r.noActivity && vShort ? ' → ✓ ' + escapeHtml(vShort) : ''}</div>
         ${chatHtml}
         <div class="db-cc-row-bottom">
           <span class="db-cc-badge ${r.stillPending ? 'db-cc-badge-pending' : (r.noActivity ? 'db-cc-badge-none' : 'db-cc-badge-validated')}">

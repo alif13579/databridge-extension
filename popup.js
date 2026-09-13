@@ -3409,13 +3409,17 @@ async function generateHoldValidationReport({ skipRender = false } = {}) {
           agentSystemId:     g.rows[0].assigned_to_system_id,
           agentName:         assignedName,
           customerPhone:     (latestOfAll.customer_phone || '').trim(),
+          parcelStatus:      ((latestOfAll.consignment_status || (lastCc && lastCc.consignment_status) || firstWorker.consignment_status || '') + '').trim(),
           firstWorkerRemark: firstWorker.remarks || '',
           firstWorkerStatus: firstWorker.remarks_status || '',
+          firstWorkerTime:   formatHhMm(firstWorker.created_at),
           lastCcRemark:      lastCc ? (lastCc.remarks || '') : '',
           lastCcNote:        lastCc ? (lastCc.note || '') : '',
           lastCcStatus:      lastCc ? (lastCc.remarks_status || '') : '',
+          lastCcTime:        lastCc ? formatHhMm(lastCc.created_at) : '',
           validatorSystemId: lastCc ? (lastCc.author_system_id || '') : '',
           validatorName:     validatorName,
+          validatorEmpId:    validatorEmp,
           validatorEmployeeId: validatorEmp || (lastCc ? (lastCc.author_system_id || '') : ''),
           stillPending,
         };
@@ -3434,7 +3438,7 @@ async function generateHoldValidationReport({ skipRender = false } = {}) {
             }
             if (!r.validatorName && r.validatorSystemId) {
               const hit = nameMap.get(r.validatorSystemId);
-              if (hit?.name) { r.validatorName = hit.name; if (!r.validatorEmployeeId && hit.empId) r.validatorEmployeeId = hit.empId; }
+              if (hit?.name) { r.validatorName = hit.name; if (hit.empId) { if (!r.validatorEmpId) r.validatorEmpId = hit.empId; if (!r.validatorEmployeeId) r.validatorEmployeeId = hit.empId; } }
             }
           });
         } catch (e) { console.warn('[DB] HV summary name fallback failed:', e); }
@@ -3467,6 +3471,7 @@ async function generateHoldValidationReport({ skipRender = false } = {}) {
             authorSystemId: r.author_system_id || '',
             authorName:    authName,
             authorEmployeeId: (r.author?.employee_id || '').trim(),
+            parcelStatus: ((r.consignment_status || '') + '').trim(),
             source:  r.source,
             remark:  r.remarks || '',
             note:    r.note || '',
@@ -3568,26 +3573,29 @@ function renderHvReportSummary(reportEl) {
       ? '<span class="dash-hv-badge dash-hv-badge-pending">⏳ Pending</span>'
       : '<span class="dash-hv-badge dash-hv-badge-validated">✓ Validated</span>';
     const agentDisplay = r.agentName || r.agentSystemId || '—';
-    const validatorDisplay = r.validatorName || r.validatorEmployeeId || '';
+    const vName = r.validatorName || '';
+    const vId = r.validatorEmpId || r.validatorSystemId || r.validatorEmployeeId || '';
+    const vWho = vName ? `${vName}${vId && vId !== vName ? ` (${vId})` : ''}` : (vId || 'CC');
     return `
       <div class="dash-hv-row ${r.stillPending ? 'dash-hv-row-pending' : 'dash-hv-row-validated'}">
         <div class="dash-hv-row-top">
           <span class="dash-hv-row-id">${escapeHtml(r.cId)}</span>
           <span>${r.dateLabel}</span>
         </div>
-        <div class="dash-hv-row-meta">${escapeHtml(ccBranchNames[r.branchId] || r.branchId)} · 👤 ${escapeHtml(agentDisplay)}</div>
+        <div class="dash-hv-row-meta">${escapeHtml(ccBranchNames[r.branchId] || r.branchId)} · 👤 ${escapeHtml(agentDisplay)}${r.parcelStatus ? ` · 📦 ${escapeHtml(r.parcelStatus)}` : ''}</div>
         <div class="dash-hv-chat">
           <div class="dash-hv-bubble dash-hv-bubble-worker">
             <div class="dash-hv-bubble-label">🙋 ${escapeHtml(agentDisplay)}${r.firstWorkerStatus ? ' · ' + escapeHtml(r.firstWorkerStatus) : ''}</div>
             <div class="dash-hv-bubble-text">${escapeHtml(r.firstWorkerRemark || '(no remark)')}</div>
+            <div class="dash-hv-bubble-meta">${escapeHtml(r.firstWorkerTime || '')} · 👤 ${escapeHtml(agentDisplay)}${r.agentSystemId && r.agentSystemId !== agentDisplay ? ` (${escapeHtml(r.agentSystemId)})` : ''}</div>
           </div>
           ${r.stillPending
             ? `<div class="dash-hv-bubble dash-hv-bubble-pending">⏳ Awaiting CC reply…</div>`
             : `<div class="dash-hv-bubble dash-hv-bubble-cc">
-                <div class="dash-hv-bubble-label">✓ ${escapeHtml(validatorDisplay || 'CC')}${r.lastCcStatus ? ' · ' + escapeHtml(r.lastCcStatus) : ''}</div>
+                <div class="dash-hv-bubble-label">✓ CC${r.lastCcStatus ? ' · ' + escapeHtml(r.lastCcStatus) : ''}</div>
                 ${r.lastCcRemark ? `<div class="dash-hv-bubble-text">${escapeHtml(r.lastCcRemark)}</div>` : `<div class="dash-hv-bubble-text" style="opacity:.65">(no CC text)</div>`}
                 ${r.lastCcNote ? `<div class="dash-hv-bubble-note">📝 ${escapeHtml(r.lastCcNote)}</div>` : ''}
-                ${validatorDisplay ? `<div class="dash-hv-bubble-meta">👤 ${escapeHtml(validatorDisplay)}${r.validatorEmployeeId && r.validatorEmployeeId !== validatorDisplay ? ' · ' + escapeHtml(r.validatorEmployeeId) : ''}</div>` : ''}
+                <div class="dash-hv-bubble-meta">${escapeHtml(r.lastCcTime || '')} · 👤 ${escapeHtml(vWho)}</div>
               </div>`
           }
         </div>
@@ -3793,21 +3801,22 @@ function renderHvReportDetails(reportEl) {
       ? '<span class="dash-hv-badge dash-hv-badge-pending">🙋 Worker</span>'
       : '<span class="dash-hv-badge dash-hv-badge-validated">📞 CC</span>';
     const agentDisplay = r.agentName || r.agentSystemId || '—';
-    const authorDisplay = isWorker ? (r.agentName || r.authorName || r.agentSystemId || '—')
-                        : (r.authorName || r.authorEmployeeId || r.authorSystemId || '—');
+    const aName = isWorker ? (r.authorName || r.agentName || '') : (r.authorName || '');
+    const aId = isWorker ? (r.agentSystemId || r.authorSystemId || '') : (r.authorEmployeeId || r.authorSystemId || '');
+    const aWho = aName ? `${aName}${aId && aId !== aName ? ` (${aId})` : ''}` : (aId || (isWorker ? 'Worker' : 'CC'));
     return `
       <div class="dash-hv-row ${isWorker ? 'dash-hv-row-pending' : 'dash-hv-row-validated'}">
         <div class="dash-hv-row-top">
           <span class="dash-hv-row-id">${escapeHtml(r.cId)}</span>
           <span>${r.dateLabel} · ${r.timeLabel}</span>
         </div>
-        <div class="dash-hv-row-meta">${escapeHtml(ccBranchNames[r.branchId] || r.branchId)} · 👤 ${escapeHtml(agentDisplay)} ${badge}</div>
+        <div class="dash-hv-row-meta">${escapeHtml(ccBranchNames[r.branchId] || r.branchId)} · 👤 ${escapeHtml(agentDisplay)}${r.parcelStatus ? ` · 📦 ${escapeHtml(r.parcelStatus)}` : ''} ${badge}</div>
         <div class="dash-hv-chat">
           <div class="dash-hv-bubble ${isWorker ? 'dash-hv-bubble-worker' : 'dash-hv-bubble-cc'}">
-            <div class="dash-hv-bubble-label">${isWorker ? '🙋' : '✓'} ${escapeHtml(authorDisplay)}${r.status ? ' · ' + escapeHtml(r.status) : ''}</div>
+            <div class="dash-hv-bubble-label">${isWorker ? '🙋' : '✓ CC'}${r.status ? ' · ' + escapeHtml(r.status) : ''}</div>
             <div class="dash-hv-bubble-text">${escapeHtml(r.remark || '(no remark)')}</div>
             ${r.note ? `<div class="dash-hv-bubble-note">📝 ${escapeHtml(r.note)}</div>` : ''}
-            <div class="dash-hv-bubble-meta">${escapeHtml(r.timeLabel)}${!isWorker && r.authorEmployeeId && r.authorEmployeeId !== authorDisplay ? ' · ' + escapeHtml(r.authorEmployeeId) : ''}</div>
+            <div class="dash-hv-bubble-meta">${escapeHtml(r.timeLabel)} · 👤 ${escapeHtml(aWho)}</div>
           </div>
         </div>
       </div>`;
@@ -3848,10 +3857,10 @@ function downloadHvReport() {
   const toInput   = document.getElementById('dash-hv-to');
 
   const csvRows = hvReportMode === 'summary'
-    ? [['Date', 'Branch', 'Consignment ID', 'Agent Name', 'Agent System ID', 'Validator Name', 'Validator Employee ID',
+    ? [['Date', 'Branch', 'Consignment ID', 'Agent Name', 'Agent System ID', 'Parcel Status', 'Validator Name', 'Validator Employee ID',
         'First Worker Remark', 'First Worker Remark Status',
         'Last CC Remark', 'Last CC Note', 'Last CC Remark Status', 'Validation Status']]
-    : [['Date', 'Time', 'Branch', 'Consignment ID', 'Agent Name', 'Agent System ID', 'Author Name', 'Author System ID', 'Source', 'Remark', 'Note', 'Remark Status']];
+    : [['Date', 'Time', 'Branch', 'Consignment ID', 'Agent Name', 'Agent System ID', 'Parcel Status', 'Author Name', 'Author System ID', 'Source', 'Remark', 'Note', 'Remark Status']];
 
   hvReportRows.forEach(r => {
     if (hvReportMode === 'summary') {
@@ -3861,6 +3870,7 @@ function downloadHvReport() {
         r.cId,
         r.agentName || '',
         r.agentSystemId || '',
+        r.parcelStatus || '',
         r.validatorName || '',
         r.validatorEmployeeId || '',
         r.firstWorkerRemark || '',
@@ -3878,6 +3888,7 @@ function downloadHvReport() {
         r.cId,
         r.agentName || '',
         r.agentSystemId || '',
+        r.parcelStatus || '',
         r.authorName || '',
         r.authorSystemId || '',
         r.source === 'WORKER' ? 'Worker' : 'CC',
