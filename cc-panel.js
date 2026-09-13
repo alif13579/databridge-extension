@@ -1038,6 +1038,19 @@
     if (!f) return '';
     return f.toLowerCase() === 'willing to receive today' ? 'Invalid' : 'Valid';
   }
+  function deriveFinalStatus(consignmentStatus) {
+    const s = String(consignmentStatus || '').trim().toLowerCase();
+    if (!s) return 'Hold';
+    if (s === 'delivered' || s === 'partial delivery' || s === 'paid return') return 'Delivered';
+    if (s === 'return' || s === 'return requested') return 'Return';
+    return 'Hold';
+  }
+  function deriveActionFromFinalStatus(finalStatus) {
+    const f = String(finalStatus || '').trim();
+    if (f === 'Delivered') return 'Reassigned';
+    if (f === 'Hold') return 'Hold';
+    return '';
+  }
 
   function effectiveLookups(conn) {
     const dyn = (conn.lookups || []).filter(r => r && String(r.colRef || '').trim());
@@ -1456,7 +1469,7 @@
   }
 
   // Consolidated CC per (branch, consignment) for today: latest CC row →
-  // feedback (catalog map) / validation (derived) / validator_name / created_at.
+  // feedback (catalog map) / validation (derived) / validator_name / finalStatus / action (+ created_at for compat).
   async function buildConsolidatedCc() {
     const opts = await fetchCcRemarkOptions().catch(() => []);
     const byKey = new Map(); // `${branchId}__${consignment}` -> {rows:[]}
@@ -1475,10 +1488,13 @@
       const engKey = (latest.remarks || '').trim();
       const hit = (opts || []).find(o => o.english === engKey);
       const feedback = (hit && hit.category) || '';
+      const finalStatus = deriveFinalStatus(latest.consignment_status || '');
       out.set(k, {
         feedback,
         validation: deriveValidation(feedback),
         validator_name: ((latest.author && latest.author.name) || latest.author_system_id || '').trim(),
+        consignment_status: finalStatus,
+        action: deriveActionFromFinalStatus(finalStatus),
         created_at: latest.created_at || '',
       });
     });
@@ -1486,11 +1502,13 @@
   }
 
   // One connection → its own sheet. Returns counts for the summary line.
+  // Latest-wins: blank → fill + mismatch → overwrite (never clears with blank latest).
   async function bulkSyncOneConnection(token, branchId, conn, consolidated, dateKey) {
-    const res = { scanned: 0, filled: 0, syncedRows: 0, syncedCells: 0, noCc: 0, skipped: 0 };
+    const res = { scanned: 0, filled: 0, syncedRows: 0, syncedCells: 0, overwrittenRows: 0, overwrittenCells: 0, noCc: 0, skipped: 0 };
     const lookups = effectiveLookups(conn);
     const writes = effectiveWrites(conn).filter(r =>
-      r.kind === 'feedback' || r.kind === 'validation' || r.kind === 'validator_name');
+      r.kind === 'feedback' || r.kind === 'validation' || r.kind === 'validator_name' ||
+      r.kind === 'consignment_status' || r.kind === 'action');
     if (!lookups.length || !writes.length) throw new Error('no lookup/write rule');
     const cidRule = lookups.find(r => r.kind === 'consignment');
     if (!cidRule) throw new Error('no consignment lookup — unclear which column to match on');
@@ -1539,22 +1557,27 @@
         if (!sheetCellIsDate(String(cell || '').trim(), dateKey)) { dateOk = false; break; }
       }
       if (!dateOk) continue;
-      // Blank check: at least one write cell empty → needs filling.
-      const blanks = writeLetters.filter(({ letter }) =>
-        String((writeCols.get(letter) || [])[i] || '').trim() === '');
-      if (!blanks.length) { res.filled++; continue; }
       const vals = consolidated.get(`${branchId}__${cid}`);
       if (!vals) { res.noCc++; continue; }
-      // Fill ONLY the blank cells (filled ones are never overwritten).
+      // Latest-wins: blank → fill + mismatch → overwrite (never clears with blank latest).
+      const needs = [];
+      for (const { rule, letter } of writeLetters) {
+        const cur = String((writeCols.get(letter) || [])[i] || '').trim();
+        const v = vals[rule.kind] != null ? String(vals[rule.kind]).trim() : '';
+        if (!v) continue; // never clear a cell with blank latest
+        if (cur !== v) needs.push({ rule, letter, v, isBlank: cur === '' });
+      }
+      if (!needs.length) { res.filled++; continue; }
       try {
-        for (const { rule, letter } of blanks) {
-          const v = vals[rule.kind] != null ? String(vals[rule.kind]) : '';
+        let filledInRow = 0, overwrittenInRow = 0;
+        for (const { letter, v, isBlank } of needs) {
           await sheetsWriteCell(token, conn.sheetId, tab, letter, i + 1, v);
           const col = writeCols.get(letter) || [];
           col[i] = v;
-          res.syncedCells++;
+          if (isBlank) { res.syncedCells++; filledInRow++; } else { res.overwrittenCells = (res.overwrittenCells || 0) + 1; overwrittenInRow++; }
         }
-        res.syncedRows++;
+        if (filledInRow) res.syncedRows++;
+        if (overwrittenInRow) res.overwrittenRows = (res.overwrittenRows || 0) + 1;
       } catch (e) {
         res.skipped++;
         console.warn('[DB CC Panel] bulk row write failed:', cid, e);
@@ -1579,7 +1602,7 @@
       if (!consolidated.size) throw new Error(`No CC remarks for ${dateLabel} in Supabase — nothing to write`);
       const { token, error } = await getSheetsToken();
       if (!token) throw new Error(error || 'No Sheets permission — re-login from the extension popup');
-      let totConns = 0, totScanned = 0, totFilled = 0, totRows = 0, totCells = 0, totNoCc = 0;
+      let totConns = 0, totScanned = 0, totFilled = 0, totRows = 0, totCells = 0, totOverRows = 0, totOverCells = 0, totNoCc = 0;
       const errs = [];
       // NEW all-in-one bindings (socket 🔌 + library) — fetchCcTargets scope
       // filter করেই দেয়; legacy conns-এর সাথে merge করে নিচে একসাথে চালাই।
@@ -1616,14 +1639,14 @@
           try {
             const r = await bulkSyncOneConnection(token, branchId, conn, consolidated, dateKey);
             totScanned += r.scanned; totFilled += r.filled;
-            totRows += r.syncedRows; totCells += r.syncedCells; totNoCc += r.noCc;
+            totRows += r.syncedRows; totCells += r.syncedCells; totOverRows += r.overwrittenRows || 0; totOverCells += r.overwrittenCells || 0; totNoCc += r.noCc;
           } catch (e) {
             errs.push(`${label}: ${e.message || 'sync failed'}`);
           }
         }
       }
       if (!totConns) throw new Error(`No remark connection in any branch for ${dateLabel} (check scope)`);
-      let msg = `✓ ${totRows} row synced (${totCells} cells) · ${totFilled} already filled · ${totNoCc} no CC yet · ${totScanned} sheet rows scanned (${totConns} connection)`;
+      let msg = `✓ ${totRows} row filled (${totCells} cells)` + (totOverRows ? ` · ${totOverRows} row updated (${totOverCells} cells overwritten)` : '') + ` · ${totFilled} already correct · ${totNoCc} no CC yet · ${totScanned} sheet rows scanned (${totConns} connection)`;
       if (errs.length) msg += ` · ⚠ ${errs.length} error: ${errs.slice(0, 2).join('; ')}${errs.length > 2 ? '…' : ''}`;
       bulkSay(msg);
       if (btn) btn.textContent = '✓ Done';
