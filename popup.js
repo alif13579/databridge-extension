@@ -3397,21 +3397,52 @@ async function generateHoldValidationReport({ skipRender = false } = {}) {
         const latestVerify = latestOf(workerVerifyRows);
         const latestOfAll = latestOf(g.rows);
         const stillPending = !lastCc || latestMs(latestVerify) > latestMs(lastCc);
+        // Name from join (report selects assigned/author) — fallback later via users lookup
+        const assignedName = (g.rows.find(r => r.assigned?.name)?.assigned?.name || latestOfAll.assigned?.name || firstWorker.assigned?.name || '').trim();
+        const validatorName = (lastCc?.author?.name || '').trim();
+        const validatorEmp = (lastCc?.author?.employee_id || '').trim();
         return {
           dateKey:   g.dateKey,
           dateLabel: dateKeyToDdMmYyyy(g.dateKey),
           branchId:  g.branchId,
           cId:       g.cId,
           agentSystemId:     g.rows[0].assigned_to_system_id,
+          agentName:         assignedName,
           customerPhone:     (latestOfAll.customer_phone || '').trim(),
           firstWorkerRemark: firstWorker.remarks || '',
           firstWorkerStatus: firstWorker.remarks_status || '',
           lastCcRemark:      lastCc ? (lastCc.remarks || '') : '',
           lastCcNote:        lastCc ? (lastCc.note || '') : '',
           lastCcStatus:      lastCc ? (lastCc.remarks_status || '') : '',
-          validatorEmployeeId: lastCc ? (lastCc.author?.employee_id || lastCc.author_system_id || '') : '',
+          validatorSystemId: lastCc ? (lastCc.author_system_id || '') : '',
+          validatorName:     validatorName,
+          validatorEmployeeId: validatorEmp || (lastCc ? (lastCc.author_system_id || '') : ''),
           stillPending,
         };
+      });
+      // Fallback: Edge join miss হলে system_id → name users table থেকে আনো
+      const needAgentIds = [...new Set(summaryRows.filter(r => !r.agentName && r.agentSystemId).map(r => r.agentSystemId))];
+      const needValidatorIds = [...new Set(summaryRows.filter(r => !r.validatorName && r.validatorSystemId).map(r => r.validatorSystemId))];
+      const needAll = [...new Set([...needAgentIds, ...needValidatorIds])];
+      if (needAll.length) {
+        try {
+          const nameMap = await fetchUserNamesBySystemIds(idToken, needAll);
+          summaryRows.forEach(r => {
+            if (!r.agentName && r.agentSystemId) {
+              const hit = nameMap.get(r.agentSystemId);
+              if (hit?.name) r.agentName = hit.name;
+            }
+            if (!r.validatorName && r.validatorSystemId) {
+              const hit = nameMap.get(r.validatorSystemId);
+              if (hit?.name) { r.validatorName = hit.name; if (!r.validatorEmployeeId && hit.empId) r.validatorEmployeeId = hit.empId; }
+            }
+          });
+        } catch (e) { console.warn('[DB] HV summary name fallback failed:', e); }
+      }
+      // Final UI fallback: still no name → show systemId/employeeId itself so row never blanks
+      summaryRows.forEach(r => {
+        if (!r.agentName) r.agentName = r.agentSystemId || '—';
+        if (r.validatorSystemId && !r.validatorName) r.validatorName = r.validatorEmployeeId || r.validatorSystemId;
       });
       summaryRows.sort((a, b) => a.dateKey === b.dateKey ? a.cId.localeCompare(b.cId) : a.dateKey.localeCompare(b.dateKey));
       hvReportRows = summaryRows;
@@ -3423,6 +3454,8 @@ async function generateHoldValidationReport({ skipRender = false } = {}) {
       const detailRows = [];
       validGroups.forEach(g => {
         g.rows.slice().sort((a, b) => latestMs(a) - latestMs(b)).forEach(r => {
+          const aName = (r.assigned?.name || '').trim();
+          const authName = (r.author?.name || '').trim();
           detailRows.push({
             dateKey:   g.dateKey,
             dateLabel: dateKeyToDdMmYyyy(g.dateKey),
@@ -3430,6 +3463,10 @@ async function generateHoldValidationReport({ skipRender = false } = {}) {
             branchId:  g.branchId,
             cId:       g.cId,
             agentSystemId: r.assigned_to_system_id,
+            agentName:     aName,
+            authorSystemId: r.author_system_id || '',
+            authorName:    authName,
+            authorEmployeeId: (r.author?.employee_id || '').trim(),
             source:  r.source,
             remark:  r.remarks || '',
             note:    r.note || '',
@@ -3437,6 +3474,38 @@ async function generateHoldValidationReport({ skipRender = false } = {}) {
           });
         });
       });
+      const needDetailIds = [...new Set(detailRows.flatMap(r => {
+        const out = [];
+        if (!r.agentName && r.agentSystemId) out.push(r.agentSystemId);
+        if (!r.authorName && r.authorSystemId) out.push(r.authorSystemId);
+        return out;
+      }))];
+      if (needDetailIds.length) {
+        try {
+          const nameMap = await fetchUserNamesBySystemIds(idToken, needDetailIds);
+          detailRows.forEach(r => {
+            if (!r.agentName && r.agentSystemId) {
+              const hit = nameMap.get(r.agentSystemId);
+              if (hit?.name) r.agentName = hit.name;
+            }
+            if (!r.authorName && r.authorSystemId) {
+              const hit = nameMap.get(r.authorSystemId);
+              if (hit?.name) r.authorName = hit.name;
+              if (!r.authorEmployeeId) {
+                const h2 = nameMap.get(r.authorSystemId);
+                if (h2?.empId) r.authorEmployeeId = h2.empId;
+              }
+            }
+            if (!r.agentName) r.agentName = r.agentSystemId || '—';
+            if (r.authorSystemId && !r.authorName) r.authorName = r.authorEmployeeId || r.authorSystemId;
+          });
+        } catch (e) { console.warn('[DB] HV details name fallback failed:', e); }
+      } else {
+        detailRows.forEach(r => {
+          if (!r.agentName) r.agentName = r.agentSystemId || '—';
+          if (r.authorSystemId && !r.authorName) r.authorName = r.authorEmployeeId || r.authorSystemId;
+        });
+      }
       detailRows.sort((a, b) => {
         if (a.dateKey !== b.dateKey) return a.dateKey.localeCompare(b.dateKey);
         if (a.cId !== b.cId) return a.cId.localeCompare(b.cId);
@@ -3498,17 +3567,30 @@ function renderHvReportSummary(reportEl) {
     const badge = r.stillPending
       ? '<span class="dash-hv-badge dash-hv-badge-pending">⏳ Pending</span>'
       : '<span class="dash-hv-badge dash-hv-badge-validated">✓ Validated</span>';
+    const agentDisplay = r.agentName || r.agentSystemId || '—';
+    const validatorDisplay = r.validatorName || r.validatorEmployeeId || '';
     return `
       <div class="dash-hv-row ${r.stillPending ? 'dash-hv-row-pending' : 'dash-hv-row-validated'}">
         <div class="dash-hv-row-top">
           <span class="dash-hv-row-id">${escapeHtml(r.cId)}</span>
           <span>${r.dateLabel}</span>
         </div>
-        <div class="dash-hv-row-meta">${escapeHtml(ccBranchNames[r.branchId] || r.branchId)} · ${escapeHtml(r.agentSystemId || '—')}</div>
-        <div class="dash-hv-row-remark">🙋 ${escapeHtml(r.firstWorkerRemark || '(no remark)')}${r.firstWorkerStatus ? ' — ' + escapeHtml(r.firstWorkerStatus) : ''}</div>
-        ${r.lastCcRemark ? `<div class="dash-hv-row-resolution">↳ ${escapeHtml(r.lastCcRemark)}${r.lastCcStatus ? ' — ' + escapeHtml(r.lastCcStatus) : ''}</div>` : ''}
-        ${r.lastCcNote ? `<div class="dash-hv-row-meta">↳ 📝 ${escapeHtml(r.lastCcNote)}</div>` : ''}
-        ${r.validatorEmployeeId ? `<div class="dash-hv-row-meta">↳ 👤 ${escapeHtml(r.validatorEmployeeId)}</div>` : ''}
+        <div class="dash-hv-row-meta">${escapeHtml(ccBranchNames[r.branchId] || r.branchId)} · 👤 ${escapeHtml(agentDisplay)}</div>
+        <div class="dash-hv-chat">
+          <div class="dash-hv-bubble dash-hv-bubble-worker">
+            <div class="dash-hv-bubble-label">🙋 ${escapeHtml(agentDisplay)}${r.firstWorkerStatus ? ' · ' + escapeHtml(r.firstWorkerStatus) : ''}</div>
+            <div class="dash-hv-bubble-text">${escapeHtml(r.firstWorkerRemark || '(no remark)')}</div>
+          </div>
+          ${r.stillPending
+            ? `<div class="dash-hv-bubble dash-hv-bubble-pending">⏳ Awaiting CC reply…</div>`
+            : `<div class="dash-hv-bubble dash-hv-bubble-cc">
+                <div class="dash-hv-bubble-label">✓ ${escapeHtml(validatorDisplay || 'CC')}${r.lastCcStatus ? ' · ' + escapeHtml(r.lastCcStatus) : ''}</div>
+                ${r.lastCcRemark ? `<div class="dash-hv-bubble-text">${escapeHtml(r.lastCcRemark)}</div>` : `<div class="dash-hv-bubble-text" style="opacity:.65">(no CC text)</div>`}
+                ${r.lastCcNote ? `<div class="dash-hv-bubble-note">📝 ${escapeHtml(r.lastCcNote)}</div>` : ''}
+                ${validatorDisplay ? `<div class="dash-hv-bubble-meta">👤 ${escapeHtml(validatorDisplay)}${r.validatorEmployeeId && r.validatorEmployeeId !== validatorDisplay ? ' · ' + escapeHtml(r.validatorEmployeeId) : ''}</div>` : ''}
+              </div>`
+          }
+        </div>
         <div class="dash-hv-row-badge-line">
           ${badge}
           ${r.customerPhone ? `<button type="button" class="dash-hv-call-btn" data-phone="${escapeHtml(r.customerPhone)}">📞 Call</button>` : ''}
@@ -3702,24 +3784,32 @@ async function toggleHvRemarkSection(reportEl, sorted, idx) {
 }
 
 /** One card per raw remark, chronological within each (date, consignment) —
- *  the unconsolidated breakdown Summary's rows are built from. Reuses the
- *  pending/validated colour classes to mean Worker/CC instead (orange =
- *  request, green = response) rather than adding new CSS for it. */
+ *  the unconsolidated breakdown Summary's rows are built from. Now as chat
+ *  bubbles — Worker left (orange), CC right (green) so conversation is obvious. */
 function renderHvReportDetails(reportEl) {
   const rowsHtml = hvReportRows.map(r => {
     const isWorker = r.source === 'WORKER';
     const badge = isWorker
       ? '<span class="dash-hv-badge dash-hv-badge-pending">🙋 Worker</span>'
       : '<span class="dash-hv-badge dash-hv-badge-validated">📞 CC</span>';
+    const agentDisplay = r.agentName || r.agentSystemId || '—';
+    const authorDisplay = isWorker ? (r.agentName || r.authorName || r.agentSystemId || '—')
+                        : (r.authorName || r.authorEmployeeId || r.authorSystemId || '—');
     return `
       <div class="dash-hv-row ${isWorker ? 'dash-hv-row-pending' : 'dash-hv-row-validated'}">
         <div class="dash-hv-row-top">
           <span class="dash-hv-row-id">${escapeHtml(r.cId)}</span>
           <span>${r.dateLabel} · ${r.timeLabel}</span>
         </div>
-        <div class="dash-hv-row-meta">${escapeHtml(ccBranchNames[r.branchId] || r.branchId)} · ${escapeHtml(r.agentSystemId || '—')} ${badge}</div>
-        <div class="dash-hv-row-remark">${escapeHtml(r.remark || '(no remark)')}${r.status ? ' — ' + escapeHtml(r.status) : ''}</div>
-        ${r.note ? `<div class="dash-hv-row-meta">📝 ${escapeHtml(r.note)}</div>` : ''}
+        <div class="dash-hv-row-meta">${escapeHtml(ccBranchNames[r.branchId] || r.branchId)} · 👤 ${escapeHtml(agentDisplay)} ${badge}</div>
+        <div class="dash-hv-chat">
+          <div class="dash-hv-bubble ${isWorker ? 'dash-hv-bubble-worker' : 'dash-hv-bubble-cc'}">
+            <div class="dash-hv-bubble-label">${isWorker ? '🙋' : '✓'} ${escapeHtml(authorDisplay)}${r.status ? ' · ' + escapeHtml(r.status) : ''}</div>
+            <div class="dash-hv-bubble-text">${escapeHtml(r.remark || '(no remark)')}</div>
+            ${r.note ? `<div class="dash-hv-bubble-note">📝 ${escapeHtml(r.note)}</div>` : ''}
+            <div class="dash-hv-bubble-meta">${escapeHtml(r.timeLabel)}${!isWorker && r.authorEmployeeId && r.authorEmployeeId !== authorDisplay ? ' · ' + escapeHtml(r.authorEmployeeId) : ''}</div>
+          </div>
+        </div>
       </div>`;
   }).join('');
 
@@ -3758,10 +3848,10 @@ function downloadHvReport() {
   const toInput   = document.getElementById('dash-hv-to');
 
   const csvRows = hvReportMode === 'summary'
-    ? [['Date', 'Branch', 'Consignment ID', 'Agent System ID', 'Validator Employee ID',
+    ? [['Date', 'Branch', 'Consignment ID', 'Agent Name', 'Agent System ID', 'Validator Name', 'Validator Employee ID',
         'First Worker Remark', 'First Worker Remark Status',
         'Last CC Remark', 'Last CC Note', 'Last CC Remark Status', 'Validation Status']]
-    : [['Date', 'Time', 'Branch', 'Consignment ID', 'Agent System ID', 'Source', 'Remark', 'Note', 'Remark Status']];
+    : [['Date', 'Time', 'Branch', 'Consignment ID', 'Agent Name', 'Agent System ID', 'Author Name', 'Author System ID', 'Source', 'Remark', 'Note', 'Remark Status']];
 
   hvReportRows.forEach(r => {
     if (hvReportMode === 'summary') {
@@ -3769,7 +3859,9 @@ function downloadHvReport() {
         dateKeyToMmDdYyyy(r.dateKey),
         ccBranchNames[r.branchId] || r.branchId,
         r.cId,
+        r.agentName || '',
         r.agentSystemId || '',
+        r.validatorName || '',
         r.validatorEmployeeId || '',
         r.firstWorkerRemark || '',
         r.firstWorkerStatus || '',
@@ -3784,7 +3876,10 @@ function downloadHvReport() {
         r.timeLabel,
         ccBranchNames[r.branchId] || r.branchId,
         r.cId,
+        r.agentName || '',
         r.agentSystemId || '',
+        r.authorName || '',
+        r.authorSystemId || '',
         r.source === 'WORKER' ? 'Worker' : 'CC',
         r.remark || '',
         r.note || '',

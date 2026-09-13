@@ -976,6 +976,30 @@ input:checked + .toggle-slider:before { transform: translateX(14px); }
 .dash-hv-badge-pending   { background: #ffaa0018; color: #ffaa00; }
 .dash-hv-badge-validated { background: #00ff8818; color: #00ff88; }
 
+.dash-hv-chat { display: flex; flex-direction: column; gap: 6px; margin-top: 6px; }
+.dash-hv-bubble {
+  max-width: 86%; padding: 7px 10px; border-radius: 14px;
+  font-size: 11px; line-height: 1.45; word-break: break-word;
+  box-shadow: 0 1px 1px rgba(0,0,0,.12); position: relative;
+}
+.dash-hv-bubble-worker {
+  align-self: flex-start; background: #0d1b2e; border: 1px solid #1e3a5f; color: #c9d8ec;
+  border-bottom-left-radius: 4px;
+}
+.dash-hv-bubble-cc {
+  align-self: flex-end; background: #00ff8814; border: 1px solid #00ff8840; color: #c9d8ec;
+  border-bottom-right-radius: 4px;
+}
+.dash-hv-bubble-pending {
+  align-self: center; background: #ffaa0014; border: 1px dashed #ffaa0040; color: #ffaa00;
+  border-radius: 10px; font-size: 10px; padding: 5px 10px; max-width: 80%; text-align: center;
+}
+.dash-hv-bubble-label { font-size: 9px; font-weight: 700; opacity: .85; margin-bottom: 3px; letter-spacing: .2px; }
+.dash-hv-bubble-text { white-space: pre-wrap; }
+.dash-hv-bubble-note { margin-top: 4px; font-size: 10px; opacity: .9; border-top: 1px dashed rgba(255,255,255,.12); padding-top: 4px; }
+.dash-hv-bubble-meta { margin-top: 4px; font-size: 8px; opacity: .6; text-align: right; }
+.dash-hv-chat-detail { margin-top: 4px; }
+
 .dash-hv-download-btn { margin-top: 8px; }
 
 /* ══════════════════════════════════════════════════════════════
@@ -1131,6 +1155,10 @@ html[data-theme="light"] .dash-hv-save-btn { background: #16a34a; color: #fff; }
 html[data-theme="light"] .dash-hv-cancel-btn { color: #64748b; border-color: #cbd5e1; }
 html[data-theme="light"] .dash-hv-status { color: #64748b; }
 html[data-theme="light"] .dash-hv-badge-pending { background: #fef3c7; color: #92400e; }
+html[data-theme="light"] .dash-hv-bubble-worker { background: #f8fafc; border-color: #e2e8f0; color: #334155; }
+html[data-theme="light"] .dash-hv-bubble-cc { background: #dcfce7; border-color: #86efac; color: #14532d; }
+html[data-theme="light"] .dash-hv-bubble-pending { background: #fef3c7; border-color: #fcd34d; color: #92400e; }
+html[data-theme="light"] .dash-hv-bubble-note { border-top-color: #e2e8f0; }
 html[data-theme="light"] .dash-hv-badge-validated { background: #dcfce7; color: #15803d; }
 
 /* ── Routing Approval (demo) ── */

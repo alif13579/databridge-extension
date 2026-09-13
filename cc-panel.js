@@ -124,14 +124,77 @@
     return rows;
   }
 
+  // users table theke system_id → {name, empId} (Edge join miss hole fallback).
+  async function fetchCcUserNames(idToken, systemIds) {
+    const map = new Map();
+    const ids = [...new Set((systemIds || []).filter(s => s && s !== '—'))];
+    if (!ids.length) return map;
+    for (let i = 0; i < ids.length; i += 200) {
+      const ch = ids.slice(i, i + 200);
+      try {
+        const res = await fetch(`${SUPABASE_URL}/rest/v1/users?select=system_id,name,employee_id&system_id=in.(${ch.map(encodeURIComponent).join(',')})`, {
+          headers: { 'apikey': SUPABASE_ANON_KEY, 'Authorization': `Bearer ${idToken}`, 'Accept': 'application/json' },
+        });
+        if (!res.ok) continue;
+        const arr = await res.json().catch(() => []);
+        (Array.isArray(arr) ? arr : []).forEach(u => {
+          if (u.system_id) map.set(u.system_id, { name: (u.name || '').trim(), empId: (u.employee_id || '').trim() });
+        });
+      } catch (e) { console.warn('[DB CC Panel] users lookup failed:', e); }
+    }
+    return map;
+  }
+
+  // Join theke name fill — miss hole users fallback, tarporo na pele systemId (kokhono blank na).
+  async function fillCcCardNames(idToken, cards) {
+    const need = new Set();
+    cards.forEach(c => {
+      if (!c.agentName && c.agentSystemId) need.add(c.agentSystemId);
+      if (!c.validatorName && c.validatorSystemId) need.add(c.validatorSystemId);
+      (c.trail || []).forEach(t => {
+        if (!t.authorName && t.authorSystemId) need.add(t.authorSystemId);
+      });
+    });
+    if (need.size) {
+      try {
+        const nameMap = await fetchCcUserNames(idToken, [...need]);
+        cards.forEach(c => {
+          if (!c.agentName && c.agentSystemId) {
+            const hit = nameMap.get(c.agentSystemId);
+            if (hit?.name) c.agentName = hit.name;
+          }
+          if (!c.validatorName && c.validatorSystemId) {
+            const hit = nameMap.get(c.validatorSystemId);
+            if (hit?.name) { c.validatorName = hit.name; if (!c.validatorEmployeeId && hit.empId) c.validatorEmployeeId = hit.empId; }
+          }
+          (c.trail || []).forEach(t => {
+            if (!t.authorName && t.authorSystemId) {
+              const hit = nameMap.get(t.authorSystemId);
+              if (hit?.name) t.authorName = hit.name;
+              if (!t.authorEmployeeId && hit?.empId) t.authorEmployeeId = hit.empId;
+            }
+          });
+        });
+      } catch (e) { console.warn('[DB CC Panel] name fallback failed:', e); }
+    }
+    cards.forEach(c => {
+      if (!c.agentName) c.agentName = c.agentSystemId || '—';
+      if (c.validatorSystemId && !c.validatorName) c.validatorName = c.validatorEmployeeId || c.validatorSystemId;
+      (c.trail || []).forEach(t => {
+        if (t.authorSystemId && !t.authorName) t.authorName = t.authorEmployeeId || t.authorSystemId;
+      });
+    });
+  }
+
   // Live card-er jonno nirdisto ID-gulor validations (app buildLiveParcels-er moto).
+  // author/assigned join soho — name display-er jonno lage.
   async function fetchValidationsByIds(ids, idToken) {
     const uniq = [...new Set((ids || []).map(String).map(s => s.trim()).filter(Boolean))];
     const out = [];
     for (let i = 0; i < uniq.length; i += 200) {
       const ch = uniq.slice(i, i + 200);
       const res = await fetch(`${SUPABASE_URL}/rest/v1/validations` +
-        `?select=consignment,branch_id,assigned_to_system_id,source,remarks_status,remarks,note,customer_phone,created_at` +
+        `?select=consignment,branch_id,assigned_to_system_id,author_system_id,source,remarks_status,remarks,note,customer_phone,created_at,author:users!validations_author_system_id_fkey(name,employee_id),assigned:users!validations_assigned_to_system_id_fkey(name,employee_id)` +
         `&consignment=in.(${ch.map(encodeURIComponent).join(',')})` +
         `&order=created_at.desc`, {
         headers: { 'apikey': SUPABASE_ANON_KEY, 'Authorization': `Bearer ${idToken}`, 'Accept': 'application/json' },
@@ -307,6 +370,30 @@
         border-radius: 4px; padding: 2px 8px; font-size: 11px; font-weight: 700; cursor: pointer;
       }
       .db-cc-sheets-switch:hover { background: #f1f5f9; }
+      .db-cc-chat { display: flex; flex-direction: column; gap: 5px; margin-top: 5px; }
+      .db-cc-bubble {
+        max-width: 86%; padding: 6px 9px; border-radius: 12px;
+        font-size: 11px; line-height: 1.4; word-break: break-word;
+        box-shadow: 0 1px 1px rgba(0,0,0,.07);
+      }
+      .db-cc-bubble-worker {
+        align-self: flex-start; background: #fff; border: 1px solid #e2e8f0;
+        color: #334155; border-bottom-left-radius: 4px;
+      }
+      .db-cc-bubble-cc {
+        align-self: flex-end; background: #dcfce7; border: 1px solid #86efac;
+        color: #14532d; border-bottom-right-radius: 4px;
+      }
+      .db-cc-bubble-pending {
+        align-self: center; background: #fef3c7; border: 1px dashed #fcd34d;
+        color: #92400e; border-radius: 8px; font-size: 10px; text-align: center; max-width: 78%;
+      }
+      .db-cc-bubble-label { font-size: 9px; font-weight: 700; opacity: .75; margin-bottom: 2px; }
+      .db-cc-bubble-text { white-space: pre-wrap; }
+      .db-cc-bubble-note { margin-top: 3px; font-size: 10px; opacity: .85; border-top: 1px dashed rgba(0,0,0,.1); padding-top: 3px; }
+      .db-cc-bubble-meta { margin-top: 3px; font-size: 8px; opacity: .55; text-align: right; }
+      .db-cc-hist-chat { display: flex; flex-direction: column; gap: 4px; }
+      .db-cc-hist-bubble { max-width: 88%; padding: 5px 8px; border-radius: 10px; font-size: 10px; }
       /* Narrow viewports (<720px): 340px panel would overflow — shrink + pin to edge */
       @media (max-width: 720px) {
         #db-cc-panel { width: calc(100vw - 16px) !important; min-width: 0 !important; right: 8px !important; }
@@ -624,8 +711,10 @@
       const latestVerify = latestOf(workerVerifyRows);
       const latestOfAll = latestOf(g.rows);
       const stillPending = !lastCc || latestMs(latestVerify) > latestMs(lastCc);
+      const agentName = (g.rows.find(r => r.assigned?.name)?.assigned?.name || latestOfAll.assigned?.name || firstWorker.assigned?.name || '').trim();
+      const validatorName = (lastCc?.author?.name || '').trim();
       // Full chronological trail for the expandable history (already in memory —
-      // no extra fetch). Same fields the dashboard Details mode renders.
+      // no extra fetch). Now with author names for chat bubbles.
       const trail = g.rows.slice().sort((a, b) => latestMs(a) - latestMs(b)).map(r => ({
         source:  r.source || '',
         remark:  r.remarks || '',
@@ -633,15 +722,25 @@
         status:  r.remarks_status || '',
         created: r.created_at || '',
         author:  (r.author && r.author.employee_id) || r.author_system_id || '',
+        authorName: (r.author?.name || '').trim(),
+        authorSystemId: r.author_system_id || '',
+        authorEmployeeId: (r.author?.employee_id || '').trim(),
       }));
       return {
         dateLabel: dateKeyToDdMmYyyy(g.dateKey),
         branchId:  g.branchId,
         cId:       g.cId,
         agentSystemId: (g.rows[0] && g.rows[0].assigned_to_system_id) || '',
+        agentName,
+        validatorName,
+        validatorSystemId: lastCc ? (lastCc.author_system_id || '') : '',
+        validatorEmployeeId: lastCc ? ((lastCc.author?.employee_id || '').trim() || lastCc.author_system_id || '') : '',
         customerPhone:     (latestOfAll.customer_phone || '').trim(),
         firstWorkerRemark: firstWorker.remarks || firstWorker.note || '',
+        firstWorkerStatus: firstWorker.remarks_status || '',
         lastCcRemark:      lastCc ? (lastCc.remarks || lastCc.note || '') : '',
+        lastCcStatus:      lastCc ? (lastCc.remarks_status || '') : '',
+        lastCcNote:        lastCc ? (lastCc.note || '') : '',
         stillPending,
         trail,
       };
@@ -663,18 +762,30 @@
         const ccRows = rows.filter(r => r.source === 'CC');
         const firstWorker = workerRows.length ? workerRows[0] : null;
         const lastCc = ccRows.length ? ccRows[ccRows.length - 1] : null;
+        const agentName = (latest?.assigned?.name || rows.find(r => r.assigned?.name)?.assigned?.name || '').trim();
+        const validatorName = (lastCc?.author?.name || '').trim();
         cards.push({
           dateLabel, branchId, cId,
           agentSystemId: latest ? (latest.assigned_to_system_id || '') : '',
+          agentName,
+          validatorName,
+          validatorSystemId: lastCc ? (lastCc.author_system_id || '') : '',
+          validatorEmployeeId: lastCc ? ((lastCc.author?.employee_id || '').trim() || lastCc.author_system_id || '') : '',
           customerPhone: latest ? (latest.customer_phone || '').trim() : '',
           firstWorkerRemark: firstWorker ? (firstWorker.remarks || firstWorker.note || '') : '',
+          firstWorkerStatus: firstWorker ? (firstWorker.remarks_status || '') : '',
           lastCcRemark: lastCc ? (lastCc.remarks || lastCc.note || '') : '',
+          lastCcStatus: lastCc ? (lastCc.remarks_status || '') : '',
+          lastCcNote: lastCc ? (lastCc.note || '') : '',
           stillPending: latest ? latest.source === 'WORKER' : false,
           noActivity: !rows.length,
           trail: rows.map(r => ({
             source: r.source || '', remark: r.remarks || '', note: r.note || '',
             status: r.remarks_status || '', created: r.created_at || '',
             author: r.author_system_id || '',
+            authorName: (r.author?.name || '').trim(),
+            authorSystemId: r.author_system_id || '',
+            authorEmployeeId: (r.author?.employee_id || '').trim(),
           })),
         });
       });
@@ -694,7 +805,28 @@
 
     const visible = filtered.slice(0, ccVisibleCount);
     const hiddenCount = filtered.length - visible.length;
-    const rowsHtml = visible.length ? visible.map((r, idx) => `
+    const rowsHtml = visible.length ? visible.map((r, idx) => {
+      const agentDisplay = r.agentName || r.agentSystemId || '—';
+      const validatorDisplay = r.validatorName || r.validatorEmployeeId || '';
+      let chatHtml = '';
+      if (r.noActivity) {
+        chatHtml = `<div class="db-cc-chat"><div class="db-cc-bubble db-cc-bubble-pending">➖ No activity on this ID today</div></div>`;
+      } else {
+        const workerBubble = `<div class="db-cc-bubble db-cc-bubble-worker">
+            <div class="db-cc-bubble-label">🙋 ${escapeHtml(agentDisplay)}${r.firstWorkerStatus ? ' · ' + escapeHtml(r.firstWorkerStatus) : ''}</div>
+            <div class="db-cc-bubble-text">${escapeHtml(r.firstWorkerRemark || '(no note)')}</div>
+          </div>`;
+        const ccBubble = r.stillPending
+          ? `<div class="db-cc-bubble db-cc-bubble-pending">⏳ Awaiting CC reply…</div>`
+          : `<div class="db-cc-bubble db-cc-bubble-cc">
+              <div class="db-cc-bubble-label">✓ ${escapeHtml(validatorDisplay || 'CC')}${r.lastCcStatus ? ' · ' + escapeHtml(r.lastCcStatus) : ''}</div>
+              ${r.lastCcRemark ? `<div class="db-cc-bubble-text">${escapeHtml(r.lastCcRemark)}</div>` : `<div class="db-cc-bubble-text" style="opacity:.6">(no CC text)</div>`}
+              ${r.lastCcNote ? `<div class="db-cc-bubble-note">📝 ${escapeHtml(r.lastCcNote)}</div>` : ''}
+              ${validatorDisplay ? `<div class="db-cc-bubble-meta">👤 ${escapeHtml(validatorDisplay)}${r.validatorEmployeeId && r.validatorEmployeeId !== validatorDisplay ? ' · ' + escapeHtml(r.validatorEmployeeId) : ''}</div>` : ''}
+            </div>`;
+        chatHtml = `<div class="db-cc-chat">${workerBubble}${ccBubble}</div>`;
+      }
+      return `
       <div class="db-cc-row ${r.stillPending ? 'db-cc-row-pending' : (r.noActivity ? 'db-cc-row-none' : 'db-cc-row-validated')}">
         <div class="db-cc-row-top">
           <span>${escapeHtml(r.cId)}</span>
@@ -702,8 +834,8 @@
         </div>
         ${r.customerName ? `<div class="db-cc-row-meta">👤 ${escapeHtml(r.customerName)}${r.codAmount ? ` • ${escapeHtml(fmtTaka(r.codAmount))}` : ''}</div>` : (r.codAmount ? `<div class="db-cc-row-meta">${escapeHtml(fmtTaka(r.codAmount))}</div>` : '')}
         ${r.address ? `<div class="db-cc-row-meta">📍 ${escapeHtml(r.address)}</div>` : ''}
-        <div class="db-cc-row-remark">🙋 ${escapeHtml(r.firstWorkerRemark || '(no note)')}</div>
-        ${r.lastCcRemark ? `<div class="db-cc-row-remark">↳ ${escapeHtml(r.lastCcRemark)}</div>` : ''}
+        <div class="db-cc-row-meta">👤 ${escapeHtml(agentDisplay)}${!r.noActivity && validatorDisplay ? ' → ✓ ' + escapeHtml(validatorDisplay) : ''}</div>
+        ${chatHtml}
         <div class="db-cc-row-bottom">
           <span class="db-cc-badge ${r.stillPending ? 'db-cc-badge-pending' : (r.noActivity ? 'db-cc-badge-none' : 'db-cc-badge-validated')}">
             ${r.stillPending ? '⏳ Pending' : (r.noActivity ? '➖ No activity' : '✓ Validated')}
@@ -716,7 +848,8 @@
         </div>
         <div class="db-cc-hist-section" data-idx="${idx}" style="display:none"></div>
         <div class="db-cc-remark-section" data-idx="${idx}" style="display:none"></div>
-      </div>`).join('') : `<div class="db-cc-status">${escapeHtml(!summaryRows.length && ccLiveNote ? ccLiveNote : 'No entries for this filter')}</div>`;
+      </div>`;
+    }).join('') : `<div class="db-cc-status">${escapeHtml(!summaryRows.length && ccLiveNote ? ccLiveNote : 'No entries for this filter')}</div>`;
 
     bodyEl.innerHTML = `
       <div class="db-cc-summary">
@@ -776,8 +909,8 @@
     } catch { return ''; }
   }
 
-  // Expandable full trail (every WORKER request + CC response, chronological) —
-  // the rows are already in memory from the report fetch, no extra request.
+  // Expandable full trail — chat bubbles: Worker left (orange), CC right (green).
+  // Rows already in memory, no extra request. Name > employeeId > systemId.
   function toggleCcHistory(bodyEl, rows, idx, btn) {
     const r = rows[idx];
     const section = bodyEl.querySelector(`.db-cc-hist-section[data-idx="${idx}"]`);
@@ -789,15 +922,19 @@
     }
     section.style.display = '';
     btn.textContent = `▲ History (${r.trail.length})`;
-    section.innerHTML = r.trail.length ? r.trail.map(t => {
-      const who = t.source === 'CC' ? '↳ CC' : '🙋 Worker';
-      const cls = t.source === 'CC' ? 'db-cc-hist-cc' : 'db-cc-hist-worker';
-      const txt = [t.remark, t.note ? `📝 ${t.note}` : ''].filter(Boolean).join(' — ') || '(no text)';
-      return `<div class="db-cc-hist-entry ${cls}">
-        <div class="db-cc-hist-head"><span>${who}${t.author ? ' · ' + escapeHtml(t.author) : ''}</span><span>${escapeHtml(fmtHhMm(t.created))}</span></div>
-        <div>${escapeHtml(txt)}${t.status ? ` <span class="db-cc-hist-status">[${escapeHtml(t.status)}]</span>` : ''}</div>
+    section.innerHTML = r.trail.length ? `<div class="db-cc-hist-chat">` + r.trail.map(t => {
+      const isCc = t.source === 'CC';
+      const who = t.authorName || t.authorEmployeeId || t.author || (isCc ? 'CC' : 'Worker');
+      const bubbleCls = isCc ? 'db-cc-bubble-cc' : 'db-cc-bubble-worker';
+      const icon = isCc ? '✓' : '🙋';
+      const txt = (t.remark || '').trim() || '(no text)';
+      return `<div class="db-cc-bubble db-cc-hist-bubble ${bubbleCls}">
+        <div class="db-cc-bubble-label">${icon} ${escapeHtml(who)}${t.status ? ' · ' + escapeHtml(t.status) : ''}</div>
+        <div class="db-cc-bubble-text">${escapeHtml(txt)}</div>
+        ${t.note ? `<div class="db-cc-bubble-note">📝 ${escapeHtml(t.note)}</div>` : ''}
+        <div class="db-cc-bubble-meta">${escapeHtml(fmtHhMm(t.created))}${isCc && t.authorEmployeeId && t.authorEmployeeId !== who ? ' · ' + escapeHtml(t.authorEmployeeId) : ''}</div>
       </div>`;
-    }).join('') : '<div class="db-cc-status">No history</div>';
+    }).join('') + `</div>` : '<div class="db-cc-status">No history</div>';
   }
 
   // CC remark options catalog (ported from popup.js fetchCcDashboardRemarkOptions).
@@ -1009,6 +1146,7 @@
           if (ccMode === 'live') summaryRows = [];
         }
       }
+      await fillCcCardNames(idToken, summaryRows);
       ccVisibleCount = CC_RENDER_LIMIT;
       ccBranchNamesCache = branchNames;
       ccBranchIdsCache = branchIds.slice();
