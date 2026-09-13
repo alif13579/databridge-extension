@@ -3919,18 +3919,27 @@ async function generateTeamPerformanceReport() {
     // ── Mode table ──
     let modeRows;
     if (mode === 'team') {
-      // CC agent-wise, vote-once: প্রতি consignment-এর latest CC row তার
-      // author (CC agent)-কে একটা vote দেয় — কে কত hold verify করলো।
+      // CC agent-wise, per (consignment, author) deduped: 2jon incharge same consignment-এ
+      // kaj korle dujon-e 1 kore pabe (latest win na), kintu same incharge oi
+      // consignment-e 10bar korleo 1bar count (per author per consignment once).
+      const perAuthorLatest = {};
+      ccRows.forEach(r => {
+        const author = r.author_system_id || '—';
+        const key = `${r.consignment}__${author}`;
+        const prev = perAuthorLatest[key];
+        if (!prev || latestMs(r) > latestMs(prev)) perAuthorLatest[key] = r;
+      });
       const groups = {};
-      Object.values(byConsignment).forEach(rows => {
-        const latest = rows.reduce((a, b) => latestMs(a) >= latestMs(b) ? a : b);
-        const agentId = latest.author_system_id || '—';
+      Object.values(perAuthorLatest).forEach(row => {
+        const agentId = row.author_system_id || '—';
         const g = groups[agentId] ||= {
-          agentId, agentName: latest.author?.name || '', agentEmpId: latest.author?.employee_id || '',
+          agentId, agentName: row.author?.name || '', agentEmpId: row.author?.employee_id || '',
           total: 0, delivery_request: 0, hold_verified: 0, return_verified: 0, other: 0,
         };
+        // Keep first observed name if later row has empty join
+        if (!g.agentName && row.author?.name) { g.agentName = row.author.name; g.agentEmpId = row.author?.employee_id || ''; }
         g.total++;
-        const key = statusKeyOf(latest);
+        const key = statusKeyOf(row);
         if (key in counts) g[key]++; else g.other++;
       });
       const missing = Object.values(groups).filter(g => !g.agentName && g.agentId !== '—').map(g => g.agentId);
