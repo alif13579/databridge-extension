@@ -293,6 +293,20 @@
         border-radius: 6px; padding: 7px; font-size: 11px; font-weight: 700; cursor: pointer;
         margin: 2px 0 6px;
       }
+      .db-cc-sheets-acct {
+        display: flex; align-items: center; gap: 6px;
+        padding: 4px 10px; font-size: 11px; color: #334155; background: #f8fafc;
+        border-bottom: 1px solid #e2e8f0;
+      }
+      .db-cc-sheets-email {
+        flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+        font-weight: 600; color: #1e293b;
+      }
+      .db-cc-sheets-switch {
+        background: #fff; color: #334155; border: 1px solid #cbd5e1;
+        border-radius: 4px; padding: 2px 8px; font-size: 11px; font-weight: 700; cursor: pointer;
+      }
+      .db-cc-sheets-switch:hover { background: #f1f5f9; }
       /* Narrow viewports (<720px): 340px panel would overflow — shrink + pin to edge */
       @media (max-width: 720px) {
         #db-cc-panel { width: calc(100vw - 16px) !important; min-width: 0 !important; right: 8px !important; }
@@ -371,6 +385,9 @@
         <span class="db-cc-modes" id="db-cc-modes">
           <button type="button" class="db-cc-mode-btn" data-mode="live" title="Today\u2019s IDs from the sheet library">Live</button><button type="button" class="db-cc-mode-btn" data-mode="request" title="Supabase validation requests">Req</button><button type="button" class="db-cc-mode-btn" data-mode="mix" title="Live + Request eksathe">Mix</button>
         </span>
+      </div>
+      <div class="db-cc-sheets-acct" id="db-cc-sheets-acct">
+        <span>📧</span><span id="db-cc-sheets-email" class="db-cc-sheets-email">Chrome profile account</span><button type="button" class="db-cc-sheets-switch" id="db-cc-sheets-switch" title="Switch Google account for Sheets (sheet access may be on another Gmail)">🔄 Switch</button>
       </div>
       <div class="db-cc-body" id="db-cc-body">
         <div class="db-cc-status">⏳ Loading…</div>
@@ -468,9 +485,15 @@
       if (ccBodyEl) await loadAndRender(ccBodyEl);
     });
 
-    const paintModes = () => {
+    let paintModes = () => {
       panel.querySelectorAll('#db-cc-modes .db-cc-mode-btn').forEach(b =>
         b.classList.toggle('active', b.dataset.mode === ccMode));
+      // Live/Mix highlight for sheets row
+      const row = panel.querySelector('#db-cc-sheets-acct');
+      if (row) {
+        row.style.background = (ccMode === 'live' || ccMode === 'mix') ? '#eff6ff' : '#f8fafc';
+        row.style.borderBottomColor = (ccMode === 'live' || ccMode === 'mix') ? '#bfdbfe' : '#e2e8f0';
+      }
     };
     try {
       chrome.storage.local.get(['db-cc-mode'], r => {
@@ -479,12 +502,44 @@
       });
     } catch {}
     paintModes();
+    // ── Sheets account row (which Gmail is used for Sheets) ────────────
+    async function refreshSheetsAcct() {
+      try {
+        const res = await new Promise(r => {
+          try { chrome.runtime.sendMessage({ action: 'get_sheets_account' }, r); } catch { r({ email: '' }); }
+        });
+        const email = (res && res.email ? String(res.email).trim() : '');
+        const el = panel.querySelector('#db-cc-sheets-email');
+        if (el) el.textContent = email || 'Chrome profile account';
+      } catch {}
+    }
+    refreshSheetsAcct();
+    panel.querySelector('#db-cc-sheets-switch').addEventListener('click', async (e) => {
+      e.stopPropagation();
+      const btn = e.currentTarget;
+      const orig = btn.textContent;
+      btn.textContent = '⏳ …';
+      btn.disabled = true;
+      try {
+        const res = await new Promise(r => {
+          try { chrome.runtime.sendMessage({ action: 'db_sheets_switch' }, r); } catch (err) { r({ ok: false, error: err.message }); }
+        });
+        if (res && res.ok) {
+          await refreshSheetsAcct();
+          if (ccBodyEl) await loadAndRender(ccBodyEl, { force: true });
+        } else {
+          alert(res && res.error ? res.error : 'Switch failed');
+        }
+      } catch (err) { alert(err.message || 'Switch failed'); }
+      finally { btn.textContent = orig; btn.disabled = false; }
+    });
     panel.querySelectorAll('#db-cc-modes .db-cc-mode-btn').forEach(b =>
       b.addEventListener('click', async () => {
         if (ccMode === b.dataset.mode) return;
         ccMode = b.dataset.mode;
         try { chrome.storage.local.set({ 'db-cc-mode': ccMode }); } catch {}
         paintModes();
+        refreshSheetsAcct();
         filter = 'all';
         ccVisibleCount = CC_RENDER_LIMIT;
         // loadAndRender paints the spinner synchronously before its first
