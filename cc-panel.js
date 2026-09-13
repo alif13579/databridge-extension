@@ -610,18 +610,20 @@
       if (!groups[key]) groups[key] = { dateKey, cId: row.consignment, branchId: row.branch_id, rows: [] };
       groups[key].rows.push(row);
     });
-    const validGroups = Object.values(groups).filter(g => g.rows.some(r => r.source === 'WORKER'));
+    const validGroups = Object.values(groups).filter(g => g.rows.some(r => r.source === 'WORKER' && (r.remarks_status || '').trim().toUpperCase() === 'VERIFY_REQUEST'));
 
     const latestMs   = row => new Date(row.created_at).getTime();
     const earliestOf = rows => rows.reduce((e, r) => (!e || latestMs(r) < latestMs(e)) ? r : e, null);
     const latestOf   = rows => rows.reduce((l, r) => (!l || latestMs(r) >= latestMs(l)) ? r : l, null);
 
     return validGroups.map(g => {
-      const workerRows  = g.rows.filter(r => r.source === 'WORKER');
+      const workerVerifyRows = g.rows.filter(r => r.source === 'WORKER' && (r.remarks_status || '').trim().toUpperCase() === 'VERIFY_REQUEST');
       const ccRows      = g.rows.filter(r => r.source === 'CC');
-      const firstWorker = earliestOf(workerRows);
+      const firstWorker = earliestOf(workerVerifyRows);
       const lastCc      = ccRows.length ? latestOf(ccRows) : null;
+      const latestVerify = latestOf(workerVerifyRows);
       const latestOfAll = latestOf(g.rows);
+      const stillPending = !lastCc || latestMs(latestVerify) > latestMs(lastCc);
       // Full chronological trail for the expandable history (already in memory —
       // no extra fetch). Same fields the dashboard Details mode renders.
       const trail = g.rows.slice().sort((a, b) => latestMs(a) - latestMs(b)).map(r => ({
@@ -640,7 +642,7 @@
         customerPhone:     (latestOfAll.customer_phone || '').trim(),
         firstWorkerRemark: firstWorker.remarks || firstWorker.note || '',
         lastCcRemark:      lastCc ? (lastCc.remarks || lastCc.note || '') : '',
-        stillPending:      latestOfAll.source === 'WORKER',
+        stillPending,
         trail,
       };
     });

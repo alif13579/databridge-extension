@@ -3374,7 +3374,7 @@ async function generateHoldValidationReport({ skipRender = false } = {}) {
       groups[key].rows.push(row);
     });
 
-    const validGroups = Object.values(groups).filter(g => g.rows.some(r => r.source === 'WORKER'));
+    const validGroups = Object.values(groups).filter(g => g.rows.some(r => r.source === 'WORKER' && (r.remarks_status || '').trim().toUpperCase() === 'VERIFY_REQUEST'));
 
     if (!validGroups.length) {
       setStatus('No validation requests in this date range/branch');
@@ -3386,19 +3386,16 @@ async function generateHoldValidationReport({ skipRender = false } = {}) {
     const latestOf    = rows => rows.reduce((l, r) => (!l || latestMs(r) >= latestMs(l)) ? r : l, null);
 
     if (hvMode === 'summary') {
-      // One row per (date, consignment): first WORKER remark that day +
-      // last CC remark that day (blank if CC hasn't responded yet — still
-      // shown, per how this should behave). "Pending" if the truly latest
-      // entry that day (either source) is a WORKER row — same "latest
-      // entry decides" rule analyzeRangeRemarks()/the app use, just scoped
-      // to the day instead of the whole range.
+      // One row per (date, consignment): first VERIFY_REQUEST that day +
+      // last CC remark that day. Pending = latest VERIFY_REQUEST has no CC after it
+      // (not just "latest row is WORKER" — DELIVERED/CONFIRMED from Worker must not count as pending).
       const summaryRows = validGroups.map(g => {
-        const workerRows  = g.rows.filter(r => r.source === 'WORKER');
+        const workerVerifyRows = g.rows.filter(r => r.source === 'WORKER' && (r.remarks_status || '').trim().toUpperCase() === 'VERIFY_REQUEST');
         const ccRows      = g.rows.filter(r => r.source === 'CC');
-        const firstWorker = earliestOf(workerRows);
+        const firstWorker = earliestOf(workerVerifyRows);
         const lastCc      = ccRows.length ? latestOf(ccRows) : null;
-        const latestOfAll = latestOf(g.rows);
-        const stillPending = latestOfAll.source === 'WORKER';
+        const latestVerify = latestOf(workerVerifyRows);
+        const stillPending = !lastCc || latestMs(latestVerify) > latestMs(lastCc);
         return {
           dateKey:   g.dateKey,
           dateLabel: dateKeyToDdMmYyyy(g.dateKey),
