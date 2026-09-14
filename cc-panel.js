@@ -1721,7 +1721,7 @@
   // One connection → its own sheet. Returns counts for the summary line.
   // Latest-wins: blank → fill + mismatch → overwrite (never clears with blank latest).
   async function bulkSyncOneConnection(token, branchId, conn, consolidated, dateKey) {
-    const res = { scanned: 0, filled: 0, syncedRows: 0, syncedCells: 0, overwrittenRows: 0, overwrittenCells: 0, noCc: 0, skipped: 0 };
+    const res = { scanned: 0, filled: 0, syncedRows: 0, syncedCells: 0, overwrittenRows: 0, overwrittenCells: 0, noCc: 0, skipped: 0, perKind: {} };
     const lookups = effectiveLookups(conn);
     const writes = effectiveWrites(conn).filter(r =>
       r.kind === 'feedback' || r.kind === 'validation' || r.kind === 'validator_name' ||
@@ -1787,11 +1787,12 @@
       if (!needs.length) { res.filled++; continue; }
       try {
         let filledInRow = 0, overwrittenInRow = 0;
-        for (const { letter, v, isBlank } of needs) {
+        for (const { rule, letter, v, isBlank } of needs) {
           await sheetsWriteCell(token, conn.sheetId, tab, letter, i + 1, v);
           const col = writeCols.get(letter) || [];
           col[i] = v;
           if (isBlank) { res.syncedCells++; filledInRow++; } else { res.overwrittenCells = (res.overwrittenCells || 0) + 1; overwrittenInRow++; }
+          res.perKind[rule.kind] = (res.perKind[rule.kind] || 0) + 1;
         }
         if (filledInRow) res.syncedRows++;
         if (overwrittenInRow) res.overwrittenRows = (res.overwrittenRows || 0) + 1;

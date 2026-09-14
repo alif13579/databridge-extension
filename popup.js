@@ -3130,7 +3130,7 @@ function getSelectedHvBranchIds() {
   }
 
   async function hvBulkSyncOneConnection(token, branchId, conn, consolidated, dateKey) {
-    const res = { scanned: 0, filled: 0, syncedRows: 0, syncedCells: 0, overwrittenRows: 0, overwrittenCells: 0, noCc: 0, skipped: 0 };
+    const res = { scanned: 0, filled: 0, syncedRows: 0, syncedCells: 0, overwrittenRows: 0, overwrittenCells: 0, noCc: 0, skipped: 0, perKind: {} };
     const lookups = hvEffectiveRules(conn, 'lookup');
     const writes = hvEffectiveRules(conn, 'write').filter(r =>
       r.kind === 'feedback' || r.kind === 'validation' || r.kind === 'validator_name' ||
@@ -3193,11 +3193,12 @@ function getSelectedHvBranchIds() {
       if (!needs.length) { res.filled++; continue; }
       try {
         let filledInRow = 0, overInRow = 0;
-        for (const { letter, v, isBlank } of needs) {
+        for (const { rule, letter, v, isBlank } of needs) {
           await hvSheetsWriteCell(token, conn.sheetId, tab, letter, i + 1, v);
           const col = writeCols.get(letter) || [];
           col[i] = v;
           if (isBlank) { res.syncedCells++; filledInRow++; } else { res.overwrittenCells++; overInRow++; }
+          const k = rule.kind; res.perKind[k] = (res.perKind[k] || 0) + 1;
         }
         if (filledInRow) res.syncedRows++;
         if (overInRow) res.overwrittenRows++;
@@ -3300,6 +3301,7 @@ function getSelectedHvBranchIds() {
       }
 
       let totDays = 0, totConns = 0, totScanned = 0, totFilled = 0, totRows = 0, totCells = 0, totOverRows = 0, totOverCells = 0, totNoCc = 0;
+      const totPerKind = {};
       const errs = [];
       for (const dateKey of dayKeys) {
         const consolidated = hvBuildConsolidatedCc(allRows, dateKey, catMap);
@@ -3315,6 +3317,7 @@ function getSelectedHvBranchIds() {
               const r = await hvBulkSyncOneConnection(token, branchId, conn, consolidated, dateKey);
               totScanned += r.scanned; totFilled += r.filled;
               totRows += r.syncedRows; totCells += r.syncedCells; totOverRows += (r.overwrittenRows || 0); totOverCells += (r.overwrittenCells || 0); totNoCc += r.noCc;
+              Object.entries(r.perKind || {}).forEach(([k, v]) => { totPerKind[k] = (totPerKind[k] || 0) + v; });
             } catch (e) {
               errs.push(`${label}: ${e.message || 'sync failed'}`);
             }
@@ -3322,9 +3325,10 @@ function getSelectedHvBranchIds() {
         }
       }
       if (!totConns) { setStatus('No remark connection in any branch for this range (check scope)'); return; }
+      let colsLine = Object.keys(totPerKind).length ? ' · cols: ' + Object.keys(totPerKind).sort().map(k => `${k}(${totPerKind[k]})`).join(', ') : '';
       let msg = `✓ ${totDays} day(s): ${totRows} row synced (${totCells} cells)` +
         (totOverRows ? ` · ${totOverRows} row updated (${totOverCells} cells overwritten)` : '') +
-        ` · ${totFilled} already filled · ${totNoCc} no CC yet · ${totScanned} sheet rows দেখা (${totConns} connection)`;
+        ` · ${totFilled} already filled · ${totNoCc} no CC yet · ${totScanned} sheet rows দেখা (${totConns} connection)` + colsLine;
       if (errs.length) msg += ` · ⚠ ${errs.length} error: ${errs.slice(0, 2).join('; ')}${errs.length > 2 ? '…' : ''}`;
       setStatus(msg);
     } catch (e) {
