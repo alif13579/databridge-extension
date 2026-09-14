@@ -2177,10 +2177,15 @@
       }));
       const consKeys = Object.keys(consDiffs);
       if (consKeys.length) {
+        // LEAF-path multi-update ONLY ({id}/status) — Firebase PATCH with a
+        // nested {id:{status}} object would REPLACE the whole consignment
+        // node (name/phone/address/cod gone, only status left). Never that.
+        const flat = {};
+        consKeys.forEach(id => { flat[id + '/status'] = consDiffs[id].status; });
         const w1 = await fetch(`${XCHECK_FB_URL}/courier/consignments.json?auth=${token}`, {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(consDiffs)
+          body: JSON.stringify(flat)
         });
         if (!w1.ok) throw new Error(`HTTP ${w1.status}`);
         console.log(`[DB FbRunSync] run ${runId}: updated ${consKeys.length} courier/consignments statuses from live page`);
