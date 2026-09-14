@@ -3069,7 +3069,7 @@ function getSelectedHvBranchIds() {
     const s = String(consignmentStatus || '').trim().toLowerCase();
     if (!s) return 'Hold';
     if (s === 'delivered' || s === 'partial delivery' || s === 'paid return') return 'Delivered';
-    if (s === 'return' || s === 'return requested') return 'Return';
+    if (s === 'return' || s === 'return requested') return 'Returned';
     return 'Hold';
   }
   function hvDeriveAction(finalStatus) {
