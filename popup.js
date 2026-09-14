@@ -2486,6 +2486,8 @@ function setupDashboardTab() {
       hvReportRows = [];
       const reportEl = document.getElementById('dash-hv-report');
       if (reportEl) reportEl.innerHTML = '';
+      const hvBar = document.getElementById('dash-hv-searchbar');
+      if (hvBar) hvBar.style.display = 'none';
       const statusEl = document.getElementById('dash-hv-status');
       if (statusEl) statusEl.textContent = '';
     });
@@ -2568,8 +2570,8 @@ const ccBranchNames = {}; // branchId -> resolved display name
 /** Called every time the Dashboard nav tab is opened. Defaults the Hold
  *  Validation From/To range to TODAY (Bangladesh-local, same BD_DATE_PARTS
  *  formatter used for the report's own date display — never the machine's
- *  own timezone) and auto-runs the Summary report, so the tab always opens
- *  showing today's data with zero clicks. Branch checkboxes default to
+ *  own timezone). NO auto-run: the report renders only on "View report"
+ *  click. Branch checkboxes default to
  *  "checked" once rendered (see renderHvBranchCheckboxes), so nothing
  *  extra is needed there. Waits for loadCcBranches() on first open (branch
  *  checkboxes must exist before getSelectedHvBranchIds() finds anything);
@@ -2588,8 +2590,6 @@ async function loadDashboardTabAndAutoGenerate() {
   const perfTo   = document.getElementById('dash-perf-to');
   if (perfFrom) perfFrom.value = todayBd;
   if (perfTo)   perfTo.value   = todayBd;
-
-  if (currentGoogleUid && ccBranchIds.length) generateHoldValidationReport();
 }
 
 async function loadCcBranches() {
@@ -3444,69 +3444,154 @@ async function generateHoldValidationReport({ skipRender = false } = {}) {
     const latestOf    = rows => rows.reduce((l, r) => (!l || latestMs(r) >= latestMs(l)) ? r : l, null);
 
     if (hvMode === 'summary') {
-      // One row per (date, consignment): first VERIFY_REQUEST that day +
-      // last CC remark that day. Pending = latest VERIFY_REQUEST has no CC after it
+      // One card per consignment across the WHOLE range: per-day entries
+      // (first VERIFY_REQUEST + last CC of that day) old → newest, chat
+      // style. Pending = latest VERIFY_REQUEST (any day) has no CC after it
       // (not just "latest row is WORKER" — DELIVERED/CONFIRMED from Worker must not count as pending).
-      const summaryRows = validGroups.map(g => {
+      const byCid = {};
+      validGroups.forEach(g => {
+        const key = `${g.branchId}__${g.cId}`;
+        if (!byCid[key]) byCid[key] = { branchId: g.branchId, cId: g.cId, rows: [], dayMap: {} };
+        const grp = byCid[key];
+        grp.rows.push(...g.rows);
         const workerVerifyRows = g.rows.filter(r => r.source === 'WORKER' && (r.remarks_status || '').trim().toUpperCase() === 'VERIFY_REQUEST');
         const ccRows      = g.rows.filter(r => r.source === 'CC');
         const firstWorker = earliestOf(workerVerifyRows);
         const lastCc      = ccRows.length ? latestOf(ccRows) : null;
         const latestVerify = latestOf(workerVerifyRows);
-        const latestOfAll = latestOf(g.rows);
-        const stillPending = !lastCc || latestMs(latestVerify) > latestMs(lastCc);
-        // Name from join (report selects assigned/author) — fallback later via users lookup
-        const assignedName = (g.rows.find(r => r.assigned?.name)?.assigned?.name || latestOfAll.assigned?.name || firstWorker.assigned?.name || '').trim();
-        const validatorName = (lastCc?.author?.name || '').trim();
-        const validatorEmp = (lastCc?.author?.employee_id || '').trim();
-        return {
-          dateKey:   g.dateKey,
+        grp.dayMap[g.dateKey] = {
+          dateKey: g.dateKey,
           dateLabel: dateKeyToDdMmYyyy(g.dateKey),
-          branchId:  g.branchId,
-          cId:       g.cId,
-          agentSystemId:     g.rows[0].assigned_to_system_id,
-          agentName:         assignedName,
-          customerPhone:     (latestOfAll.customer_phone || '').trim(),
-          parcelStatus:      ((latestOfAll.consignment_status || (lastCc && lastCc.consignment_status) || firstWorker.consignment_status || '') + '').trim(),
-          firstWorkerRemark: firstWorker.remarks || '',
-          firstWorkerStatus: firstWorker.remarks_status || '',
-          firstWorkerTime:   formatHhMm(firstWorker.created_at),
-          lastCcRemark:      lastCc ? (lastCc.remarks || '') : '',
-          lastCcNote:        lastCc ? (lastCc.note || '') : '',
-          lastCcStatus:      lastCc ? (lastCc.remarks_status || '') : '',
-          lastCcTime:        lastCc ? formatHhMm(lastCc.created_at) : '',
-          validatorSystemId: lastCc ? (lastCc.author_system_id || '') : '',
-          validatorName:     validatorName,
-          validatorEmpId:    validatorEmp,
-          validatorEmployeeId: validatorEmp || (lastCc ? (lastCc.author_system_id || '') : ''),
-          stillPending,
+          firstWorker, lastCc,
         };
       });
-      // Fallback: Edge join miss হলে system_id → name users table থেকে আনো
-      const needAgentIds = [...new Set(summaryRows.filter(r => !r.agentName && r.agentSystemId).map(r => r.agentSystemId))];
-      const needValidatorIds = [...new Set(summaryRows.filter(r => !r.validatorName && r.validatorSystemId).map(r => r.validatorSystemId))];
-      const needAll = [...new Set([...needAgentIds, ...needValidatorIds])];
+      // "Name (empId)" display — each name shown ONCE per bubble (messenger style).
+      const hvWho = (name, emp, sys) => {
+        const n = (name || '').trim();
+        const e = (emp || '').trim();
+        const s = (sys || '').trim();
+        if (n && e && e !== n) return `${n} (${e})`;
+        if (n) return n;
+        return e || s || '—';
+      };
+      const summaryRows = Object.values(byCid).map(grp => {
+        const days = Object.values(grp.dayMap)
+          .sort((a, b) => a.dateKey.localeCompare(b.dateKey));
+        const verifyAll = grp.rows.filter(r => r.source === 'WORKER' && (r.remarks_status || '').trim().toUpperCase() === 'VERIFY_REQUEST');
+        const ccAll     = grp.rows.filter(r => r.source === 'CC');
+        const latestVerify = latestOf(verifyAll);
+        const latestCc     = ccAll.length ? latestOf(ccAll) : null;
+        const latestOfAll  = latestOf(grp.rows);
+        const lastDay = days[days.length - 1];
+        const assignedName = (latestOfAll.assigned?.name || grp.rows.find(r => r.assigned?.name)?.assigned?.name || '').trim();
+        return {
+          dateKey:   lastDay.dateKey,
+          dateLabel: days.length > 1 ? `${days[0].dateLabel} → ${lastDay.dateLabel}` : lastDay.dateLabel,
+          branchId:  grp.branchId,
+          cId:       grp.cId,
+          agentSystemId:     latestOfAll.assigned_to_system_id,
+          agentName:         assignedName,
+          agentEmpId:        ((latestOfAll.assigned?.employee_id || '')).trim(),
+          customerPhone:     (latestOfAll.customer_phone || '').trim(),
+          parcelStatus:      ((latestOfAll.consignment_status || (latestCc && latestCc.consignment_status) || '') + '').trim(),
+          // CSV-compat top level = latest day's pair.
+          firstWorkerRemark: lastDay.firstWorker.remarks || '',
+          firstWorkerStatus: lastDay.firstWorker.remarks_status || '',
+          firstWorkerTime:   formatHhMm(lastDay.firstWorker.created_at),
+          lastCcRemark:      lastDay.lastCc ? (lastDay.lastCc.remarks || '') : '',
+          lastCcNote:        lastDay.lastCc ? (lastDay.lastCc.note || '') : '',
+          lastCcStatus:      lastDay.lastCc ? (lastDay.lastCc.remarks_status || '') : '',
+          lastCcTime:        lastDay.lastCc ? formatHhMm(lastDay.lastCc.created_at) : '',
+          validatorSystemId: lastDay.lastCc ? (lastDay.lastCc.author_system_id || '') : '',
+          validatorName:     ((lastDay.lastCc?.author?.name || '')).trim(),
+          validatorEmpId:    ((lastDay.lastCc?.author?.employee_id || '')).trim(),
+          validatorEmployeeId: '',
+          stillPending: !latestCc || latestMs(latestVerify) > latestMs(latestCc),
+          days: days.map(d => ({
+            dateKey: d.dateKey,
+            dateLabel: d.dateLabel,
+            workerRemark: d.firstWorker.remarks || '',
+            workerStatus: d.firstWorker.remarks_status || '',
+            workerTime:   formatHhMm(d.firstWorker.created_at),
+            workerName: ((d.firstWorker.assigned?.name || '')).trim(),
+            workerEmp:  ((d.firstWorker.assigned?.employee_id || '')).trim(),
+            workerSys:  d.firstWorker.assigned_to_system_id || '',
+            hasCc:   !!d.lastCc,
+            ccRemark: d.lastCc ? (d.lastCc.remarks || '') : '',
+            ccNote:   d.lastCc ? (d.lastCc.note || '') : '',
+            ccStatus: d.lastCc ? (d.lastCc.remarks_status || '') : '',
+            ccTime:   d.lastCc ? formatHhMm(d.lastCc.created_at) : '',
+            ccName: ((d.lastCc?.author?.name || '')).trim(),
+            ccEmp:  ((d.lastCc?.author?.employee_id || '')).trim(),
+            ccSys:  d.lastCc ? (d.lastCc.author_system_id || '') : '',
+          })),
+        };
+      });
+      // Fallback: Edge join miss হলে system_id → name+emp users table থেকে আনো (card + day level).
+      const needAll = [...new Set(summaryRows.flatMap(r => {
+        const out = [];
+        if ((!r.agentName || !r.agentEmpId) && r.agentSystemId) out.push(r.agentSystemId);
+        if ((!r.validatorName || !r.validatorEmpId) && r.validatorSystemId) out.push(r.validatorSystemId);
+        (r.days || []).forEach(d => {
+          if ((!d.workerName || !d.workerEmp) && d.workerSys) out.push(d.workerSys);
+          if (d.hasCc && ((!d.ccName || !d.ccEmp) && d.ccSys)) out.push(d.ccSys);
+        });
+        return out;
+      }))];
       if (needAll.length) {
         try {
           const nameMap = await fetchUserNamesBySystemIds(idToken, needAll);
           summaryRows.forEach(r => {
-            if (!r.agentName && r.agentSystemId) {
+            if (r.agentSystemId) {
               const hit = nameMap.get(r.agentSystemId);
-              if (hit?.name) r.agentName = hit.name;
+              if (hit) {
+                if (!r.agentName && hit.name) r.agentName = hit.name;
+                if (!r.agentEmpId && hit.empId) r.agentEmpId = hit.empId;
+              }
             }
-            if (!r.validatorName && r.validatorSystemId) {
+            if (r.validatorSystemId) {
               const hit = nameMap.get(r.validatorSystemId);
-              if (hit?.name) { r.validatorName = hit.name; if (hit.empId) { if (!r.validatorEmpId) r.validatorEmpId = hit.empId; if (!r.validatorEmployeeId) r.validatorEmployeeId = hit.empId; } }
+              if (hit) {
+                if (!r.validatorName && hit.name) r.validatorName = hit.name;
+                if (!r.validatorEmpId && hit.empId) r.validatorEmpId = hit.empId;
+              }
             }
+            (r.days || []).forEach(d => {
+              if (d.workerSys) {
+                const hit = nameMap.get(d.workerSys);
+                if (hit) {
+                  if (!d.workerName && hit.name) d.workerName = hit.name;
+                  if (!d.workerEmp && hit.empId) d.workerEmp = hit.empId;
+                }
+              }
+              if (d.hasCc && d.ccSys) {
+                const hit = nameMap.get(d.ccSys);
+                if (hit) {
+                  if (!d.ccName && hit.name) d.ccName = hit.name;
+                  if (!d.ccEmp && hit.empId) d.ccEmp = hit.empId;
+                }
+              }
+            });
           });
         } catch (e) { console.warn('[DB] HV summary name fallback failed:', e); }
       }
-      // Final UI fallback: still no name → show systemId/employeeId itself so row never blanks
+      // Final UI fallback: still no name → show emp/system id itself so row never blanks.
+      // Display strings computed once — render + search reuse them (name shown once per bubble).
       summaryRows.forEach(r => {
-        if (!r.agentName) r.agentName = r.agentSystemId || '—';
+        if (!r.agentName) r.agentName = r.agentEmpId || r.agentSystemId || '—';
+        r.agentWho = hvWho(r.agentName === '—' ? '' : r.agentName, r.agentEmpId, r.agentSystemId);
+        r.validatorEmployeeId = r.validatorEmpId || r.validatorSystemId;
         if (r.validatorSystemId && !r.validatorName) r.validatorName = r.validatorEmployeeId || r.validatorSystemId;
+        r.validatorWho = r.validatorSystemId ? hvWho(r.validatorName, r.validatorEmpId, r.validatorSystemId) : '';
+        (r.days || []).forEach(d => {
+          d.workerWho = hvWho(d.workerName, d.workerEmp, d.workerSys);
+          d.ccWho = d.hasCc ? hvWho(d.ccName, d.ccEmp, d.ccSys) : '';
+        });
       });
-      summaryRows.sort((a, b) => a.dateKey === b.dateKey ? a.cId.localeCompare(b.cId) : a.dateKey.localeCompare(b.dateKey));
+      summaryRows.sort((a, b) => {
+        if (!!a.stillPending !== !!b.stillPending) return a.stillPending ? -1 : 1;
+        return b.dateKey.localeCompare(a.dateKey);
+      });
       hvReportRows = summaryRows;
     } else {
       // Details: every raw remark row, unconsolidated — the breakdown
@@ -3622,14 +3707,21 @@ function renderHvReportSummary(reportEl) {
     true
   );
 
-  // Search (consignment / phone / name) on top of status filter — parity with CC panel.
+  // Search (consignment / phone / name / remark) on top of status filter — parity with CC panel.
   const _q = (hvSearch || '').trim().toLowerCase();
   const _qd = _q.replace(/[\s\-()]/g, '');
   const searchFiltered = _q ? filtered.filter(r =>
     (r.cId || '').toLowerCase().includes(_q) ||
     (_qd && (r.customerPhone || '').replace(/[\s\-()]/g, '').includes(_qd)) ||
     (r.customerName || '').toLowerCase().includes(_q) ||
-    (r.agentName || '').toLowerCase().includes(_q)
+    (r.agentName || '').toLowerCase().includes(_q) ||
+    (r.agentWho || '').toLowerCase().includes(_q) ||
+    (r.validatorName || '').toLowerCase().includes(_q) ||
+    (r.days || []).some(d =>
+      (d.workerRemark || '').toLowerCase().includes(_q) ||
+      (d.ccRemark || '').toLowerCase().includes(_q) ||
+      (d.workerWho || '').toLowerCase().includes(_q) ||
+      (d.ccWho || '').toLowerCase().includes(_q))
   ) : filtered;
 
   const sorted = searchFiltered.slice().sort((a, b) => {
@@ -3641,33 +3733,30 @@ function renderHvReportSummary(reportEl) {
     const badge = r.stillPending
       ? '<span class="dash-hv-badge dash-hv-badge-pending">⏳ Pending</span>'
       : '<span class="dash-hv-badge dash-hv-badge-validated">✓ Validated</span>';
-    const agentDisplay = r.agentName || r.agentSystemId || '—';
-    const vName = r.validatorName || '';
-    const vId = r.validatorEmpId || r.validatorSystemId || r.validatorEmployeeId || '';
-    const vWho = vName ? `${vName}${vId && vId !== vName ? ` (${vId})` : ''}` : (vId || 'CC');
+    // Messenger style: each day old → newest, name shown ONCE per bubble
+    // (worker/CC label only — meta is time-only). No "awaiting" filler.
+    const dayBlocks = (r.days && r.days.length ? r.days : []).map(d => `
+      ${(r.days.length > 1) ? `<div class="dash-hv-day-label">${escapeHtml(d.dateLabel)}</div>` : ''}
+      <div class="dash-hv-bubble dash-hv-bubble-worker">
+        <div class="dash-hv-bubble-label">🙋 ${escapeHtml(d.workerWho)}${d.workerStatus ? ' · ' + escapeHtml(d.workerStatus) : ''}</div>
+        <div class="dash-hv-bubble-text">${escapeHtml(d.workerRemark || '(no remark)')}</div>
+        <div class="dash-hv-bubble-meta">${escapeHtml(d.workerTime || '')}</div>
+      </div>
+      ${d.hasCc ? `<div class="dash-hv-bubble dash-hv-bubble-cc">
+          <div class="dash-hv-bubble-label">✓ ${escapeHtml(d.ccWho)}${d.ccStatus ? ' · ' + escapeHtml(d.ccStatus) : ''}</div>
+          ${d.ccRemark ? `<div class="dash-hv-bubble-text">${escapeHtml(d.ccRemark)}</div>` : `<div class="dash-hv-bubble-text" style="opacity:.65">(no CC text)</div>`}
+          ${d.ccNote ? `<div class="dash-hv-bubble-note">📝 ${escapeHtml(d.ccNote)}</div>` : ''}
+          <div class="dash-hv-bubble-meta">${escapeHtml(d.ccTime || '')}</div>
+        </div>` : ''}
+    `).join('');
     return `
       <div class="dash-hv-row ${r.stillPending ? 'dash-hv-row-pending' : 'dash-hv-row-validated'}">
         <div class="dash-hv-row-top">
           <span class="dash-hv-row-id">${escapeHtml(r.cId)}</span>
-          <span>${r.dateLabel}</span>
+          <span>${escapeHtml(r.dateLabel)}</span>
         </div>
-        <div class="dash-hv-row-meta">${escapeHtml(ccBranchNames[r.branchId] || r.branchId)} · 👤 ${escapeHtml(agentDisplay)}${r.parcelStatus ? ` · 📦 ${escapeHtml(r.parcelStatus)}` : ''}</div>
-        <div class="dash-hv-chat">
-          <div class="dash-hv-bubble dash-hv-bubble-worker">
-            <div class="dash-hv-bubble-label">🙋 ${escapeHtml(agentDisplay)}${r.firstWorkerStatus ? ' · ' + escapeHtml(r.firstWorkerStatus) : ''}</div>
-            <div class="dash-hv-bubble-text">${escapeHtml(r.firstWorkerRemark || '(no remark)')}</div>
-            <div class="dash-hv-bubble-meta">${escapeHtml(r.firstWorkerTime || '')} · 👤 ${escapeHtml(agentDisplay)}${r.agentSystemId && r.agentSystemId !== agentDisplay ? ` (${escapeHtml(r.agentSystemId)})` : ''}</div>
-          </div>
-          ${r.stillPending
-            ? `<div class="dash-hv-bubble dash-hv-bubble-pending">⏳ Awaiting CC reply…</div>`
-            : `<div class="dash-hv-bubble dash-hv-bubble-cc">
-                <div class="dash-hv-bubble-label">✓ CC${r.lastCcStatus ? ' · ' + escapeHtml(r.lastCcStatus) : ''}</div>
-                ${r.lastCcRemark ? `<div class="dash-hv-bubble-text">${escapeHtml(r.lastCcRemark)}</div>` : `<div class="dash-hv-bubble-text" style="opacity:.65">(no CC text)</div>`}
-                ${r.lastCcNote ? `<div class="dash-hv-bubble-note">📝 ${escapeHtml(r.lastCcNote)}</div>` : ''}
-                <div class="dash-hv-bubble-meta">${escapeHtml(r.lastCcTime || '')} · 👤 ${escapeHtml(vWho)}</div>
-              </div>`
-          }
-        </div>
+        <div class="dash-hv-row-meta">${escapeHtml(ccBranchNames[r.branchId] || r.branchId)}${r.parcelStatus ? ` · 📦 ${escapeHtml(r.parcelStatus)}` : ''}</div>
+        <div class="dash-hv-chat">${dayBlocks}</div>
         <div class="dash-hv-row-badge-line">
           ${badge}
           ${r.customerPhone ? `<button type="button" class="dash-hv-call-btn" data-phone="${escapeHtml(r.customerPhone)}">📞 Call</button>` : ''}

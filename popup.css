@@ -1013,6 +1013,18 @@ html[data-theme="light"] .dash-hv-search-clear { background: #fff; color: #64748
 .dash-hv-badge-validated { background: #00ff8818; color: #00ff88; }
 
 .dash-hv-chat { display: flex; flex-direction: column; gap: 6px; margin-top: 6px; }
+.dash-hv-day-label {
+  align-self: center;
+  font-size: 9px;
+  font-weight: 700;
+  color: #7a9cc0;
+  background: #0d1b2e;
+  border: 1px solid #1e3a5f;
+  border-radius: 10px;
+  padding: 1px 10px;
+  margin-top: 2px;
+}
+html[data-theme="light"] .dash-hv-day-label { color: #64748b; background: #f1f5f9; border-color: #e2e8f0; }
 .dash-hv-bubble {
   max-width: 86%; padding: 7px 10px; border-radius: 14px;
   font-size: 11px; line-height: 1.45; word-break: break-word;
