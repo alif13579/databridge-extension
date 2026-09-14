@@ -320,6 +320,21 @@
       }
       #db-cc-date { font: inherit; font-size: 11px; color: #1e293b; border: 1px solid #cbd5e1; border-radius: 4px; padding: 1px 4px; }
       #db-cc-date-label { font-weight: 700; }
+      .db-cc-searchbar {
+        display: flex; align-items: center; gap: 6px;
+        padding: 5px 10px; border-bottom: 1px solid #e2e8f0;
+        font-size: 11px; color: #475569; background: #fff;
+        flex-shrink: 0;
+      }
+      #db-cc-search {
+        flex: 1; min-width: 0; font: inherit; font-size: 11px; color: #1e293b;
+        border: 1px solid #cbd5e1; border-radius: 4px; padding: 2px 6px;
+      }
+      #db-cc-search:focus { outline: none; border-color: #3b82f6; box-shadow: 0 0 0 1px #3b82f6; }
+      #db-cc-search-clear {
+        background: #f1f5f9; color: #64748b; border: 1px solid #cbd5e1;
+        border-radius: 4px; padding: 2px 7px; font-size: 10px; font-weight: 700; cursor: pointer;
+      }
       .db-cc-hist-section, .db-cc-remark-section {
         margin-top: 6px; border-top: 1px dashed #cbd5e1; padding-top: 6px;
       }
@@ -473,6 +488,9 @@
           <button type="button" class="db-cc-mode-btn" data-mode="live" title="Today\u2019s IDs from the sheet library">Live</button><button type="button" class="db-cc-mode-btn" data-mode="request" title="Supabase validation requests">Req</button><button type="button" class="db-cc-mode-btn" data-mode="mix" title="Live + Request eksathe">Mix</button>
         </span>
       </div>
+      <div class="db-cc-searchbar">
+        <span>🔍</span><input type="text" id="db-cc-search" placeholder="Consignment / phone / name…" autocomplete="off"><button type="button" id="db-cc-search-clear" title="Clear search">✕</button>
+      </div>
       <div class="db-cc-sheets-acct" id="db-cc-sheets-acct">
         <span>📧</span><span id="db-cc-sheets-email" class="db-cc-sheets-email">Chrome profile account</span><button type="button" class="db-cc-sheets-switch" id="db-cc-sheets-switch" title="Switch Google account for Sheets (sheet access may be on another Gmail)">🔄 Switch</button>
       </div>
@@ -568,6 +586,9 @@
       ccDateKey = v;
       paintCcDate();
       filter = 'all';
+      ccSearch = '';
+      const _si = panel.querySelector('#db-cc-search');
+      if (_si) _si.value = '';
       ccVisibleCount = CC_RENDER_LIMIT;
       if (ccBodyEl) await loadAndRender(ccBodyEl);
     });
@@ -628,6 +649,9 @@
         paintModes();
         refreshSheetsAcct();
         filter = 'all';
+        ccSearch = '';
+        const _sj = panel.querySelector('#db-cc-search');
+        if (_sj) _sj.value = '';
         ccVisibleCount = CC_RENDER_LIMIT;
         // loadAndRender paints the spinner synchronously before its first
         // await, so the switch always gives instant feedback, then
@@ -643,6 +667,33 @@
       const btn = e.currentTarget;
       await bulkSyncToSheet(btn);
     });
+
+    // ── Search bar: consignment / phone / customer name live filter ──────
+    // Static header-এ থাকে (db-cc-body-এর বাইরে) যাতে render()-এর innerHTML
+    // rebuild-এ focus না হারায়। শুধু in-memory filter — reload লাগে না।
+    const searchInput = panel.querySelector('#db-cc-search');
+    const searchClear = panel.querySelector('#db-cc-search-clear');
+    function applySearch() {
+      ccSearch = (searchInput ? searchInput.value : '').trim();
+      ccVisibleCount = CC_RENDER_LIMIT;
+      if (ccBodyEl) render(ccBodyEl, ccBranchNamesCache);
+      if (searchClear) searchClear.style.display = ccSearch ? '' : 'none';
+    }
+    if (searchInput) {
+      searchInput.addEventListener('input', applySearch);
+      // Panel drag (hdr mousedown) যাতে search-এ type করতে বাধা না দেয় —
+      // input header-এর বাইরে, তবু safety: keypress bubble থামাই না, শুধু
+      // mousedown-এ focus রাখি।
+      searchInput.addEventListener('mousedown', e => e.stopPropagation());
+    }
+    if (searchClear) {
+      searchClear.style.display = 'none';
+      searchClear.addEventListener('click', () => {
+        if (searchInput) searchInput.value = '';
+        applySearch();
+        if (searchInput) searchInput.focus();
+      });
+    }
 
     return panel;
   }
@@ -676,6 +727,7 @@
   // combined, with no date/branch pickers (no room for them here).
   let summaryRows = [];
   let filter = 'all'; // 'all' | 'pending' | 'validated'
+  let ccSearch = ''; // live text filter — consignment / phone / customer name
   let ccMode = 'request'; // 'live' | 'request' | 'mix' — app-er same library (bindings) theke Live
   let ccDateKey = todayBdDateKey(); // picked date (default today) — panel + sync scope
   let ccIdToken = null;      // set per loadAndRender — remark options + save reuse it
@@ -809,9 +861,19 @@
     const noneCnt    = summaryRows.filter(r => r.noActivity).length;
     const validCnt   = totalReq - pendingCnt - noneCnt;
 
-    const filtered = filter === 'all' ? summaryRows
+    const statusFiltered = filter === 'all' ? summaryRows
       : filter === 'pending' ? summaryRows.filter(r => r.stillPending)
       : summaryRows.filter(r => !r.stillPending && !r.noActivity);
+
+    // Search: consignment (partial, case-insensitive) / phone (digits) /
+    // customer name — status filter-এর উপরেই চলে।
+    const q = (ccSearch || '').trim().toLowerCase();
+    const qDigits = q.replace(/[\s\-()]/g, '');
+    const filtered = q ? statusFiltered.filter(r =>
+      (r.cId || '').toLowerCase().includes(q) ||
+      (qDigits && (r.customerPhone || '').replace(/[\s\-()]/g, '').includes(qDigits)) ||
+      (r.customerName || '').toLowerCase().includes(q)
+    ) : statusFiltered;
 
     const visible = filtered.slice(0, ccVisibleCount);
     const hiddenCount = filtered.length - visible.length;
@@ -863,9 +925,10 @@
         <div class="db-cc-hist-section" data-idx="${idx}" style="display:none"></div>
         <div class="db-cc-remark-section" data-idx="${idx}" style="display:none"></div>
       </div>`;
-    }).join('') : `<div class="db-cc-status">${escapeHtml(!summaryRows.length && ccLiveNote ? ccLiveNote : 'No entries for this filter')}</div>`;
+    }).join('') : `<div class="db-cc-status">${escapeHtml(!summaryRows.length && ccLiveNote ? ccLiveNote : (q ? `🔍 "${ccSearch.trim()}" — no match` : 'No entries for this filter'))}</div>`;
 
     bodyEl.innerHTML = `
+      ${q ? `<div class="db-cc-status">🔍 "${escapeHtml(ccSearch.trim())}" — ${filtered.length} match${filtered.length === 1 ? '' : 'es'}</div>` : ''}
       <div class="db-cc-summary">
         <div class="db-cc-stat ${filter === 'all' ? 'active' : ''}" data-filter="all">
           <div class="db-cc-stat-val">${totalReq}</div><div class="db-cc-stat-label">Total</div>
