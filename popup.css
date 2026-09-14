@@ -877,6 +877,42 @@ input:checked + .toggle-slider:before { transform: translateX(14px); }
 
 .dash-hv-report:not(:empty) { margin-top: 8px; }
 
+.dash-hv-searchbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: #0d1b2e;
+  border: 1px solid #2d5a8e;
+  border-radius: 6px;
+  padding: 4px 6px;
+  margin-top: 6px;
+}
+.dash-hv-searchbar input {
+  flex: 1;
+  min-width: 0;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: #c9d8ec;
+  font-size: 11px;
+}
+.dash-hv-searchbar input::placeholder { color: #666; }
+.dash-hv-search-clear {
+  background: #16213e;
+  color: #888;
+  border: 1px solid #333;
+  border-radius: 4px;
+  padding: 2px 6px;
+  font-size: 10px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.dash-hv-search-clear:hover { color: #fff; border-color: #666; }
+html[data-theme="light"] .dash-hv-searchbar { background: #f8fafc; border-color: #e2e8f0; }
+html[data-theme="light"] .dash-hv-searchbar input { color: #0f172a; }
+html[data-theme="light"] .dash-hv-searchbar input::placeholder { color: #94a3b8; }
+html[data-theme="light"] .dash-hv-search-clear { background: #fff; color: #64748b; border-color: #cbd5e1; }
+
 .dash-hv-summary-grid { display: flex; gap: 6px; margin-bottom: 8px; }
 .dash-hv-summary-stat {
   flex: 1;

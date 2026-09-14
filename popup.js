@@ -2494,6 +2494,26 @@ function setupDashboardTab() {
   const generatePerfBtn = document.getElementById('generate-perf-btn');
   if (generatePerfBtn) generatePerfBtn.addEventListener('click', () => generateTeamPerformanceReport());
 
+  const hvSearchInput = document.getElementById('dash-hv-search');
+  const hvSearchClear = document.getElementById('dash-hv-search-clear');
+  if (hvSearchInput) {
+    hvSearchInput.addEventListener('input', () => {
+      hvSearch = hvSearchInput.value || '';
+      if (hvReportRows.length) renderHvReport();
+      if (hvSearchClear) hvSearchClear.style.display = hvSearch ? '' : 'none';
+    });
+  }
+  if (hvSearchClear) {
+    hvSearchClear.style.display = 'none';
+    hvSearchClear.addEventListener('click', () => {
+      hvSearch = '';
+      if (hvSearchInput) hvSearchInput.value = '';
+      hvSearchClear.style.display = 'none';
+      if (hvReportRows.length) renderHvReport();
+      if (hvSearchInput) hvSearchInput.focus();
+    });
+  }
+
   // Branch/Mode selections persist to chrome.storage.local (see loadPerfPreferences/
   // renderPerfBranchDropdown) so they come back pre-selected next time the popup
   // opens — date range intentionally does NOT persist, picked fresh each time.
@@ -2736,6 +2756,8 @@ let hvReportMode = 'summary'; // mode hvReportRows was actually BUILT for — se
                                // read by renderHvReport()/downloadHvReport() so a stale toggle click
                                // can never make Download not match what's on screen
 let hvSummaryFilter = 'all';  // 'all' | 'validated' | 'pending' — set by clicking a Total/Validated/
+                               // Pending stat cell in renderHvReportSummary(); reset on every fresh
+let hvSearch = '';
                                // Pending stat cell in renderHvReportSummary(); reset on every fresh
                                // generateHoldValidationReport() call so a new report always starts
                                // fully visible. Download is unaffected — it always exports everything,
@@ -3043,6 +3065,19 @@ function getSelectedHvBranchIds() {
     if (!f) return '';
     return f.toLowerCase() === 'willing to receive today' ? 'Invalid' : 'Valid';
   }
+  function hvDeriveFinalStatus(consignmentStatus) {
+    const s = String(consignmentStatus || '').trim().toLowerCase();
+    if (!s) return 'Hold';
+    if (s === 'delivered' || s === 'partial delivery' || s === 'paid return') return 'Delivered';
+    if (s === 'return' || s === 'return requested') return 'Return';
+    return 'Hold';
+  }
+  function hvDeriveAction(finalStatus) {
+    const s = String(finalStatus || '').trim();
+    if (s === 'Delivered') return 'Re-assigned';
+    if (s === 'Hold') return 'Hold';
+    return '';
+  }
 
   let hvRemarkCatMap = null; // english remark -> category (per popup load)
   async function hvFetchRemarkCategories(idToken) {
@@ -3080,10 +3115,14 @@ function getSelectedHvBranchIds() {
       if (!ccRows.length) return;
       const latest = ccRows[ccRows.length - 1];
       const engKey = (latest.remarks || '').trim();
+      const feedback = catMap.get(engKey) || '';
+      const finalStatus = hvDeriveFinalStatus(latest.consignment_status || '');
       out.set(k, {
-        feedback: catMap.get(engKey) || '',
-        validation: hvDeriveValidation(catMap.get(engKey) || ''),
+        feedback,
+        validation: hvDeriveValidation(feedback),
         validator_name: ((latest.author && latest.author.name) || latest.author_system_id || '').trim(),
+        consignment_status: finalStatus,
+        action: hvDeriveAction(finalStatus),
         created_at: latest.created_at || '',
       });
     });
@@ -3091,10 +3130,11 @@ function getSelectedHvBranchIds() {
   }
 
   async function hvBulkSyncOneConnection(token, branchId, conn, consolidated, dateKey) {
-    const res = { scanned: 0, filled: 0, syncedRows: 0, syncedCells: 0, noCc: 0, skipped: 0 };
+    const res = { scanned: 0, filled: 0, syncedRows: 0, syncedCells: 0, overwrittenRows: 0, overwrittenCells: 0, noCc: 0, skipped: 0 };
     const lookups = hvEffectiveRules(conn, 'lookup');
     const writes = hvEffectiveRules(conn, 'write').filter(r =>
-      r.kind === 'feedback' || r.kind === 'validation' || r.kind === 'validator_name');
+      r.kind === 'feedback' || r.kind === 'validation' || r.kind === 'validator_name' ||
+      r.kind === 'consignment_status' || r.kind === 'action');
     if (!lookups.length || !writes.length) throw new Error('no lookup/write rule');
     const cidRule = lookups.find(r => r.kind === 'consignment');
     if (!cidRule) throw new Error('no consignment lookup — unclear which column to match on');
@@ -3140,20 +3180,27 @@ function getSelectedHvBranchIds() {
         if (!hvSheetCellIsDate(String(cell || '').trim(), dateKey)) { dateOk = false; break; }
       }
       if (!dateOk) continue;
-      const blanks = writeLetters.filter(({ letter }) =>
-        String((writeCols.get(letter) || [])[i] || '').trim() === '');
-      if (!blanks.length) { res.filled++; continue; }
       const vals = consolidated.get(`${branchId}__${cid}`);
       if (!vals) { res.noCc++; continue; }
+      // Latest-wins (app parity): blank → fill, mismatch → overwrite, never clear with blank latest.
+      const needs = [];
+      for (const { rule, letter } of writeLetters) {
+        const cur = String((writeCols.get(letter) || [])[i] || '').trim();
+        const v = vals[rule.kind] != null ? String(vals[rule.kind]).trim() : '';
+        if (!v) continue;
+        if (cur !== v) needs.push({ rule, letter, v, isBlank: cur === '' });
+      }
+      if (!needs.length) { res.filled++; continue; }
       try {
-        for (const { rule, letter } of blanks) {
-          const v = vals[rule.kind] != null ? String(vals[rule.kind]) : '';
+        let filledInRow = 0, overInRow = 0;
+        for (const { letter, v, isBlank } of needs) {
           await hvSheetsWriteCell(token, conn.sheetId, tab, letter, i + 1, v);
           const col = writeCols.get(letter) || [];
           col[i] = v;
-          res.syncedCells++;
+          if (isBlank) { res.syncedCells++; filledInRow++; } else { res.overwrittenCells++; overInRow++; }
         }
-        res.syncedRows++;
+        if (filledInRow) res.syncedRows++;
+        if (overInRow) res.overwrittenRows++;
       } catch (e) {
         res.skipped++;
         console.warn('[DB] HV sync: row write failed:', cid, e);
@@ -3252,7 +3299,7 @@ function getSelectedHvBranchIds() {
         }
       }
 
-      let totDays = 0, totConns = 0, totScanned = 0, totFilled = 0, totRows = 0, totCells = 0, totNoCc = 0;
+      let totDays = 0, totConns = 0, totScanned = 0, totFilled = 0, totRows = 0, totCells = 0, totOverRows = 0, totOverCells = 0, totNoCc = 0;
       const errs = [];
       for (const dateKey of dayKeys) {
         const consolidated = hvBuildConsolidatedCc(allRows, dateKey, catMap);
@@ -3267,7 +3314,7 @@ function getSelectedHvBranchIds() {
             try {
               const r = await hvBulkSyncOneConnection(token, branchId, conn, consolidated, dateKey);
               totScanned += r.scanned; totFilled += r.filled;
-              totRows += r.syncedRows; totCells += r.syncedCells; totNoCc += r.noCc;
+              totRows += r.syncedRows; totCells += r.syncedCells; totOverRows += (r.overwrittenRows || 0); totOverCells += (r.overwrittenCells || 0); totNoCc += r.noCc;
             } catch (e) {
               errs.push(`${label}: ${e.message || 'sync failed'}`);
             }
@@ -3275,7 +3322,9 @@ function getSelectedHvBranchIds() {
         }
       }
       if (!totConns) { setStatus('No remark connection in any branch for this range (check scope)'); return; }
-      let msg = `✓ ${totDays} day(s): ${totRows} row synced (${totCells} cells) · ${totFilled} already filled · ${totNoCc} no CC yet · ${totScanned} sheet rows দেখা (${totConns} connection)`;
+      let msg = `✓ ${totDays} day(s): ${totRows} row synced (${totCells} cells)` +
+        (totOverRows ? ` · ${totOverRows} row updated (${totOverCells} cells overwritten)` : '') +
+        ` · ${totFilled} already filled · ${totNoCc} no CC yet · ${totScanned} sheet rows দেখা (${totConns} connection)`;
       if (errs.length) msg += ` · ⚠ ${errs.length} error: ${errs.slice(0, 2).join('; ')}${errs.length > 2 ? '…' : ''}`;
       setStatus(msg);
     } catch (e) {
@@ -3295,6 +3344,11 @@ async function generateHoldValidationReport({ skipRender = false } = {}) {
 
   hvReportRows = [];
   hvSummaryFilter = 'all';
+  hvSearch = '';
+  const hvSB = document.getElementById('dash-hv-searchbar');
+  const hvSI = document.getElementById('dash-hv-search');
+  if (hvSB) hvSB.style.display = 'none';
+  if (hvSI) hvSI.value = '';
   if (!skipRender && reportEl) reportEl.innerHTML = '';
 
   if (!fromInput?.value || !toInput?.value) {
@@ -3542,9 +3596,10 @@ async function generateHoldValidationReport({ skipRender = false } = {}) {
  *  can never disagree while a report is showing. */
 function renderHvReport() {
   const reportEl = document.getElementById('dash-hv-report');
+  const bar = document.getElementById('dash-hv-searchbar');
   if (!reportEl) return;
-  if (!hvReportRows.length) { reportEl.innerHTML = ''; return; }
-
+  if (!hvReportRows.length) { reportEl.innerHTML = ''; if (bar) bar.style.display = 'none'; return; }
+  if (bar) bar.style.display = '';
   if (hvReportMode === 'summary') renderHvReportSummary(reportEl);
   else renderHvReportDetails(reportEl);
 }
@@ -3563,7 +3618,17 @@ function renderHvReportSummary(reportEl) {
     true
   );
 
-  const sorted = filtered.slice().sort((a, b) => {
+  // Search (consignment / phone / name) on top of status filter — parity with CC panel.
+  const _q = (hvSearch || '').trim().toLowerCase();
+  const _qd = _q.replace(/[\s\-()]/g, '');
+  const searchFiltered = _q ? filtered.filter(r =>
+    (r.cId || '').toLowerCase().includes(_q) ||
+    (_qd && (r.customerPhone || '').replace(/[\s\-()]/g, '').includes(_qd)) ||
+    (r.customerName || '').toLowerCase().includes(_q) ||
+    (r.agentName || '').toLowerCase().includes(_q)
+  ) : filtered;
+
+  const sorted = searchFiltered.slice().sort((a, b) => {
     if (a.stillPending !== b.stillPending) return a.stillPending ? -1 : 1;
     return b.dateKey.localeCompare(a.dateKey);
   });
@@ -3606,9 +3671,10 @@ function renderHvReportSummary(reportEl) {
         </div>
         <div class="dash-hv-remark-section" data-idx="${idx}" style="display:none"></div>
       </div>`;
-  }).join('') : `<div class="dash-hv-branch-empty">No entries for this filter</div>`;
+  }).join('') : `<div class="dash-hv-branch-empty">${_q ? `🔍 "${escapeHtml(hvSearch.trim())}" — no match` : 'No entries for this filter'}</div>`;
 
   reportEl.innerHTML = `
+    ${_q ? `<div class="dash-hv-status">🔍 "${escapeHtml(hvSearch.trim())}" — ${searchFiltered.length} match${searchFiltered.length === 1 ? '' : 'es'}</div>` : ''}
     <div class="dash-hv-summary-grid">
       <div class="dash-hv-summary-stat${hvSummaryFilter === 'all' ? ' active' : ''}" data-filter="all">
         <div class="dash-hv-summary-val">${totalRequest}</div>
@@ -3795,7 +3861,16 @@ async function toggleHvRemarkSection(reportEl, sorted, idx) {
  *  the unconsolidated breakdown Summary's rows are built from. Now as chat
  *  bubbles — Worker left (orange), CC right (green) so conversation is obvious. */
 function renderHvReportDetails(reportEl) {
-  const rowsHtml = hvReportRows.map(r => {
+  const _q = (hvSearch || '').trim().toLowerCase();
+  const _qd = _q.replace(/[\s\-()]/g, '');
+  const filtered = _q ? hvReportRows.filter(r =>
+    (r.cId || '').toLowerCase().includes(_q) ||
+    (_qd && (r.customerPhone || '').replace(/[\s\-()]/g, '').includes(_qd)) ||
+    (r.customerName || '').toLowerCase().includes(_q) ||
+    (r.agentName || '').toLowerCase().includes(_q) ||
+    (r.remark || '').toLowerCase().includes(_q)
+  ) : hvReportRows;
+  const rowsHtml = filtered.map(r => {
     const isWorker = r.source === 'WORKER';
     const badge = isWorker
       ? '<span class="dash-hv-badge dash-hv-badge-pending">🙋 Worker</span>'
@@ -3822,7 +3897,11 @@ function renderHvReportDetails(reportEl) {
       </div>`;
   }).join('');
 
-  reportEl.innerHTML = `<div class="dash-hv-list">${rowsHtml}</div>`;
+  if (!filtered.length) {
+    reportEl.innerHTML = _q ? `<div class="dash-hv-branch-empty">🔍 "${escapeHtml(hvSearch.trim())}" — no match</div>` : `<div class="dash-hv-branch-empty">No remarks found</div>`;
+    return;
+  }
+  reportEl.innerHTML = `${_q ? `<div class="dash-hv-status">🔍 "${escapeHtml(hvSearch.trim())}" — ${filtered.length} match${filtered.length === 1 ? '' : 'es'}</div>` : ''}<div class="dash-hv-list">${rowsHtml}</div>`;
 }
 
 /** Lowercases and dashes a branch name for use inside a filename. */
