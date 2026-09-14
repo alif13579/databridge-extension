@@ -1201,7 +1201,7 @@
   }
   function deriveActionFromFinalStatus(finalStatus) {
     const f = String(finalStatus || '').trim();
-    if (f === 'Delivered') return 'Reassigned';
+    if (f === 'Delivered') return 'Re-assigned';
     if (f === 'Hold') return 'Hold';
     return '';
   }
