@@ -4696,7 +4696,7 @@ async function routingCopyDiag(btn) {
     });
     L.push('rows (' + ((d.rows || []).length) + '):');
     (d.rows || []).forEach(r => {
-      if (r.cached) L.push('  ' + r.id + ' -> cached');
+      if (r.cached) L.push('  ' + r.id + ' -> cached [' + ((r.fields || []).join(',') || 'EMPTY') + ']');
       else if (r.ok) L.push('  ' + r.id + ' -> ok [' + (r.fields || []).join(',') + '] hist=' + (r.hist || 0));
       else L.push('  ' + r.id + ' -> ERR ' + (r.err || 'failed'));
     });
@@ -4918,7 +4918,8 @@ function routingHermesDayKey() {
 }
 
 function routingHermesCacheKey() {
-  return 'routing_hermes_' + routingHermesDayKey();
+  // v2: v1 could hold empty parses (cached as success) → cards stuck at '—'.
+  return 'routing_hermes_v2_' + routingHermesDayKey();
 }
 
 async function routingHermesTab() {
@@ -5107,11 +5108,13 @@ async function routingEnrichHermes(cfg, rows, onProgress) {
     cache = r[cacheKey] || {};
   } catch {}
   // Cached age bosiye dao (instant render), bakigulo background-e ano.
+  const presentOf = (info) => ['hermesAddress', 'hermesStatus', 'phone', 'customer', 'hub', 'lastMile', 'cod', 'merchant']
+    .filter(k => String((info || {})[k] || '').trim());
   rows.forEach(row => {
     const c = cache[row.id];
     if (c) {
       Object.assign(row, c, { history: Array.isArray(c.history) ? c.history : [] });
-      routingDiagPushRow({ id: row.id, cached: true });
+      routingDiagPushRow({ id: row.id, cached: true, fields: presentOf(c) });
     }
   });
   const pending = rows.filter(row => !cache[row.id]);
@@ -5120,9 +5123,11 @@ async function routingEnrichHermes(cfg, rows, onProgress) {
     try {
       const info = await routingEnrichOne(row.id);
       Object.assign(row, info);
-      cache[row.id] = info;
-      const present = ['hermesAddress', 'hermesStatus', 'phone', 'customer', 'hub', 'lastMile', 'cod', 'merchant']
-        .filter(k => String(info[k] || '').trim());
+      // Empty parse (Hermes shape change?) must NOT poison the day-cache —
+      // next Reload retries instead of showing '—' forever.
+      if (presentOf(info).length) cache[row.id] = info;
+      else console.warn('[DB] routing enrich empty parse, not caching:', row.id);
+      const present = presentOf(info);
       routingDiagPushRow({ id: row.id, ok: true, fields: present, hist: (info.history || []).length });
     } catch (e) {
       const msg = e?.message || 'failed';
