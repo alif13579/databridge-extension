@@ -4571,6 +4571,8 @@ async function loadRoutingTab() {
   if (reloadBtn) { reloadBtn.disabled = true; reloadBtn.textContent = '⏳ Loading…'; }
   bindRoutingSettingsOnce();
   bindRoutingSubTabsOnce();
+  bindRoutingDiagOnce();
+  routingDiagReset();
   // Instant spinner — sheet + Hermes enrich sesh howa porjonto thakbe.
   if (statusEl) statusEl.innerHTML = '<span class="spinner"></span> Loading today\u2019s data from sheet…';
   listEl.innerHTML = '<div class="dash-cc-status"><span class="spinner"></span> ⏳ Loading…</div>';
@@ -4623,6 +4625,10 @@ async function loadRoutingTab() {
   routingState.decisions = decisions;
   routingState.viaSocket = viaSocket;
   routingState.ownLabel = ownLabel;
+  if (routingDiag) {
+    routingDiag.source = viaSocket ? ('socket:' + (ownLabel || '')) : 'local-settings';
+    routingDiag.tab = tab; routingDiag.incoming = incoming.length; routingDiag.outgoing = outgoing.length;
+  }
   paintRoutingSubTabs();
   renderRoutingList();
   // Hermes enrich: cached instant, bakigulo background-e fetch — seshe re-render.
@@ -4648,6 +4654,67 @@ async function loadRoutingTab() {
 
 let routingState = { cfg: null, tab: '', incoming: [], outgoing: [], decisions: {}, subTab: 'incoming', viaSocket: false, ownLabel: '' };
 let routingLoading = false; // in-flight guard — Reload double-click-e parallel sheet storm hobe na
+
+// ── Routing diagnostics (📋 Copy diag) ─────────────────────────────
+// No PII values: row IDs (sheet-own) + error strings + field-presence +
+// response top-level keys + endpoint paths only. Paste → remote diagnosis.
+var routingDiag = null;
+function routingDiagReset() {
+  routingDiag = { at: '', source: '', tab: '', incoming: 0, outgoing: 0,
+    hermesTab: 'none', authFailed: false, calls: [], rows: [], firstKeys: '' };
+  try {
+    routingDiag.at = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Dhaka' }).format(new Date());
+  } catch { routingDiag.at = new Date().toISOString().slice(0, 10); }
+}
+function routingDiagPushCall(entry) {
+  if (!routingDiag) return;
+  routingDiag.calls.push(entry);
+  if (routingDiag.calls.length > 25) routingDiag.calls.shift();
+}
+function routingDiagPushRow(entry) {
+  if (!routingDiag) return;
+  routingDiag.rows.push(entry);
+  if (routingDiag.rows.length > 40) routingDiag.rows.shift();
+}
+async function routingCopyDiag(btn) {
+  const orig = btn ? btn.textContent : '';
+  const done = (t) => { if (btn) { btn.textContent = t; setTimeout(() => { btn.textContent = orig; }, 1500); } };
+  try {
+    let sniffed = [];
+    try {
+      const s = await chrome.storage.local.get(['hermes_api_sniffed']);
+      sniffed = (s && s.hermes_api_sniffed) || [];
+    } catch {}
+    const d = routingDiag || {};
+    const L = [];
+    L.push('DataBridge routing diag — ' + (d.at || '?'));
+    L.push('source=' + (d.source || '?') + ' tab="' + (d.tab || '?') + '" incoming=' + (d.incoming || 0) + ' outgoing=' + (d.outgoing || 0));
+    L.push('hermesTab=' + (d.hermesTab || '?') + ' authFailed=' + !!d.authFailed);
+    L.push('calls (' + ((d.calls || []).length) + '):');
+    (d.calls || []).forEach(c => {
+      L.push('  ' + c.m + ' ' + c.u + ' -> ' + c.res + (c.ms != null ? ' ' + c.ms + 'ms' : '') + (c.csrf ? ' csrf=yes' : ' csrf=NO') + (c.loginPage ? ' LOGINPAGE' : ''));
+    });
+    L.push('rows (' + ((d.rows || []).length) + '):');
+    (d.rows || []).forEach(r => {
+      if (r.cached) L.push('  ' + r.id + ' -> cached');
+      else if (r.ok) L.push('  ' + r.id + ' -> ok [' + (r.fields || []).join(',') + '] hist=' + (r.hist || 0));
+      else L.push('  ' + r.id + ' -> ERR ' + (r.err || 'failed'));
+    });
+    if (d.firstKeys) L.push('firstKeys: ' + d.firstKeys);
+    L.push('sniffed endpoints (' + sniffed.length + '):');
+    sniffed.slice(0, 15).forEach(e => L.push('  ' + e.m + ' ' + e.u));
+    await navigator.clipboard.writeText(L.join('\n'));
+    done('✓ Copied');
+  } catch (e) { done('✗ Failed'); }
+}
+function bindRoutingDiagOnce() {
+  if (bindRoutingDiagOnce.done) return;
+  bindRoutingDiagOnce.done = true;
+  try {
+    const b = document.getElementById('routing-diag-btn');
+    if (b) b.addEventListener('click', () => routingCopyDiag(b));
+  } catch {}
+}
 const ROUTING_SUBTAB_KEY = 'routing_subtab';
 
 function paintRoutingSubTabs() {
@@ -4859,9 +4926,11 @@ async function routingHermesTab() {
   const active = (tabs || []).find(t => t.active) || (tabs || [])[0];
   if (active) {
     console.log(`[DB] routing hermes tab: reusing #${active.id} ${active.url || ''}`);
+    if (routingDiag) routingDiag.hermesTab = 'reused-existing';
     return active;
   }
   console.log('[DB] routing hermes tab: none open — creating background tab (fresh tab = Hermes login needed there too)');
+  if (routingDiag) routingDiag.hermesTab = 'created-new-background';
   const created = await chrome.tabs.create({
     url: 'https://hermes.pathaointernal.com/orders/all', active: false,
   });
@@ -4884,6 +4953,7 @@ async function routingHermesTab() {
 async function routingHermesFetch(path) {
   const tab = await routingHermesTab();
   const clean = '/' + String(path || '').replace(/^\/+/, '');
+  const t0 = Date.now();
   const results = await chrome.scripting.executeScript({
     target: { tabId: tab.id },
     func: async (p) => {
@@ -4912,22 +4982,35 @@ async function routingHermesFetch(path) {
     args: [clean],
   });
   const r = results && results[0] && results[0].result;
+  const ms = Date.now() - t0;
   if (!r) {
     console.warn('[DB] routing hermes exec failed:', clean,
       '| lastError:', chrome.runtime.lastError?.message || 'none',
       '| tab:', tab.id, (tab.url || '').slice(0, 80));
+    routingDiagPushCall({ m: 'GET', u: clean, res: 'exec-failed:' + (chrome.runtime.lastError?.message || 'none').slice(0, 80), ms, csrf: false, loginPage: false });
     throw new Error('Hermes tab exec failed');
   }
+  const bodyPrev = String(r.data == null ? '' : (typeof r.data === 'string' ? r.data : JSON.stringify(r.data))).slice(0, 300);
+  const looksLogin = /login|sign-?in|auth/i.test(bodyPrev);
   if (!r.ok) {
-    const bodyPrev = String(r.data == null ? '' : (typeof r.data === 'string' ? r.data : JSON.stringify(r.data))).slice(0, 300);
     console.warn('[DB] routing hermes HTTP fail:', clean,
       '| status:', r.status,
       '| tab:', tab.id, (tab.url || '').slice(0, 80),
       '| csrfMeta:', r.csrf ? 'yes' : 'NO',
       '| body:', bodyPrev || '(empty)',
-      '| loginPage:', /login|sign-?in|auth/i.test(bodyPrev) ? 'YES' : 'no');
+      '| loginPage:', looksLogin ? 'YES' : 'no');
+    routingDiagPushCall({ m: 'GET', u: clean, res: String(r.status || 'fetch-failed'), ms, csrf: !!r.csrf, loginPage: looksLogin });
     throw new Error(`Hermes ${r.status || 'fetch failed'}`);
   }
+  // Silent-killer fix: an expired session sometimes answers 200 with the
+  // login HTML instead of 401 JSON — that used to parse as "empty fields".
+  // Surface it as auth failure so the login message + fail-fast trigger.
+  if (typeof r.data === 'string' && /<\s*(!doctype|html)/i.test(r.data)) {
+    console.warn('[DB] routing hermes login page (HTTP 200 HTML):', clean);
+    routingDiagPushCall({ m: 'GET', u: clean, res: '200-login-page', ms, csrf: !!r.csrf, loginPage: true });
+    throw new Error('Hermes 401 (login page)');
+  }
+  routingDiagPushCall({ m: 'GET', u: clean, res: String(r.status), ms, csrf: !!r.csrf, loginPage: false });
   return r.data;
 }
 
@@ -4991,6 +5074,12 @@ async function routingEnrichOne(id) {
   }
   const d = routingExtractDetails(details);
   Object.assign(out, d);
+  if (routingDiag && !routingDiag.firstKeys && details && typeof details === 'object') {
+    try {
+      const root = (details.data && typeof details.data === 'object') ? details.data : details;
+      routingDiag.firstKeys = Object.keys(root).slice(0, 25).join(',');
+    } catch {}
+  }
   if (d.phone) {
     try {
       const hist = await routingHermesFetch('/api/v1/orders/all?receiver_phone=' + encodeURIComponent(d.phone) + '&all_order_page=true');
@@ -5020,7 +5109,10 @@ async function routingEnrichHermes(cfg, rows, onProgress) {
   // Cached age bosiye dao (instant render), bakigulo background-e ano.
   rows.forEach(row => {
     const c = cache[row.id];
-    if (c) Object.assign(row, c, { history: Array.isArray(c.history) ? c.history : [] });
+    if (c) {
+      Object.assign(row, c, { history: Array.isArray(c.history) ? c.history : [] });
+      routingDiagPushRow({ id: row.id, cached: true });
+    }
   });
   const pending = rows.filter(row => !cache[row.id]);
   let done = 0, authFailed = false;
@@ -5029,10 +5121,14 @@ async function routingEnrichHermes(cfg, rows, onProgress) {
       const info = await routingEnrichOne(row.id);
       Object.assign(row, info);
       cache[row.id] = info;
+      const present = ['hermesAddress', 'hermesStatus', 'phone', 'customer', 'hub', 'lastMile', 'cod', 'merchant']
+        .filter(k => String(info[k] || '').trim());
+      routingDiagPushRow({ id: row.id, ok: true, fields: present, hist: (info.history || []).length });
     } catch (e) {
       const msg = e?.message || 'failed';
       console.warn('[DB] routing enrich failed:', row.id, msg);
       row.hermesError = msg;
+      routingDiagPushRow({ id: row.id, err: msg });
       // Hermes 401 = login session expired in the browser — sob row-tei
       // fail korbe, tai ekhanei thamo (fail fast) ar clear message dekhao.
       if (/Hermes 401/.test(msg)) { authFailed = true; break; }
@@ -5042,6 +5138,7 @@ async function routingEnrichHermes(cfg, rows, onProgress) {
     await new Promise(r => setTimeout(r, 150));
   }
   try { await chrome.storage.local.set({ [cacheKey]: cache }); } catch {}
+  if (routingDiag) routingDiag.authFailed = authFailed;
   return { rows, authFailed };
 }
 // ══════════════════════════════
