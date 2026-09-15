@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "DataBridge",
-  "version": "2.152",
+  "version": "2.153",
   "author": "Alif Hossain",
   "description": "Seamless data transfer between platforms.",
   "permissions": [
@@ -13,7 +13,8 @@
     "identity",
     "alarms",
     "offscreen",
-    "webRequest"
+    "webRequest",
+    "downloads"
   ],
   "host_permissions": [
     "https://hermes.pathaointernal.com/*",
@@ -100,7 +101,7 @@
     }
   },
   "content_security_policy": {
-    "extension_pages": "script-src 'self'; object-src 'self'"
+    "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'"
   },
   "icons": {
     "16": "icons/icon16.png",

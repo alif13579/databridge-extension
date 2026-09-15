@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Audio Converter — DataBridge</title>
+  <link rel="stylesheet" href="converter.css">
+  <script src="theme-boot.js"></script>
+</head>
+<body>
+  <div class="conv-wrap">
+    <div class="conv-header">
+      <h2>🎵 Audio Converter</h2>
+      <div class="conv-sub">Local file in → local file out. Fully offline, nothing is uploaded.</div>
+    </div>
+
+    <div class="conv-drop" id="drop-zone" tabindex="0" role="button" aria-label="Choose an audio file">
+      <div class="conv-drop-icon">📁</div>
+      <div class="conv-drop-text" id="drop-text">Drop an audio file here<br>or <span class="conv-link">choose a file</span></div>
+      <div class="conv-file-name" id="file-name"></div>
+      <input type="file" id="file-input" accept="audio/*,.aac,.m4a,.mp3,.wav,.ogg,.oga,.opus,.flac,.wma,.amr,.aiff,.aif,.mid,.midi,.weba" hidden>
+    </div>
+
+    <div class="conv-row">
+      <label class="conv-label" for="format-select">Output format</label>
+      <select class="conv-select" id="format-select">
+        <option value="mp3">MP3</option>
+        <option value="m4a">M4A (AAC)</option>
+        <option value="wav">WAV (uncompressed)</option>
+        <option value="ogg">OGG (Vorbis)</option>
+        <option value="opus">Opus</option>
+        <option value="flac">FLAC (lossless)</option>
+      </select>
+    </div>
+
+    <div class="conv-row" id="quality-row">
+      <label class="conv-label" for="quality-select">Quality</label>
+      <select class="conv-select" id="quality-select"></select>
+    </div>
+
+    <div class="conv-save">
+      <div class="conv-save-preview">💾 Save to: <span id="save-preview">Downloads/</span></div>
+      <div class="conv-row">
+        <label class="conv-label" for="folder-input">Folder</label>
+        <input type="text" class="conv-select" id="folder-input" placeholder="Downloads (blank = root)" maxlength="60">
+      </div>
+      <label class="conv-check"><input type="checkbox" id="saveas-check"> Ask where to save every time</label>
+    </div>
+
+    <button class="conv-btn" id="convert-btn" disabled>Convert</button>
+
+    <div class="conv-progress" id="progress-wrap" hidden>
+      <div class="conv-progress-bar" id="progress-bar"></div>
+    </div>
+    <div class="conv-status" id="status">Choose a file to start.</div>
+    <a class="conv-btn conv-download" id="download-link" hidden>⬇ Download converted file</a>
+    <div class="conv-hint">First conversion loads the offline engine (~32&nbsp;MB, one-time). Large files use memory while converting.</div>
+  </div>
+
+  <script src="lib/ffmpeg/ffmpeg.js"></script>
+  <script src="converter.js"></script>
+</body>
+</html>

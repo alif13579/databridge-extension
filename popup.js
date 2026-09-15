@@ -1452,6 +1452,12 @@ function setupSearch() {
 }
 
 function setupSettings() {
+  const converterBtn = document.getElementById('open-audio-converter-btn');
+  if (converterBtn) {
+    converterBtn.addEventListener('click', () => {
+      chrome.tabs.create({ url: chrome.runtime.getURL('converter.html') });
+    });
+  }
   const clearBtn = document.getElementById('clear-history-btn');
   if (!clearBtn) return;
   clearBtn.addEventListener('click', async () => {
