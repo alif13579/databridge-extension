@@ -2119,43 +2119,135 @@
         achievement: xcheck.achievement || 0,
       },
       sync: runSync.at ? runSync.last : '',
+      fbReconcile: fbRunSync.lastReconcile || '',
     };
   }
 
   // ── FIREBASE RUN STATUS SYNC (run → courier/consignments + delivery_run) ──
-  // Supabase sync-er moto run khullei chole, 2 step-e:
-  // 1. courier/consignments/{id}/status ← live page status (known only).
-  // 2. delivery_run node-er consignments map ← source status (app-er backfill
-  //    pattern, WorkerSpaceFragment). Sudhu diff-te PATCH; node na thakle skip.
-  const fbRunSync = { sig: null, inflight: false };
+  // Hermes run-routes page is source of truth for run MEMBERSHIP + status:
+  // 1. courier/consignments/{id}/status ← live page status (known only, node must exist).
+  // 2. delivery_run consignments map reconcile — page-only ids ADDED, firebase-only
+  //    ids DELETED, differing statuses UPDATED (single PATCH, null = delete).
+  //    Deletes are destructive: they fire only after the same page id-set is seen
+  //    twice in a row (SPA partial-render guard — first sight only adds/updates),
+  //    never on an empty page read, and only for ID-shaped keys (never metadata).
+  //    The run node itself is never created here (siblings like resolvedBranchIds
+  //    belong to the sheet-wizard flow); missing run node → membership skipped.
+  const fbRunSync = { sig: null, inflight: false, lastIdsKey: null, lastRunId: null, verifyTimer: null, lastReconcile: '' };
+
+  const normRunId = id => String(id || '').trim().toUpperCase();
+  const idsKeyOf = ids => ids.slice().sort().join(',');
+
+  function readPageStatus() {
+    const map = new Map();
+    parcelRows().forEach(r => {
+      const id = rowId(r);
+      if (id && ID_REGEX.test(id) && !map.has(id)) map.set(id, (rowStatus(r) || '').trim());
+    });
+    return map;
+  }
+
+  async function reconcileRunRoutesMembership(runId, token, base, pageStatus, consSrc, allowDeletes) {
+    const curRes = await fetch(`${base}.json?auth=${token}`);
+    if (curRes.status === 401 || curRes.status === 403) { fbRunSync.sig = null; return null; }
+    const cur = curRes.ok ? await curRes.json().catch(() => null) : null;
+    if (!cur || typeof cur !== 'object' || Array.isArray(cur)) {
+      console.log(`[DB FbRunSync] run ${runId}: no run_routes node in firebase — membership reconcile skipped (never created here)`);
+      return null;
+    }
+    const norm = v => {
+      if (typeof v === 'string') return v.trim();
+      if (v && typeof v === 'object') return String(v.status || '').trim();
+      return '';
+    };
+    const same = (a, b) => String(a || '').trim().toLowerCase() === String(b || '').trim().toLowerCase();
+    const fbKeys = Object.keys(cur);
+    const fbByNorm = new Map();
+    fbKeys.forEach(k => { if (!fbByNorm.has(normRunId(k))) fbByNorm.set(normRunId(k), k); });
+    const pageIds = [...pageStatus.keys()];
+    const pageSet = new Set(pageIds.map(normRunId));
+    const patch = {};
+    let added = 0, updated = 0, deleted = 0;
+    // ADD (page-only) + UPDATE (differing) — consSrc anchors on master when it exists.
+    pageIds.forEach(id => {
+      const fbKey = fbByNorm.get(normRunId(id));
+      const pageSt = pageStatus.get(id) || '';
+      const seed = (consSrc && consSrc[id]) || pageSt;
+      if (fbKey === undefined) {
+        patch[id] = seed || '';
+        added++;
+      } else if (pageSt && !same(norm(cur[fbKey]), seed)) {
+        patch[fbKey] = seed;
+        updated++;
+      }
+    });
+    // DELETE (firebase-only) — gated by caller, ID-shaped keys only.
+    if (allowDeletes) {
+      fbKeys.forEach(k => {
+        if (!ID_REGEX.test(k.trim())) return; // never touch non-id children
+        if (pageSet.has(normRunId(k))) return;
+        patch[k] = null;
+        deleted++;
+      });
+    }
+    const keys = Object.keys(patch);
+    if (!keys.length) {
+      console.log(`[DB FbRunSync] run ${runId}: run_routes already in sync (page ${pageIds.length} / fb ${fbKeys.length})`);
+      return { added: 0, updated: 0, deleted: 0 };
+    }
+    if (deleted > 0 && deleted === fbKeys.length && fbKeys.length > 0) {
+      console.warn(`[DB FbRunSync] run ${runId}: FULL membership replace — all ${fbKeys.length} firebase ids absent from page. Proceeding (Hermes is source of truth).`);
+    }
+    const w = await fetch(`${base}.json?auth=${token}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(patch)
+    });
+    if (!w.ok) throw new Error(`HTTP ${w.status}`);
+    console.log(`[DB FbRunSync] run ${runId}: reconcile +${added} −${deleted} ~${updated} (page ${pageIds.length} / fb ${fbKeys.length})`);
+    return { added, updated, deleted };
+  }
+
+  // Second-pass delete verifier: re-reads the DOM after a quiet window; only if the
+  // id-set is byte-identical does the gated delete run. Self-cleans SPA staleness.
+  function scheduleDeleteVerify(runId, idsKey) {
+    if (fbRunSync.verifyTimer) { clearTimeout(fbRunSync.verifyTimer); fbRunSync.verifyTimer = null; }
+    fbRunSync.lastRunId = runId;
+    fbRunSync.lastIdsKey = idsKey;
+    fbRunSync.verifyTimer = setTimeout(async () => {
+      fbRunSync.verifyTimer = null;
+      try {
+        if (getRunId() !== runId) return; // navigated away
+        const now = readPageStatus();
+        if (!now.size) return; // never mass-delete on an empty read
+        if (idsKeyOf([...now.keys()]) !== idsKey) return; // page moved on — fresh cycle owns it
+        const token = await xcheckIdToken();
+        const base = `${XCHECK_FB_URL}/courier/run_routes/delivery_run/${encodeURIComponent(runId)}/consignments`;
+        const res = await reconcileRunRoutesMembership(runId, token, base, now, {}, true);
+        if (res && (res.added + res.updated + res.deleted) > 0) {
+          fbRunSync.lastReconcile = `+${res.added} −${res.deleted} ~${res.updated} @${new Date().toLocaleTimeString()}`;
+        }
+      } catch (err) {
+        console.warn('[DB FbRunSync] delete-verify failed:', err);
+      }
+    }, 8000);
+  }
 
   async function maybeSyncFirebaseRunStatus() {
-    const rows = parcelRows();
-    const ids = [...new Set(rows.map(rowId).filter(id => id && ID_REGEX.test(id)))];
+    const pageStatus = readPageStatus();
+    const ids = [...pageStatus.keys()];
     if (!ids.length) return;
-    const sig = `${getRunId()}|${ids.slice().sort().join(',')}`;
+    const runId = getRunId();
+    // Status-inclusive sig: same ids but changed statuses retrigger too.
+    const sig = `${runId}|${ids.map(id => id + ':' + (pageStatus.get(id) || '')).sort().join(',')}`;
     if (sig === fbRunSync.sig || fbRunSync.inflight) return;
     fbRunSync.sig = sig;
     fbRunSync.inflight = true;
     try {
       const token = await xcheckIdToken();
-      const runId = getRunId();
       const base = `${XCHECK_FB_URL}/courier/run_routes/delivery_run/${encodeURIComponent(runId)}/consignments`;
-      const curRes = await fetch(`${base}.json?auth=${token}`);
-      if (curRes.status === 401 || curRes.status === 403) { fbRunSync.sig = null; return; }
-      const cur = curRes.ok ? await curRes.json().catch(() => null) : null;
-      const norm = v => {
-        if (typeof v === 'string') return v.trim();
-        if (v && typeof v === 'object') return String(v.status || '').trim();
-        return '';
-      };
-      const same = (a, b) => String(a || '').trim().toLowerCase() === String(b || '').trim().toLowerCase();
       const isKnown = s => !!s && KNOWN_RUN_STATUSES.has(String(s).toLowerCase());
-      const pageStatus = new Map();
-      parcelRows().forEach(r => {
-        const id = rowId(r);
-        if (id) pageStatus.set(id, (rowStatus(r) || '').trim());
-      });
+      const same = (a, b) => String(a || '').trim().toLowerCase() === String(b || '').trim().toLowerCase();
       // 1. courier/consignments/{id}/status ← live page status (known only).
       const consSrc = {}; // id -> effective source status
       const consDiffs = {};
@@ -2190,25 +2282,15 @@
         if (!w1.ok) throw new Error(`HTTP ${w1.status}`);
         console.log(`[DB FbRunSync] run ${runId}: updated ${consKeys.length} courier/consignments statuses from live page`);
       }
-      // 2. run_routes backfill (app pattern) — node na thakle skip, banano hoy na.
-      if (!cur || typeof cur !== 'object' || Array.isArray(cur)) return;
-      const diffs = {};
-      ids.forEach(id => {
-        if (!consSrc[id] || same(norm(cur[id]), consSrc[id])) return;
-        diffs[id] = consSrc[id];
-      });
-      const keys = Object.keys(diffs);
-      if (!keys.length) {
-        console.log(`[DB FbRunSync] run ${runId}: all ${ids.length} run_routes statuses already in sync`);
-        return;
+      // 2. run_routes membership reconcile — Hermes page is source of truth.
+      // Deletes fire only on a stability-confirmed read (see reconcile fn).
+      const idsKey = idsKeyOf(ids);
+      const stable = fbRunSync.lastRunId === runId && fbRunSync.lastIdsKey === idsKey;
+      const res = await reconcileRunRoutesMembership(runId, token, base, pageStatus, consSrc, stable);
+      if (res && (res.added + res.updated + res.deleted) > 0) {
+        fbRunSync.lastReconcile = `+${res.added} −${res.deleted} ~${res.updated} @${new Date().toLocaleTimeString()}`;
       }
-      const w = await fetch(`${base}.json?auth=${token}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(diffs)
-      });
-      if (!w.ok) throw new Error(`HTTP ${w.status}`);
-      console.log(`[DB FbRunSync] run ${runId}: updated ${keys.length}/${ids.length} consignment statuses in delivery_run`);
+      scheduleDeleteVerify(runId, idsKey);
     } catch (err) {
       if (err && err.code === 'no-token') fbRunSync.sig = null;
       else console.warn('[DB FbRunSync] sync failed:', err);
