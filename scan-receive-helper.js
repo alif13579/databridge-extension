@@ -2169,12 +2169,17 @@
     const patch = {};
     let added = 0, updated = 0, deleted = 0;
     // ADD (page-only) + UPDATE (differing) — consSrc anchors on master when it exists.
+    // NOTE: the delete-verify pass calls with consSrc={} on purpose — its fresh DOM
+    // read IS the seed for ids the main pass never saw; master-anchoring there would
+    // need another N reads for zero benefit (adds are page-truth by definition).
     pageIds.forEach(id => {
       const fbKey = fbByNorm.get(normRunId(id));
       const pageSt = pageStatus.get(id) || '';
       const seed = (consSrc && consSrc[id]) || pageSt;
       if (fbKey === undefined) {
-        patch[id] = seed || '';
+        // Never create blank-status nodes — the App never writes blanks either.
+        if (!seed) return;
+        patch[id] = seed;
         added++;
       } else if (pageSt && !same(norm(cur[fbKey]), seed)) {
         patch[fbKey] = seed;
@@ -2195,8 +2200,12 @@
       console.log(`[DB FbRunSync] run ${runId}: run_routes already in sync (page ${pageIds.length} / fb ${fbKeys.length})`);
       return { added: 0, updated: 0, deleted: 0 };
     }
+    // Full-membership replace = ABORT, no write. Deleting EVERY firebase id means the
+    // DOM read was filtered/partial (search filter left on, SPA half-render) — never a
+    // legit empty run. The next clean cycle re-attempts; nothing is lost by waiting.
     if (deleted > 0 && deleted === fbKeys.length && fbKeys.length > 0) {
-      console.warn(`[DB FbRunSync] run ${runId}: FULL membership replace — all ${fbKeys.length} firebase ids absent from page. Proceeding (Hermes is source of truth).`);
+      console.error(`[DB FbRunSync] run ${runId}: FULL membership replace blocked — all ${fbKeys.length} firebase ids absent from page (filtered/partial DOM suspected). No write performed.`);
+      return null;
     }
     const w = await fetch(`${base}.json?auth=${token}`, {
       method: 'PATCH',

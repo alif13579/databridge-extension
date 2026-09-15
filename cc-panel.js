@@ -1821,6 +1821,7 @@
       const { token, error } = await getSheetsToken();
       if (!token) throw new Error(error || 'No Sheets permission — re-login from the extension popup');
       let totConns = 0, totScanned = 0, totFilled = 0, totRows = 0, totCells = 0, totOverRows = 0, totOverCells = 0, totNoCc = 0;
+      const totPerKind = {};
       const errs = [];
       // NEW all-in-one bindings (socket 🔌 + library) — fetchCcTargets scope
       // filter করেই দেয়; legacy conns-এর সাথে merge করে নিচে একসাথে চালাই।
@@ -1858,13 +1859,16 @@
             const r = await bulkSyncOneConnection(token, branchId, conn, consolidated, dateKey);
             totScanned += r.scanned; totFilled += r.filled;
             totRows += r.syncedRows; totCells += r.syncedCells; totOverRows += r.overwrittenRows || 0; totOverCells += r.overwrittenCells || 0; totNoCc += r.noCc;
+            Object.entries(r.perKind || {}).forEach(([k, v]) => { totPerKind[k] = (totPerKind[k] || 0) + v; });
           } catch (e) {
             errs.push(`${label}: ${e.message || 'sync failed'}`);
           }
         }
       }
       if (!totConns) throw new Error(`No remark connection in any branch for ${dateLabel} (check scope)`);
-      let msg = `✓ ${totRows} row filled (${totCells} cells)` + (totOverRows ? ` · ${totOverRows} row updated (${totOverCells} cells overwritten)` : '') + ` · ${totFilled} already correct · ${totNoCc} no CC yet · ${totScanned} sheet rows scanned (${totConns} connection)`;
+      // Per-column breakdown — parity with the dashboard summary (popup.js) + App's RemarkSheetMirror.
+      const colsLine = Object.keys(totPerKind).length ? ' · cols: ' + Object.keys(totPerKind).sort().map(k => `${k}(${totPerKind[k]})`).join(', ') : '';
+      let msg = `✓ ${totRows} row filled (${totCells} cells)` + (totOverRows ? ` · ${totOverRows} row updated (${totOverCells} cells overwritten)` : '') + ` · ${totFilled} already correct · ${totNoCc} no CC yet · ${totScanned} sheet rows scanned (${totConns} connection)` + colsLine;
       if (errs.length) msg += ` · ⚠ ${errs.length} error: ${errs.slice(0, 2).join('; ')}${errs.length > 2 ? '…' : ''}`;
       bulkSay(msg);
       if (btn) btn.textContent = '✓ Done';

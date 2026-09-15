@@ -135,16 +135,19 @@ async function loadPrefs() {
 async function saveBlob(blob, filename) {
   const rel = prefs.subfolder ? `${prefs.subfolder}/${filename}` : filename;
   if (chrome.downloads && chrome.downloads.download) {
+    const url = URL.createObjectURL(blob);
     try {
       await chrome.downloads.download({
-        url: URL.createObjectURL(blob),
+        url,
         filename: rel,
         conflictAction: 'uniquify',
         saveAs: !!prefs.saveAs,
       });
       return { how: 'api', rel: `Downloads/${rel}` };
     } catch (err) {
-      console.warn('[converter] downloads API failed, anchor fallback', err);
+      console.warn('[converter] downloads API failed, anchor fallback (subfolder/Save-As prefs do not apply to the fallback)', err);
+    } finally {
+      setTimeout(() => URL.revokeObjectURL(url), 60000);
     }
   }
   const url = URL.createObjectURL(blob);
@@ -154,6 +157,7 @@ async function saveBlob(blob, filename) {
   document.body.appendChild(a);
   a.click();
   a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 60000);
   return { how: 'anchor', rel: `Downloads/${filename}` };
 }
 
@@ -188,6 +192,7 @@ async function convert() {
     const saved = await saveBlob(blob, filename);
     // Green button stays as a manual re-download backup.
     const link = $('download-link');
+    if (link.href && link.href.startsWith('blob:')) URL.revokeObjectURL(link.href);
     link.href = URL.createObjectURL(blob);
     link.download = filename;
     link.hidden = false;

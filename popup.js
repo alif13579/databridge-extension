@@ -2746,14 +2746,10 @@ async function fetchSupabaseReportRows(branchId, startIso, endIso, idToken) {
 //   1. Branch picking is CHECKBOXES, not a <select> — lets a multi-branch
 //      user pick one, several, or all; a single-branch user just sees one
 //      pre-checked box and needs zero clicks on it.
-//   2. Rows are filtered down to only "hold" ones before anything is shown,
-//      using the SAME priority the Android app's CallCenterParcelItem uses
-//      for effectiveStatus (latest remark status wins over the raw run
-//      status when a remark exists) and the SAME "hold" keyword match
-//      DashboardViewModel.bucketForStatus() uses (case-insensitive
-//      substring, not a fixed key list, since status keys are admin-
-//      configurable via config/statusMeta and a renamed one would silently
-//      fall through a fixed list).
+//   2. Rows are filtered down to validation requests only: a (date, consignment)
+//      group is kept when any WORKER row carries remarks_status VERIFY_REQUEST
+//      (case-insensitive exact match — same single-source rule as the App's
+//      isVerifyRequestStatus()). No hold-keyword matching is used here.
 // ══════════════════════════════════════════════════════════════════════
 
 let hvReportRows = []; // rows currently shown in the report — cached here so Download doesn't refetch
