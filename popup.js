@@ -4081,9 +4081,15 @@ function downloadHvReport() {
 // Single branch + date range → CC-sourced rows from the same Supabase
 // report action Hold Validation uses. Two independent breakdowns share one
 // fetch:
-//   • Top summary cards — dedupe by CONSIGNMENT across the whole range;
-//     each consignment's truly latest CC row decides its status bucket.
-//     Answers "what happened" — one vote per consignment, no double count.
+//   • Top summary cards — Total Unique + Hold/Return Verified dedupe by
+//     CONSIGNMENT across the whole range (each consignment's truly latest
+//     CC row decides its status bucket). Delivery Request is different:
+//     unique consignments with ≥1 CC delivery_request row in the range —
+//     the same consignment requested 3× still counts once (repeat requests
+//     on the same day are one ask). Its % of Total Unique is shown, plus
+//     the conversion: of those requested, how many sit in the delivery
+//     family now (latest row's consignment_status) — % of requested.
+//     Answers "what happened" + "how much converted by end of day".
 //   • Mode table — counts every CC row (no dedupe): Team groups by
 //     (date, agent) for a day-by-day view, Agent groups by agent alone
 //     across the whole range for a leaderboard. Answers "who did the work"
@@ -4092,10 +4098,18 @@ function downloadHvReport() {
 // ══════════════════════════════════════════════════════════════════════
 
 const PERF_STATUS_LABELS = {
-  delivery_request: '📦 Delivery',
+  delivery_request: '📦 Delivery Request',
   hold_verified:    '🔒 Hold Verified',
   return_verified:  '↩ Return Verified',
 };
+
+// Delivery family (Hermes run statuses, same set as the CC crosscheck in
+// scan-receive-helper.js) — a requested consignment sitting here counts as
+// converted. Normalized (lowercase, _ → space) so UPPER_SNAKE parcel
+// statuses ("PARTIAL_DELIVERY") meet Hermes labels ("Partial Delivery").
+const PERF_DELIVERY_FAMILY = new Set(['delivered', 'partial delivery', 'partial', 'paid return', 'exchange']);
+const perfFamilyKey = s => (s || '').trim().toLowerCase().replace(/_/g, ' ');
+const perfPct = (n, d) => (d > 0 ? Math.round((n * 100) / d) : 0);
 
 // users table থেকে system_id → {name, empId} (Edge join miss হলে fallback;
 // branch-overlap RLS-এ same-branch actor-রা visible)। Chunked in.(...) query.
@@ -4197,6 +4211,29 @@ async function generateTeamPerformanceReport() {
     });
     const totalUnique = Object.keys(byConsignment).length;
 
+    // ── Delivery Request: unique consignments with ≥1 CC delivery_request
+    // row in the range — 3 requests for one consignment still count once.
+    // Conversion: of those, how many sit in the delivery family NOW (latest
+    // row, any source — sync_run_status keeps consignment_status fresh).
+    const drConsignments = new Set();
+    ccRows.forEach(r => { if (statusKeyOf(r) === 'delivery_request') drConsignments.add(r.consignment); });
+    const byConsAll = {};
+    allRows.forEach(r => { (byConsAll[r.consignment] ||= []).push(r); });
+    let drConverted = 0;
+    drConsignments.forEach(cid => {
+      const rows = byConsAll[cid] || [];
+      if (!rows.length) return;
+      const latest = rows.reduce((a, b) => latestMs(a) >= latestMs(b) ? a : b);
+      if (PERF_DELIVERY_FAMILY.has(perfFamilyKey(latest.consignment_status))) drConverted++;
+    });
+    const drUnique = drConsignments.size;
+    const drSummary = {
+      unique: drUnique,
+      pctOfTotal: perfPct(drUnique, totalUnique),
+      converted: drConverted,
+      convertedPct: perfPct(drConverted, drUnique),
+    };
+
     // ── Mode table ──
     let modeRows;
     if (mode === 'team') {
@@ -4251,7 +4288,7 @@ async function generateTeamPerformanceReport() {
       modeRows = Object.values(groups).sort((a, b) => b.requested - a.requested || b.validated - a.validated);
     }
 
-    renderPerfReport(reportEl, mode, { totalUnique, counts }, modeRows);
+    renderPerfReport(reportEl, mode, { totalUnique, counts, drSummary }, modeRows);
     setStatus(`✓ ${totalUnique} unique consignments · ${ccRows.length} CC entries`);
   } catch (e) {
     console.error('[DB] generateTeamPerformanceReport failed:', e);
@@ -4260,7 +4297,8 @@ async function generateTeamPerformanceReport() {
 }
 
 function renderPerfReport(reportEl, mode, summary, modeRows) {
-  const { totalUnique, counts } = summary;
+  const { totalUnique, counts, drSummary } = summary;
+  const dr = drSummary || { unique: counts.delivery_request, pctOfTotal: 0, converted: 0, convertedPct: 0 };
 
   const summaryHtml = `
     <div class="dash-hv-summary-grid dash-perf-summary-grid">
@@ -4268,9 +4306,10 @@ function renderPerfReport(reportEl, mode, summary, modeRows) {
         <div class="dash-hv-summary-val">${totalUnique}</div>
         <div class="dash-hv-summary-label">Total Unique</div>
       </div>
-      <div class="dash-hv-summary-stat">
-        <div class="dash-hv-summary-val validated">${counts.delivery_request}</div>
-        <div class="dash-hv-summary-label">Delivery</div>
+      <div class="dash-hv-summary-stat" title="Unique consignments requested ≥1× in range · ${dr.converted} now delivered">
+        <div class="dash-hv-summary-val validated">${dr.unique}</div>
+        <div class="dash-hv-summary-label">Delivery Request · ${dr.pctOfTotal}%</div>
+        <div class="dash-perf-sub">✅ ${dr.converted} converted (${dr.convertedPct}%)</div>
       </div>
       <div class="dash-hv-summary-stat">
         <div class="dash-hv-summary-val pending">${counts.hold_verified}</div>
