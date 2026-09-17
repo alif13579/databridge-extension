@@ -938,6 +938,8 @@ html[data-theme="light"] .dash-hv-search-clear { background: #fff; color: #64748
 .dash-perf-row .dash-hv-row-id { font-size: 11px; }
 /* Delivery Request card: end-of-day conversion sub-line (count + % of requested) */
 .dash-perf-sub { font-size: 9px; font-weight: 700; color: #00ff88; margin-top: 3px; }
+/* Drill-down list header (which bucket is open + how to go back) */
+.dash-perf-listhead { font-size: 10px; color: #888; margin: 2px 0 4px; }
 
 .dash-hv-list { max-height: 200px; overflow-y: auto; display: flex; flex-direction: column; gap: 4px; }
 .dash-hv-row {
@@ -1188,6 +1190,7 @@ html[data-theme="light"] .dash-hv-summary-val.validated { color: #16a34a; }
 html[data-theme="light"] .dash-hv-summary-val.pending { color: #d97706; }
 html[data-theme="light"] .dash-hv-summary-label { color: #64748b; }
 html[data-theme="light"] .dash-perf-sub { color: #16a34a; }
+html[data-theme="light"] .dash-perf-listhead { color: #64748b; }
 html[data-theme="light"] .dash-hv-row { background: #fff; border-color: #e2e8f0; color: #334155; }
 html[data-theme="light"] .dash-hv-row-pending { border-left-color: #f59e0b; }
 html[data-theme="light"] .dash-hv-row-validated { border-left-color: #16a34a; }

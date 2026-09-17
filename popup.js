@@ -4199,15 +4199,36 @@ async function generateTeamPerformanceReport() {
     const statusKeyOf = row => (row.remarks_status || '').trim().toLowerCase();
 
     // ── Summary cards: one vote per consignment (latest CC row wins) ──
+    // Also builds the per-parcel detail used when a card is clicked.
     const byConsignment = {};
     ccRows.forEach(r => {
       (byConsignment[r.consignment] ||= []).push(r);
     });
+    const byConsAll = {};
+    allRows.forEach(r => { (byConsAll[r.consignment] ||= []).push(r); });
     const counts = { delivery_request: 0, hold_verified: 0, return_verified: 0, other: 0 };
-    Object.values(byConsignment).forEach(rows => {
+    const perfParcels = [];
+    Object.entries(byConsignment).forEach(([cid, rows]) => {
       const latest = rows.reduce((a, b) => latestMs(a) >= latestMs(b) ? a : b);
       const key = statusKeyOf(latest);
-      if (key in counts) counts[key]++; else counts.other++;
+      const bucket = (key in counts) ? key : 'other';
+      counts[bucket]++;
+      const all = byConsAll[cid] || rows;
+      const nowRow = all.reduce((a, b) => latestMs(a) >= latestMs(b) ? a : b);
+      const nowStatus = (nowRow.consignment_status || '').trim();
+      const drRows = rows.filter(r => statusKeyOf(r) === 'delivery_request');
+      perfParcels.push({
+        cid,
+        bucket,
+        inDr: drRows.length > 0,
+        drCount: drRows.length,
+        firstDrAt: drRows.length ? drRows.reduce((a, b) => latestMs(a) <= latestMs(b) ? a : b).created_at : null,
+        latestAt: latest.created_at,
+        agent: latest.author?.name || latest.author_system_id || '—',
+        ccLabel: PERF_STATUS_LABELS[key] || key,
+        nowStatus: nowStatus || '—',
+        converted: PERF_DELIVERY_FAMILY.has(perfFamilyKey(nowStatus)),
+      });
     });
     const totalUnique = Object.keys(byConsignment).length;
 
@@ -4217,8 +4238,6 @@ async function generateTeamPerformanceReport() {
     // row, any source — sync_run_status keeps consignment_status fresh).
     const drConsignments = new Set();
     ccRows.forEach(r => { if (statusKeyOf(r) === 'delivery_request') drConsignments.add(r.consignment); });
-    const byConsAll = {};
-    allRows.forEach(r => { (byConsAll[r.consignment] ||= []).push(r); });
     let drConverted = 0;
     drConsignments.forEach(cid => {
       const rows = byConsAll[cid] || [];
@@ -4288,7 +4307,8 @@ async function generateTeamPerformanceReport() {
       modeRows = Object.values(groups).sort((a, b) => b.requested - a.requested || b.validated - a.validated);
     }
 
-    renderPerfReport(reportEl, mode, { totalUnique, counts, drSummary }, modeRows);
+    perfFilter = 'all'; // fresh report always starts on the mode table
+    renderPerfReport(reportEl, mode, { totalUnique, counts, drSummary }, modeRows, perfParcels);
     setStatus(`✓ ${totalUnique} unique consignments · ${ccRows.length} CC entries`);
   } catch (e) {
     console.error('[DB] generateTeamPerformanceReport failed:', e);
@@ -4296,55 +4316,94 @@ async function generateTeamPerformanceReport() {
   }
 }
 
-function renderPerfReport(reportEl, mode, summary, modeRows) {
+// Clicked summary card ('all' = mode table). Reset on every fresh generate.
+let perfFilter = 'all';
+let perfCache = null; // { reportEl, mode, summary, modeRows, parcels }
+
+const PERF_BUCKET_LABELS = {
+  delivery_request: 'Delivery Request',
+  hold_verified: 'Hold Verified',
+  return_verified: 'Return Verified',
+  other: 'Other',
+};
+
+function renderPerfReport(reportEl, mode, summary, modeRows, parcels) {
   const { totalUnique, counts, drSummary } = summary;
   const dr = drSummary || { unique: counts.delivery_request, pctOfTotal: 0, converted: 0, convertedPct: 0 };
+  if (parcels) perfCache = { reportEl, mode, summary, modeRows, parcels };
+
+  const card = (key, valHtml, label) => `
+      <div class="dash-hv-summary-stat${perfFilter === key ? ' active' : ''}" data-perf="${key}">
+        ${valHtml}
+        <div class="dash-hv-summary-label">${label}</div>
+      </div>`;
 
   const summaryHtml = `
     <div class="dash-hv-summary-grid dash-perf-summary-grid">
-      <div class="dash-hv-summary-stat">
-        <div class="dash-hv-summary-val">${totalUnique}</div>
-        <div class="dash-hv-summary-label">Total Unique</div>
-      </div>
-      <div class="dash-hv-summary-stat" title="Unique consignments requested ≥1× in range · ${dr.converted} now delivered">
+      ${card('all', `<div class="dash-hv-summary-val">${totalUnique}</div>`, 'Total Unique')}
+      <div class="dash-hv-summary-stat${perfFilter === 'delivery_request' ? ' active' : ''}" data-perf="delivery_request" title="Unique consignments requested ≥1× in range · ${dr.converted} now delivered">
         <div class="dash-hv-summary-val validated">${dr.unique}</div>
         <div class="dash-hv-summary-label">Delivery Request · ${dr.pctOfTotal}%</div>
         <div class="dash-perf-sub">✅ ${dr.converted} converted (${dr.convertedPct}%)</div>
       </div>
-      <div class="dash-hv-summary-stat">
-        <div class="dash-hv-summary-val pending">${counts.hold_verified}</div>
-        <div class="dash-hv-summary-label">Hold Verified</div>
-      </div>
-      <div class="dash-hv-summary-stat">
-        <div class="dash-hv-summary-val">${counts.return_verified}</div>
-        <div class="dash-hv-summary-label">Return Verified</div>
-      </div>
-      ${counts.other ? `
-      <div class="dash-hv-summary-stat">
-        <div class="dash-hv-summary-val">${counts.other}</div>
-        <div class="dash-hv-summary-label">Other</div>
-      </div>` : ''}
+      ${card('hold_verified', `<div class="dash-hv-summary-val pending">${counts.hold_verified}</div>`, `Hold Verified · ${perfPct(counts.hold_verified, totalUnique)}%`)}
+      ${card('return_verified', `<div class="dash-hv-summary-val">${counts.return_verified}</div>`, `Return Verified · ${perfPct(counts.return_verified, totalUnique)}%`)}
+      ${counts.other ? card('other', `<div class="dash-hv-summary-val">${counts.other}</div>`, 'Other') : ''}
     </div>`;
 
-  const rowsHtml = mode === 'team'
-    ? modeRows.map((r, i) => `
-      <div class="dash-hv-row dash-perf-row">
-        <div class="dash-hv-row-top">
-          <span class="dash-hv-row-id">#${i + 1} ${escapeHtml(r.agentName)}${r.agentEmpId ? ' (' + escapeHtml(r.agentEmpId) + ')' : ''}</span>
-          <span>Total ${r.total}</span>
-        </div>
-        <div class="dash-hv-row-meta">${PERF_STATUS_LABELS.hold_verified} ${r.hold_verified} · ${PERF_STATUS_LABELS.return_verified} ${r.return_verified} · ${PERF_STATUS_LABELS.delivery_request} ${r.delivery_request}${r.other ? ' · ❓ ' + r.other : ''}</div>
-      </div>`).join('')
-    : modeRows.map((r, i) => `
-      <div class="dash-hv-row dash-perf-row">
-        <div class="dash-hv-row-top">
-          <span class="dash-hv-row-id">#${i + 1} ${escapeHtml(r.agentName)}${r.agentEmpId ? ' (' + escapeHtml(r.agentEmpId) + ')' : ''}</span>
-          <span>Request ${r.requested}</span>
-        </div>
-        <div class="dash-hv-row-meta">✅ Validated ${r.validated} · ⏳ Pending ${r.requested - r.validated}</div>
-      </div>`).join('');
+  reportEl.innerHTML = summaryHtml + `<div class="dash-hv-list">${perfListHtml()}</div>`;
+  reportEl.querySelectorAll('[data-perf]').forEach(cell => {
+    cell.onclick = () => {
+      const f = cell.dataset.perf;
+      perfFilter = (perfFilter === f) ? 'all' : f;
+      if (perfCache) renderPerfReport(perfCache.reportEl, perfCache.mode, perfCache.summary, perfCache.modeRows, null);
+    };
+  });
+}
 
-  reportEl.innerHTML = summaryHtml + `<div class="dash-hv-list">${rowsHtml}</div>`;
+// List area: mode table by default; consolidated parcel rows when a card is
+// clicked (same bucket rule as the card counts, one glance per parcel).
+function perfListHtml() {
+  const { mode, modeRows, parcels } = perfCache;
+  if (perfFilter === 'all' || !parcels) {
+    return (mode === 'team'
+      ? modeRows.map((r, i) => `
+        <div class="dash-hv-row dash-perf-row">
+          <div class="dash-hv-row-top">
+            <span class="dash-hv-row-id">#${i + 1} ${escapeHtml(r.agentName)}${r.agentEmpId ? ' (' + escapeHtml(r.agentEmpId) + ')' : ''}</span>
+            <span>Total ${r.total}</span>
+          </div>
+          <div class="dash-hv-row-meta">${PERF_STATUS_LABELS.hold_verified} ${r.hold_verified} · ${PERF_STATUS_LABELS.return_verified} ${r.return_verified} · ${PERF_STATUS_LABELS.delivery_request} ${r.delivery_request}${r.other ? ' · ❓ ' + r.other : ''}</div>
+        </div>`).join('')
+      : modeRows.map((r, i) => `
+        <div class="dash-hv-row dash-perf-row">
+          <div class="dash-hv-row-top">
+            <span class="dash-hv-row-id">#${i + 1} ${escapeHtml(r.agentName)}${r.agentEmpId ? ' (' + escapeHtml(r.agentEmpId) + ')' : ''}</span>
+            <span>Request ${r.requested}</span>
+          </div>
+          <div class="dash-hv-row-meta">✅ Validated ${r.validated} · ⏳ Pending ${r.requested - r.validated}</div>
+        </div>`).join(''));
+  }
+  const list = parcels
+    .filter(p => (perfFilter === 'delivery_request' ? p.inDr : p.bucket === perfFilter))
+    .sort((a, b) => new Date(b.latestAt) - new Date(a.latestAt));
+  const head = `<div class="dash-perf-listhead">${list.length} parcels · ${PERF_BUCKET_LABELS[perfFilter] || perfFilter} — card-e abar click korle table fire asbe</div>`;
+  return head + list.map(p => {
+    const state = p.converted
+      ? '✅ Delivered'
+      : (perfFilter === 'delivery_request' ? `⏳ ${escapeHtml(p.nowStatus)}` : escapeHtml(p.ccLabel));
+    const when = perfFilter === 'delivery_request' && p.firstDrAt
+      ? `Req ${dateKeyToDdMmYyyy(localDateKey(p.firstDrAt))}${p.drCount > 1 ? ` ×${p.drCount}` : ''} · `
+      : '';
+    return `
+      <div class="dash-hv-row dash-perf-row">
+        <div class="dash-hv-row-top">
+          <span class="dash-hv-row-id">${escapeHtml(p.cid)}</span>
+          <span>${state}</span>
+        </div>
+        <div class="dash-hv-row-meta">${when}${escapeHtml(p.agent)} · now: ${escapeHtml(p.nowStatus)}</div>
+      </div>`;
+  }).join('');
 }
 
 document.addEventListener('DOMContentLoaded', init);
