@@ -290,6 +290,9 @@
       .db-cc-badge-pending   { background: #fef3c7; color: #92400e; }
       .db-cc-badge-validated { background: #dcfce7; color: #15803d; }
       .db-cc-badge-none      { background: #f1f5f9; color: #64748b; }
+      .db-cc-badge-engaged   { background: #e0f2fe; color: #0284c7; }
+      .db-cc-badge-calling   { background: #dcfce7; color: #15803d; animation: db-cc-pulse 1s ease-in-out infinite; }
+      @keyframes db-cc-pulse { 0%,100% { opacity: 1; } 50% { opacity: .45; } }
       .db-cc-row-none { border-left: 3px solid #cbd5e1; }
       .db-cc-modes { display: flex; gap: 2px; margin-left: auto; }
       .db-cc-mode-btn {
@@ -432,6 +435,8 @@
         const cod = c.collectableAmount;
         r.codAmount = typeof cod === 'number' ? cod : parseFloat(cod) || 0;
         r.parcelStatus = (c.status || '').trim();
+        // Piggyback live presence — same node the app reads, no extra fetch.
+        r._engagedSnap = c.engaged_at || null;
       } catch { /* blanks stay */ }
     }));
   }
@@ -716,6 +721,7 @@
     });
     window.addEventListener('pagehide', () => {
       if (ccRefreshTimer) { clearInterval(ccRefreshTimer); ccRefreshTimer = null; }
+      ccPresenceStopPoll();
     });
   }
 
@@ -855,6 +861,120 @@
     return cards;
   }
 
+  // ── PRESENCE (engaged ring + calling) ──────────────────────────────
+  // Same Firebase source the app reads — courier/consignments/{cid}/
+  // engaged_at/{uid} {timestamp, agentName, state}. Calling = fresh +
+  // state=calling; engaged = fresh names + ⏱ duration bubble (longest
+  // engagement, only after 2 min — app rule). Fresh = 5 min. Initial paint
+  // reuses the engaged_at piggybacked in enrichWithParcelDetails (no extra
+  // fetch); a 20s poll then patches badges in place so open remark/history
+  // sections never collapse. Data itself still auto-refreshes every 60s
+  // (armAutoRefresh) + on tab-visible.
+  const CC_PRES_FRESH_MS = 5 * 60 * 1000;
+  const CC_PRES_SHOW_AFTER_MS = 2 * 60 * 1000;
+  const CC_PRES_POLL_MS = 20_000;
+  let ccPresenceTimer = null;
+
+  function ccPresenceStopPoll() {
+    try { if (ccPresenceTimer) clearInterval(ccPresenceTimer); } catch (_) {}
+    ccPresenceTimer = null;
+  }
+
+  function ccPresenceParse(snapshot, nowMs) {
+    if (!snapshot || typeof snapshot !== 'object') return { fresh: [], calling: [] };
+    const all = Object.values(snapshot).map(e => ({
+      name: (e && (e.agentName || e.agentname)) || '',
+      state: (e && e.state) || 'viewing',
+      ts: (e && e.timestamp) || 0,
+    })).filter(e => e.ts > 0 && (nowMs - e.ts) < CC_PRES_FRESH_MS && e.ts <= nowMs);
+    all.sort((a, b) => a.ts - b.ts);
+    return { fresh: all, calling: all.filter(e => e.state === 'calling') };
+  }
+
+  function ccPresenceBadgeHtml(pres, nowMs) {
+    if (!pres || !pres.fresh.length) return '';
+    if (pres.calling.length) {
+      const n = pres.calling.length > 1 ? ` ×${pres.calling.length}` : '';
+      const who = pres.calling.slice(0, 2).map(e => e.name).filter(Boolean).join(', ');
+      return `<span class="db-cc-badge db-cc-badge-calling" title="${escapeHtml(who || 'on call')}">📞 Calling${n}</span>`;
+    }
+    const names = [...new Set(pres.fresh.map(e => e.name).filter(Boolean))].slice(0, 2).join(', ');
+    let dur = '';
+    const elapsed = nowMs - pres.fresh[0].ts;
+    if (elapsed >= CC_PRES_SHOW_AFTER_MS) {
+      const mins = Math.floor(elapsed / 60000);
+      dur = mins < 60 ? `⏱ ${mins}m`
+        : (() => { const h = Math.floor(mins / 60), m = mins % 60; return m ? `⏱ ${h}h ${m}m` : `⏱ ${h}h`; })();
+    }
+    return `<span class="db-cc-badge db-cc-badge-engaged" title="${escapeHtml(names || 'someone is viewing')}">${escapeHtml(`👁 ${names || 'engaged'}${dur ? ' · ' + dur : ''}`)}</span>`;
+  }
+
+  function paintCcPresence(bodyEl, presMap) {
+    if (!bodyEl || !presMap) return;
+    const nowMs = Date.now();
+    bodyEl.querySelectorAll('.db-cc-row[data-cid]').forEach(row => {
+      const pres = presMap.get(row.getAttribute('data-cid'));
+      let slot = row.querySelector('[data-role="presence"]');
+      const html = ccPresenceBadgeHtml(pres, nowMs);
+      if (!html) { if (slot) slot.remove(); return; }
+      if (!slot) {
+        slot = document.createElement('span');
+        slot.setAttribute('data-role', 'presence');
+        slot.style.marginLeft = '4px';
+        const badge = row.querySelector('.db-cc-badge');
+        if (badge && badge.parentElement) badge.after(slot);
+        else {
+          const bottom = row.querySelector('.db-cc-row-bottom');
+          if (bottom) bottom.prepend(slot);
+          else row.appendChild(slot);
+        }
+      }
+      slot.innerHTML = html;
+    });
+  }
+
+  function ccPresenceMapFromRows(rows) {
+    const nowMs = Date.now();
+    const map = new Map();
+    (rows || []).forEach(r => {
+      if (r.cId) map.set(r.cId, ccPresenceParse(r._engagedSnap, nowMs));
+    });
+    return map;
+  }
+
+  function attachCcPresence(bodyEl, rows) {
+    ccPresenceStopPoll();
+    if (!bodyEl || !rows || !rows.length) return;
+    paintCcPresence(bodyEl, ccPresenceMapFromRows(rows));
+    try {
+      ccPresenceTimer = setInterval(async () => {
+        try {
+          if (document.hidden || !ccIdToken) return;
+          const cIds = [...new Set(rows.map(r => r.cId).filter(Boolean))].slice(0, 60);
+          const nowMs = Date.now();
+          const map = new Map();
+          const CHUNK = 10;
+          for (let i = 0; i < cIds.length; i += CHUNK) {
+            const settled = await Promise.allSettled(cIds.slice(i, i + CHUNK).map(async cid => {
+              const res = await fetch(
+                `${FIREBASE_URL}/courier/consignments/${encodeURIComponent(cid)}/engaged_at.json?auth=${ccIdToken}`);
+              if (!res.ok) return [cid, null];
+              return [cid, await res.json().catch(() => null)];
+            }));
+            settled.forEach(s => {
+              if (s.status !== 'fulfilled') return;
+              const [cid, snap] = s.value;
+              const row = rows.find(r => r.cId === cid);
+              if (row) row._engagedSnap = snap;
+              map.set(cid, ccPresenceParse(snap, nowMs));
+            });
+          }
+          paintCcPresence(bodyEl, map);
+        } catch (e) { /* presence never breaks the panel */ }
+      }, CC_PRES_POLL_MS);
+    } catch (_) {}
+  }
+
   function render(bodyEl, branchNames) {
     const totalReq   = summaryRows.length;
     const pendingCnt = summaryRows.filter(r => r.stillPending).length;
@@ -883,27 +1003,43 @@
       const vId = r.validatorEmpId || r.validatorSystemId || r.validatorEmployeeId || '';
       const vWho = vName ? `${vName}${vId && vId !== vName ? ` (${vId})` : ''}` : (vId || 'CC');
       const vShort = vName || vId || '';
+      // Same-day latest remarks, chatting style (Worker left / CC right).
+      // Trail is already this card's own day (per-date grouping), oldest →
+      // newest — show the latest 4 so long back-and-forths don't blow up the
+      // card; full trail stays behind ▼ History. No "Awaiting CC reply"
+      // filler — pending cards simply end on the last worker bubble.
+      const CC_CHAT_LAST = 4;
+      const ccTrailBubble = t => {
+        const isCc = t.source === 'CC';
+        const who = t.authorName || t.authorEmployeeId || t.author || (isCc ? 'CC' : 'Worker');
+        const txt = (t.remark || '').trim() || (t.note || '').trim() || '(no text)';
+        const extraNote = (t.remark || '').trim() && (t.note || '').trim()
+          ? `<div class="db-cc-bubble-note">📝 ${escapeHtml(t.note)}</div>` : '';
+        return `<div class="db-cc-bubble ${isCc ? 'db-cc-bubble-cc' : 'db-cc-bubble-worker'}">
+            <div class="db-cc-bubble-label">${isCc ? '✓' : '🙋'} ${escapeHtml(who)}${t.status ? ' · ' + escapeHtml(t.status) : ''}</div>
+            <div class="db-cc-bubble-text">${escapeHtml(txt)}</div>
+            ${extraNote}
+            <div class="db-cc-bubble-meta">${escapeHtml(fmtHhMm(t.created))}</div>
+          </div>`;
+      };
       let chatHtml = '';
       if (r.noActivity) {
         chatHtml = `<div class="db-cc-chat"><div class="db-cc-bubble db-cc-bubble-pending">➖ No activity on this ID today</div></div>`;
+      } else if (r.trail && r.trail.length) {
+        const last = r.trail.slice(-CC_CHAT_LAST);
+        const more = r.trail.length - last.length;
+        chatHtml = `<div class="db-cc-chat">${last.map(ccTrailBubble).join('')}`
+          + (more > 0 ? `<div class="db-cc-bubble-meta">+${more} earlier — see ▼ History</div>` : '')
+          + `</div>`;
       } else {
-        const workerBubble = `<div class="db-cc-bubble db-cc-bubble-worker">
+        chatHtml = `<div class="db-cc-chat"><div class="db-cc-bubble db-cc-bubble-worker">
             <div class="db-cc-bubble-label">🙋 ${escapeHtml(agentDisplay)}${r.firstWorkerStatus ? ' · ' + escapeHtml(r.firstWorkerStatus) : ''}</div>
             <div class="db-cc-bubble-text">${escapeHtml(r.firstWorkerRemark || '(no note)')}</div>
-            <div class="db-cc-bubble-meta">${escapeHtml(r.firstWorkerTime || '')} · 👤 ${escapeHtml(agentDisplay)}${r.agentSystemId && r.agentSystemId !== agentDisplay ? ` (${escapeHtml(r.agentSystemId)})` : ''}</div>
-          </div>`;
-        const ccBubble = r.stillPending
-          ? `<div class="db-cc-bubble db-cc-bubble-pending">⏳ Awaiting CC reply…</div>`
-          : `<div class="db-cc-bubble db-cc-bubble-cc">
-              <div class="db-cc-bubble-label">✓ CC${r.lastCcStatus ? ' · ' + escapeHtml(r.lastCcStatus) : ''}</div>
-              ${r.lastCcRemark ? `<div class="db-cc-bubble-text">${escapeHtml(r.lastCcRemark)}</div>` : `<div class="db-cc-bubble-text" style="opacity:.6">(no CC text)</div>`}
-              ${r.lastCcNote ? `<div class="db-cc-bubble-note">📝 ${escapeHtml(r.lastCcNote)}</div>` : ''}
-              <div class="db-cc-bubble-meta">${escapeHtml(r.lastCcTime || '')} · 👤 ${escapeHtml(vWho)}</div>
-            </div>`;
-        chatHtml = `<div class="db-cc-chat">${workerBubble}${ccBubble}</div>`;
+            <div class="db-cc-bubble-meta">${escapeHtml(r.firstWorkerTime || '')}</div>
+          </div></div>`;
       }
       return `
-      <div class="db-cc-row ${r.stillPending ? 'db-cc-row-pending' : (r.noActivity ? 'db-cc-row-none' : 'db-cc-row-validated')}">
+      <div class="db-cc-row ${r.stillPending ? 'db-cc-row-pending' : (r.noActivity ? 'db-cc-row-none' : 'db-cc-row-validated')}" data-cid="${escapeHtml(r.cId)}">
         <div class="db-cc-row-top">
           <span>${escapeHtml(r.cId)}</span>
           <span>${escapeHtml(branchNames[r.branchId] || r.branchId)}</span>
@@ -976,6 +1112,9 @@
     bodyEl.querySelectorAll('.db-cc-remark-btn').forEach(btn => {
       btn.addEventListener('click', () => toggleCcRemarkSection(bodyEl, visible, +btn.dataset.idx));
     });
+
+    // Live presence overlay (sync paint from piggybacked snapshot + 20s poll).
+    attachCcPresence(bodyEl, visible);
   }
 
   function fmtHhMm(iso) {
