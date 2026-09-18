@@ -610,6 +610,7 @@
           lines.push(`sheet[${t.branch}]: tab='${t.tab}' fetchCol=${t.fetchCol} filters=[${(t.filters || []).join(' | ')}] (${t.logic})`);
           lines.push(`  scanned=${t.scanned} dropped=${t.dropped} ids=${t.idsCount}` +
             (t.sampleIds && t.sampleIds.length ? ` sample=${t.sampleIds.join(',')}` : '') +
+            (t.sampleDropped && t.sampleDropped.length ? ` droppedSample=${t.sampleDropped.join(',')}` : '') +
             (t.note ? ` NOTE: ${t.note}` : ''));
         });
         if (d.live) lines.push(`liveIds: total=${d.live.idsTotal} sample=${(d.live.sampleIds || []).join(',')}` +
@@ -1532,6 +1533,7 @@
               tDiag.note = r.note || null;
               tDiag.idsCount = (r.ids || []).length;
               tDiag.sampleIds = (r.ids || []).slice(0, 5);
+              tDiag.sampleDropped = (r.dropIds || []).slice(0, 3);
               if (r.note) liveProblems.push(`${sheetLabel}: ${r.note}`);
               if (r.ids.length) {
                 liveIdsByBranch[t.branchId] = [...(liveIdsByBranch[t.branchId] || []), ...r.ids];
@@ -2016,6 +2018,7 @@
     let dropped = 0;
     const dropByRule = {}; // rule idx -> rows it rejected (for the diagnostic note)
     let dropSample = null; // first dropped row's rule-cell values
+    const dropIds = []; // first few dropped IDs — proves which column the fetch col holds
     idCol.forEach((cell, i) => {
       const cid = String(cell || '').trim();
       if (!cid) return;
@@ -2023,6 +2026,7 @@
       const pass = useOr && results.length ? results.some(Boolean) : results.every(Boolean);
       if (!pass) {
         dropped++;
+        if (dropIds.length < 3) dropIds.push(cid.slice(0, 24));
         results.forEach((ok, ri) => { if (!ok) dropByRule[ri] = (dropByRule[ri] || 0) + 1; });
         if (!dropSample) dropSample = ruleCols.map(({ vals }) => vals[i] || '');
         return;
@@ -2043,7 +2047,7 @@
           (got ? ` (sheet has '${got}')` : ' (sheet cell blank)');
       }
     }
-    return { ids, scanned: idCol.length, dropped, note: missing.length ? `Column ${[...new Set(missing)].join(',')} not found (skipped)` : diagNote };
+    return { ids, scanned: idCol.length, dropped, dropIds, note: missing.length ? `Column ${[...new Set(missing)].join(',')} not found (skipped)` : diagNote };
   }
 
   // ── BULK SYNC TO SHEET (header) ────────────────────────────────
