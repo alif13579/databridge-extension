@@ -2496,6 +2496,12 @@ function setupDashboardTab() {
       if (hvBar) hvBar.style.display = 'none';
       const statusEl = document.getElementById('dash-hv-status');
       if (statusEl) statusEl.textContent = '';
+      try {
+        hvRange = null;
+        hvReportStopPoll();
+        if (window.DbRealtimeFeed) DbRealtimeFeed.stop();
+        hvSetLiveUI('off');
+      } catch (_) {}
     });
   });
 
@@ -3357,6 +3363,7 @@ async function generateHoldValidationReport({ skipRender = false, quiet = false 
   }
   hvPresenceStopPoll();
   hvReportStopPoll();
+  hvRange = null; // load চলাকালীন realtime event ignore — শেষে fresh scope বসবে
   const hvSB = document.getElementById('dash-hv-searchbar');
   const hvSI = document.getElementById('dash-hv-search');
   if (!quiet) {
@@ -3682,11 +3689,20 @@ async function generateHoldValidationReport({ skipRender = false, quiet = false 
       setStatus(`✓ ${hvReportRows.length}remarks found`);
     }
 
-    // Auto-refresh: app-er save ≤30s-এ dashboard-e (presence poll 20s-এর
-    // পাশাপাশি data-ও). Remark লেখা চললে tick skip — open composer wipe হবে না।
-    hvReportStopPoll();
+    // Live sync: realtime feed (instant) + 30s Edge polling fallback.
+    // Feed live হলে polling auto-pause হয় (quota বাঁচে), drop হলে resume.
+    hvRange = {
+      startMs: new Date(startIso).getTime(),
+      endMs: new Date(endIso).getTime(),
+      branches: (branchesToQuery || []).slice(),
+    };
+    hvEnsureFeed();
     if (!skipRender && hvReportRows.length) {
-      try { hvReportTimer = setInterval(hvReportTick, HV_REPORT_POLL_MS); } catch (_) {}
+      hvReportStartPoll(); // live connect হওয়া পর্যন্ত cover; live এলে pause হবে
+      hvSetLiveUI('poll');
+    } else {
+      hvReportStopPoll();
+      hvSetLiveUI('off');
     }
   } catch (e) {
     console.error('[DB] generateHoldValidationReport failed:', e);
@@ -3725,15 +3741,87 @@ const HV_PRESENCE_SHOW_AFTER_MS = 2 * 60 * 1000;
 const HV_PRESENCE_POLL_MS = 20000;
 const HV_PRESENCE_MAX_CARDS = 120;
 // HV report data auto-refresh (app → extension gap closer). Presence-এর 20s
-// poll শুধু badge আনে; এটা 30s-এ পুরো report quietly re-fetch করে —
-// filter/search preserved, remark composer খোলা থাকলে tick skip.
+// poll শুধু badge আনে; realtime live থাকলে Edge polling বন্ধ থাকে, drop
+// হলে 30s fallback resume করে — filter/search preserved, remark composer
+// খোলা থাকলে tick skip.
 const HV_REPORT_POLL_MS = 30000;
+const HV_RT_DEBOUNCE_MS = 2000;
 let hvReportTimer = null;
+let hvRtDeb = null;
+let hvRange = null;     // {startMs, endMs, branches[]} — realtime relevance scope
+let hvLiveMode = 'off'; // 'live' | 'poll' | 'off' — drives the ● dot
 let hvPresenceTimer = null;
 
 function hvReportStopPoll() {
   try { if (hvReportTimer) clearInterval(hvReportTimer); } catch (_) {}
   hvReportTimer = null;
+}
+
+function hvReportStartPoll() {
+  hvReportStopPoll();
+  if (!hvReportRows.length) return;
+  try { hvReportTimer = setInterval(hvReportTick, HV_REPORT_POLL_MS); } catch (_) {}
+}
+
+function hvSetLiveUI(mode) {
+  hvLiveMode = mode;
+  try {
+    const dot = document.getElementById('dash-hv-live');
+    const txt = document.getElementById('dash-hv-live-text');
+    const line = dot && dot.closest('.dash-hv-live-line');
+    if (!dot || !line) return;
+    if (mode === 'off' || !hvReportRows.length) {
+      line.classList.remove('on');
+      dot.dataset.mode = 'off';
+      return;
+    }
+    line.classList.add('on');
+    if (mode === 'live') {
+      dot.dataset.mode = 'live';
+      dot.title = 'Live — app/extension save instantly আসবে';
+      if (txt) txt.textContent = 'Live';
+    } else {
+      dot.dataset.mode = 'retry';
+      dot.title = 'Polling — 30s পর পর update (live reconnect হচ্ছে)';
+      if (txt) txt.textContent = 'Polling…';
+    }
+  } catch (_) {}
+}
+
+// Realtime event → relevance check → debounced quiet refetch (burst → 1 fetch).
+function hvOnRealtimeRecord(record) {
+  try {
+    if (!hvRange || !hvReportRows.length) return;
+    const ts = new Date(record.created_at).getTime();
+    if (!Number.isFinite(ts) || ts < hvRange.startMs || ts >= hvRange.endMs) return;
+    if (hvRange.branches.indexOf(record.branch_id) === -1) return;
+    clearTimeout(hvRtDeb);
+    hvRtDeb = setTimeout(() => {
+      // Composer open থাকলে wipe কোরো না — polling tick-ই পরে ধরে নেবে।
+      const reportEl = document.getElementById('dash-hv-report');
+      const secs = reportEl ? reportEl.querySelectorAll('.dash-hv-remark-section') : [];
+      for (const s of secs) if (s.style.display !== 'none') return;
+      generateHoldValidationReport({ quiet: true }).catch(() => {});
+    }, HV_RT_DEBOUNCE_MS);
+  } catch (_) {}
+}
+
+function hvEnsureFeed() {
+  try {
+    if (!window.DbRealtimeFeed || !hvRange || !hvRange.branches.length) return;
+    DbRealtimeFeed.ensure({
+      supabaseUrl: SUPABASE_URL,
+      anonKey: SUPABASE_ANON_KEY,
+      branches: hvRange.branches,
+      getToken: () => getValidFirebaseIdToken().catch(() => null),
+      onRecord: hvOnRealtimeRecord,
+      onStatus: st => {
+        if (st === 'live') { hvReportStopPoll(); hvSetLiveUI('live'); }
+        else if (st === 'off') { hvSetLiveUI('off'); }
+        else { hvReportStartPoll(); hvSetLiveUI('poll'); }
+      },
+    });
+  } catch (_) {}
 }
 
 function hvReportTick() {

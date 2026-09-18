@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "DataBridge",
-  "version": "2.160",
+  "version": "2.161",
   "author": "Alif Hossain",
   "description": "Seamless data transfer between platforms.",
   "permissions": [
@@ -69,6 +69,7 @@
       ],
       "js": [
         "config.js",
+        "realtime-feed.js",
         "cc-panel.js"
       ]
     },

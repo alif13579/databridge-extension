@@ -89,6 +89,7 @@
       <button class="dash-export-btn dash-cc-export-btn" id="generate-hv-btn">🔍 View report</button>
       <button class="dash-export-btn dash-cc-export-btn" id="sync-hv-btn">⇪ Sheet Sync</button>
       <div class="dash-cc-status" id="dash-hv-status"></div>
+      <div class="dash-hv-live-line"><span id="dash-hv-live" class="dash-hv-live" data-mode="off" title="Live sync status">●</span><span id="dash-hv-live-text"></span></div>
       <div class="dash-hv-searchbar" id="dash-hv-searchbar" style="display:none">
         <span class="search-icon">🔍</span>
         <input type="text" id="dash-hv-search" placeholder="Consignment / phone / name…">
@@ -315,6 +316,7 @@
   </div>
 
   <script src="config.js"></script>
+  <script src="realtime-feed.js"></script>
   <script src="qrcode.min.js"></script>
   <script src="popup.js"></script>
 </body>

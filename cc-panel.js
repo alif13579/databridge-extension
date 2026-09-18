@@ -293,6 +293,9 @@
       .db-cc-badge-engaged   { background: #e0f2fe; color: #0284c7; }
       .db-cc-badge-calling   { background: #dcfce7; color: #15803d; animation: db-cc-pulse 1s ease-in-out infinite; }
       @keyframes db-cc-pulse { 0%,100% { opacity: 1; } 50% { opacity: .45; } }
+      .db-cc-live { font-size: 10px; margin-right: 4px; color: #cbd5e1; vertical-align: 1px; }
+      .db-cc-live[data-mode="live"] { color: #16a34a; }
+      .db-cc-live[data-mode="retry"] { color: #d97706; animation: db-cc-pulse 1s ease-in-out infinite; }
       .db-cc-row-none { border-left: 3px solid #cbd5e1; }
       .db-cc-modes { display: flex; gap: 2px; margin-left: auto; }
       .db-cc-mode-btn {
@@ -485,7 +488,7 @@
     panel.innerHTML = `
       <div class="db-cc-hdr" id="db-cc-hdr">
         <span>☎️ Call Center — Hold Validation</span>
-        <span><button id="db-cc-sync-sheet" title="Sync to Sheet — blank cells of the selected date\u2019s sheet updated from Supabase CC">⇪ Sheet</button><button id="db-cc-refresh" title="Reload now">⟳</button><button id="db-cc-min" title="Minimize">−</button></span>
+        <span><span id="db-cc-live" class="db-cc-live" data-mode="off" title="Live sync status">●</span><button id="db-cc-sync-sheet" title="Sync to Sheet — blank cells of the selected date\u2019s sheet updated from Supabase CC">⇪ Sheet</button><button id="db-cc-refresh" title="Reload now">⟳</button><button id="db-cc-min" title="Minimize">−</button></span>
       </div>
       <div class="db-cc-datebar">
         <span>📅</span><input type="date" id="db-cc-date"><span id="db-cc-date-label"></span>
@@ -705,17 +708,7 @@
 
   function armAutoRefresh() {
     if (ccRefreshTimer) return;
-    ccRefreshTimer = setInterval(() => {
-      // Skip while the tab is hidden — reload on return instead (visibility
-      // handler below). Minimized panel still refreshes so expand shows fresh.
-      // In-flight guard: manual ⟳ / post-save reload / visibility reload must
-      // not overlap into parallel Supabase+Firebase storms + out-of-order render.
-      // Past dates are static — no auto-refresh (manual ⟳ still works).
-      // Remark being written — skip this tick so typed notes/chips are never
-      // wiped mid-write; the next tick (30s) picks up the change.
-      if (document.hidden || !ccBodyEl || ccLoading || ccDateKey !== todayBdDateKey() || ccRemarkOpen()) return;
-      loadAndRender(ccBodyEl, { quiet: true }).catch(e => console.warn('[DB CC Panel] auto-refresh failed:', e));
-    }, CC_REFRESH_MS);
+    ccDataPollStart();
     document.addEventListener('visibilitychange', () => {
       if (!document.hidden && ccBodyEl && !ccLoading && ccDateKey === todayBdDateKey()) {
         loadAndRender(ccBodyEl, { quiet: true }).catch(e => console.warn('[DB CC Panel] visible-refresh failed:', e));
@@ -724,7 +717,31 @@
     window.addEventListener('pagehide', () => {
       if (ccRefreshTimer) { clearInterval(ccRefreshTimer); ccRefreshTimer = null; }
       ccPresenceStopPoll();
+      try { if (window.DbRealtimeFeed) DbRealtimeFeed.stop(); } catch (_) {}
     });
+  }
+
+  function ccDataPollTick() {
+    // Skip while the tab is hidden — reload on return instead (visibility
+    // handler below). Minimized panel still refreshes so expand shows fresh.
+    // In-flight guard: manual ⟳ / post-save reload / visibility reload must
+    // not overlap into parallel Supabase+Firebase storms + out-of-order render.
+    // Past dates are static — no auto-refresh (manual ⟳ still works).
+    // Remark being written — skip this tick so typed notes/chips are never
+    // wiped mid-write; the next tick (30s) picks up the change.
+    if (document.hidden || !ccBodyEl || ccLoading || ccDateKey !== todayBdDateKey() || ccRemarkOpen()) return;
+    loadAndRender(ccBodyEl, { quiet: true }).catch(e => console.warn('[DB CC Panel] auto-refresh failed:', e));
+  }
+
+  function ccDataPollStart() {
+    ccDataPollStop();
+    if (!ccBodyEl) return;
+    ccRefreshTimer = setInterval(ccDataPollTick, CC_REFRESH_MS);
+  }
+
+  function ccDataPollStop() {
+    try { if (ccRefreshTimer) clearInterval(ccRefreshTimer); } catch (_) {}
+    ccRefreshTimer = null;
   }
 
   // ── DATA + RENDER ─────────────────────────────────────────────────────
@@ -985,6 +1002,57 @@
           paintCcPresence(bodyEl, map);
         } catch (e) { /* presence never breaks the panel */ }
       }, CC_PRES_POLL_MS);
+    } catch (_) {}
+  }
+
+  // ── REALTIME FEED (app/extension → this panel, instant) ─────────────
+  // Supabase postgres_changes on validations, one socket per panel, bindings
+  // per branch. Event → same-day check → debounced quiet reload (burst → 1).
+  // While live, the 30s Edge poll pauses (quota); any drop resumes it, so a
+  // Realtime outage/limit degrades to polling instead of going dark. Saves
+  // and manual ⟳ never depend on the socket.
+  const CC_RT_DEBOUNCE_MS = 2000;
+  let ccRtDeb = null;
+
+  function ccSetLiveUI(mode) {
+    try {
+      const dot = document.getElementById('db-cc-live');
+      if (!dot) return;
+      dot.dataset.mode = (mode === 'live') ? 'live' : (mode === 'off' ? 'off' : 'retry');
+      dot.title = mode === 'live' ? 'Live — save instantly আসবে'
+        : (mode === 'off' ? 'Live sync status' : 'Polling — 30s পর পর update (live reconnect হচ্ছে)');
+    } catch (_) {}
+  }
+
+  function ccOnRealtimeRecord(record) {
+    try {
+      if (!ccBodyEl || ccLoading) return;
+      if ((record.branch_id || '') && ccBranchIdsCache.length &&
+          ccBranchIdsCache.indexOf(record.branch_id) === -1) return;
+      if (localDateKey(record.created_at) !== ccDateKey) return;
+      clearTimeout(ccRtDeb);
+      ccRtDeb = setTimeout(() => {
+        if (ccLoading || ccRemarkOpen() || !ccBodyEl) return;
+        loadAndRender(ccBodyEl, { quiet: true }).catch(() => {});
+      }, CC_RT_DEBOUNCE_MS);
+    } catch (_) {}
+  }
+
+  function ccEnsureFeed() {
+    try {
+      if (!window.DbRealtimeFeed || !ccBranchIdsCache.length) return;
+      DbRealtimeFeed.ensure({
+        supabaseUrl: SUPABASE_URL,
+        anonKey: SUPABASE_ANON_KEY,
+        branches: ccBranchIdsCache.slice(),
+        getToken: () => getValidFirebaseIdToken().catch(() => null),
+        onRecord: ccOnRealtimeRecord,
+        onStatus: st => {
+          if (st === 'live') { ccDataPollStop(); ccSetLiveUI('live'); }
+          else if (st === 'off') { ccSetLiveUI('off'); }
+          else { ccDataPollStart(); ccSetLiveUI('poll'); }
+        },
+      });
     } catch (_) {}
   }
 
@@ -1406,6 +1474,7 @@
       ccAllReportRows = allRows;
       await enrichWithParcelDetails(idToken);
       render(bodyEl, branchNames);
+      ccEnsureFeed(); // live → data poll pauses; drop → poll resumes
       if (prevBulkMsg) bulkSay(prevBulkMsg);
       if (prevBulkMsg && !prevBulkVisible) { const el = bulkStatusEl(); if (el) el.style.display = 'none'; }
     } catch (e) {
