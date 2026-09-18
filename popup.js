@@ -3351,6 +3351,7 @@ async function generateHoldValidationReport({ skipRender = false } = {}) {
   hvReportRows = [];
   hvSummaryFilter = 'all';
   hvSearch = '';
+  hvPresenceStopPoll();
   const hvSB = document.getElementById('dash-hv-searchbar');
   const hvSI = document.getElementById('dash-hv-search');
   if (hvSB) hvSB.style.display = 'none';
@@ -3695,6 +3696,122 @@ function renderHvReport() {
   else renderHvReportDetails(reportEl);
 }
 
+/** ── HV presence (engaged_at + calling) ───────────────────────────────
+ *  Hold Validation rows come from Supabase (static snapshot), so unlike the
+ *  app's parcel cards they never showed live presence. This overlays the
+ *  same Firebase source the app reads — courier/consignments/{cid}/
+ *  engaged_at/{uid} {timestamp, agentName, agentRole, state} — onto each
+ *  HV card: calling badge (state=calling, fresh) or engaged names + ⏱
+ *  duration bubble (longest fresh engagement, only after 2 min — same rule
+ *  as EngagedStateManager on the app). Fresh = within 5 min.
+ *  One fetch per report render + 20s poll that patches badges in place
+ *  (no full re-render, so open remark sections never collapse). */
+const HV_PRESENCE_FRESH_MS = 5 * 60 * 1000;
+const HV_PRESENCE_SHOW_AFTER_MS = 2 * 60 * 1000;
+const HV_PRESENCE_POLL_MS = 20000;
+const HV_PRESENCE_MAX_CARDS = 120;
+let hvPresenceTimer = null;
+
+function hvPresenceStopPoll() {
+  try { if (hvPresenceTimer) clearInterval(hvPresenceTimer); } catch (_) {}
+  hvPresenceTimer = null;
+}
+
+function hvPresenceParse(snapshot, nowMs) {
+  if (!snapshot || typeof snapshot !== 'object') return { fresh: [], calling: [] };
+  const all = Object.values(snapshot).map(e => ({
+    name: (e && (e.agentName || e.agentname)) || '',
+    state: (e && e.state) || 'viewing',
+    ts: (e && e.timestamp) || 0,
+  })).filter(e => e.ts > 0 && (nowMs - e.ts) < HV_PRESENCE_FRESH_MS && e.ts <= nowMs);
+  all.sort((a, b) => a.ts - b.ts);
+  return { fresh: all, calling: all.filter(e => e.state === 'calling') };
+}
+
+function hvPresenceDuration(fresh, nowMs) {
+  if (!fresh.length) return '';
+  const oldest = fresh[0];
+  const elapsed = nowMs - oldest.ts;
+  if (elapsed < HV_PRESENCE_SHOW_AFTER_MS) return '';
+  const mins = Math.floor(elapsed / 60000);
+  if (mins < 60) return `⏱ ${mins}m`;
+  const h = Math.floor(mins / 60), m = mins % 60;
+  return m ? `⏱ ${h}h ${m}m` : `⏱ ${h}h`;
+}
+
+function hvPresenceBadgeHtml(pres, nowMs) {
+  if (!pres || !pres.fresh.length) return '';
+  if (pres.calling.length) {
+    const n = pres.calling.length > 1 ? ` ×${pres.calling.length}` : '';
+    const who = pres.calling.slice(0, 2).map(e => e.name).filter(Boolean).join(', ');
+    return `<span class="dash-hv-badge dash-hv-badge-calling" title="${escapeHtml(who || 'on call')}">📞 Calling${n}</span>`;
+  }
+  const names = [...new Set(pres.fresh.map(e => e.name).filter(Boolean))].slice(0, 2).join(', ');
+  const dur = hvPresenceDuration(pres.fresh, nowMs);
+  const label = `👁 ${names || 'engaged'}${dur ? ' · ' + dur : ''}`;
+  return `<span class="dash-hv-badge dash-hv-badge-engaged" title="${escapeHtml(names || 'someone is viewing')}">${escapeHtml(label)}</span>`;
+}
+
+async function fetchHvPresenceMap(cIds) {
+  const map = new Map();
+  const idToken = await getValidFirebaseIdToken().catch(() => null);
+  if (!idToken || !cIds.length) return map;
+  const uniq = [...new Set(cIds.filter(Boolean))].slice(0, HV_PRESENCE_MAX_CARDS);
+  const nowMs = Date.now();
+  const CHUNK = 10;
+  for (let i = 0; i < uniq.length; i += CHUNK) {
+    const chunk = uniq.slice(i, i + CHUNK);
+    const settled = await Promise.allSettled(chunk.map(async cid => {
+      const res = await fetch(
+        `${FIREBASE_URL}/courier/consignments/${encodeURIComponent(cid)}/engaged_at.json?auth=${idToken}`);
+      if (!res.ok) return [cid, null];
+      return [cid, await res.json().catch(() => null)];
+    }));
+    settled.forEach(r => {
+      if (r.status !== 'fulfilled') return;
+      const [cid, snap] = r.value;
+      map.set(cid, hvPresenceParse(snap, nowMs));
+    });
+  }
+  return map;
+}
+
+function paintHvPresence(reportEl, presMap) {
+  if (!reportEl || !presMap) return;
+  const nowMs = Date.now();
+  reportEl.querySelectorAll('.dash-hv-row[data-cid]').forEach(row => {
+    const cid = row.getAttribute('data-cid');
+    const pres = presMap.get(cid);
+    let slot = row.querySelector('[data-role="presence"]');
+    const html = hvPresenceBadgeHtml(pres, nowMs);
+    if (!html) { if (slot) slot.remove(); return; }
+    if (!slot) {
+      slot = document.createElement('span');
+      slot.setAttribute('data-role', 'presence');
+      const line = row.querySelector('.dash-hv-row-badge-line');
+      if (line) line.prepend(slot);
+      else row.appendChild(slot);
+    }
+    slot.innerHTML = html;
+  });
+}
+
+async function attachHvPresence(reportEl, rows) {
+  hvPresenceStopPoll();
+  if (!reportEl || !rows || !rows.length) return;
+  const cIds = rows.map(r => r.cId);
+  const paint = async () => {
+    try {
+      const map = await fetchHvPresenceMap(cIds);
+      paintHvPresence(reportEl, map);
+    } catch (e) { /* presence is best-effort — never break the report */ }
+  };
+  await paint();
+  try {
+    hvPresenceTimer = setInterval(paint, HV_PRESENCE_POLL_MS);
+  } catch (_) {}
+}
+
 /** One card per (date, consignment) — first Worker remark, last CC remark
  *  (blank/no card shown for that half if CC hasn't responded yet), tagged
  *  Pending/Validated. Most-actionable (pending) first, then by date. */
@@ -3752,7 +3869,7 @@ function renderHvReportSummary(reportEl) {
         </div>` : ''}
     `).join('');
     return `
-      <div class="dash-hv-row ${r.stillPending ? 'dash-hv-row-pending' : 'dash-hv-row-validated'}">
+      <div class="dash-hv-row ${r.stillPending ? 'dash-hv-row-pending' : 'dash-hv-row-validated'}" data-cid="${escapeHtml(r.cId)}">
         <div class="dash-hv-row-top">
           <span class="dash-hv-row-id">${escapeHtml(r.cId)}</span>
           <span>${escapeHtml(r.dateLabel)}</span>
@@ -3820,6 +3937,9 @@ function renderHvReportSummary(reportEl) {
       toggleHvRemarkSection(reportEl, sorted, +btn.dataset.idx);
     });
   });
+
+  // Live presence overlay (best-effort, never blocks the report).
+  attachHvPresence(reportEl, sorted);
 }
 
 // ── Dashboard card remarks (CC) ──────────────────────────────────────────
@@ -3942,8 +4062,38 @@ async function toggleHvRemarkSection(reportEl, sorted, idx) {
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok || data.ok === false) throw new Error(data.error || `HTTP ${res.status}`);
-      say('✓ Remark saved — refreshing report…');
-      setTimeout(() => { generateHoldValidationReport(); }, 800);
+      // Optimistic flip: card moves Pending → Validated + counts update
+      // instantly, no full refetch (which also used to reset the
+      // Total/Validated/Pending filter + search). Next manual Generate
+      // re-syncs from the server anyway.
+      try {
+        const nowIso = new Date().toISOString();
+        card.stillPending = false;
+        card.lastCcRemark = opt ? opt.english : '';
+        card.lastCcNote = note;
+        card.lastCcStatus = opt ? opt.target : '';
+        card.lastCcTime = formatHhMm(nowIso);
+        card.validatorName = 'You';
+        card.validatorWho = 'You';
+        const lastDay = (card.days && card.days.length) ? card.days[card.days.length - 1] : null;
+        if (lastDay) {
+          lastDay.hasCc = true;
+          lastDay.ccRemark = card.lastCcRemark;
+          lastDay.ccNote = note;
+          lastDay.ccStatus = card.lastCcStatus;
+          lastDay.ccTime = card.lastCcTime;
+          lastDay.ccName = 'You';
+          lastDay.ccWho = 'You';
+        }
+      } catch (_) {}
+      say('✓ Validated — card updated.');
+      try {
+        const total = hvReportRows.length;
+        const pend = hvReportRows.filter(r => r.stillPending).length;
+        const statusEl = document.getElementById('dash-hv-status');
+        if (statusEl) statusEl.textContent = `✓ Validated ${card.cId} · Validated ${total - pend} · Pending ${pend}`;
+      } catch (_) {}
+      renderHvReport();
     } catch (e) {
       say(`⚠ Save failed — ${e.message || 'network error'}`);
       saveBtn.disabled = false;

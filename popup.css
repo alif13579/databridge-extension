@@ -1015,6 +1015,9 @@ html[data-theme="light"] .dash-hv-search-clear { background: #fff; color: #64748
 .dash-hv-badge { font-size: 9px; padding: 2px 6px; border-radius: 3px; font-weight: 700; }
 .dash-hv-badge-pending   { background: #ffaa0018; color: #ffaa00; }
 .dash-hv-badge-validated { background: #00ff8818; color: #00ff88; }
+.dash-hv-badge-engaged   { background: #00d4ff18; color: #00d4ff; }
+.dash-hv-badge-calling   { background: #00ff8818; color: #00ff88; animation: dash-hv-pulse 1s ease-in-out infinite; }
+@keyframes dash-hv-pulse { 0%,100% { opacity: 1; } 50% { opacity: .45; } }
 
 .dash-hv-chat { display: flex; flex-direction: column; gap: 6px; margin-top: 6px; }
 .dash-hv-day-label {
@@ -1214,6 +1217,8 @@ html[data-theme="light"] .dash-hv-bubble-cc { background: #dcfce7; border-color:
 html[data-theme="light"] .dash-hv-bubble-pending { background: #fef3c7; border-color: #fcd34d; color: #92400e; }
 html[data-theme="light"] .dash-hv-bubble-note { border-top-color: #e2e8f0; }
 html[data-theme="light"] .dash-hv-badge-validated { background: #dcfce7; color: #15803d; }
+html[data-theme="light"] .dash-hv-badge-engaged { background: #e0f2fe; color: #0284c7; }
+html[data-theme="light"] .dash-hv-badge-calling { background: #dcfce7; color: #15803d; }
 
 /* ── Routing Approval (demo) ── */
 .routing-demo-tag { font-size: 10px; background: #475569; color: #fff; border-radius: 4px; padding: 1px 6px; vertical-align: middle; }
