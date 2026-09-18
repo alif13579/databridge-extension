@@ -1516,7 +1516,7 @@
               branch: t.branchId,
               sheet: String(t.lib.sheetId || '').slice(0, 20) + '…',
               tab: resolveConnTab(t.lib.tabPattern, dateKey),
-              fetchCol: String(t.binding.fetchColRef || '').trim() || '(range start)',
+              fetchCol: '(resolving…)',
               filters: (Array.isArray(t.binding.filters) ? t.binding.filters : [])
                 .filter(f => f && String(f.colRef || '').trim() && f.op)
                 .map(f => `${String(f.colRef).trim()} ${f.op} ${f.valueType === 'today' ? 'TODAY' : String(f.value || '')}`),
@@ -1531,6 +1531,7 @@
               tDiag.scanned = r.scanned || 0;
               tDiag.dropped = r.dropped || 0;
               tDiag.note = r.note || null;
+              tDiag.fetchCol = r.fetchCol || tDiag.fetchCol;
               tDiag.idsCount = (r.ids || []).length;
               tDiag.sampleIds = (r.ids || []).slice(0, 5);
               tDiag.sampleDropped = (r.dropIds || []).slice(0, 3);
@@ -1985,11 +1986,18 @@
       });
       return min || 1;
     })();
-    const fetchRef = String(b.fetchColRef || '').trim();
+    // App parity (SheetLibraryRepository.loadCcBindings/saveCcBinding): the
+    // fetch column is stored NESTED at fetchCol:{colRef,mode} — a top-level
+    // fetchColRef is never written. Reading only the flat path silently fell
+    // back to range start (here column A = dates), so every "ID" was a date
+    // string and validations found nothing. Flat path kept as legacy fallback.
+    const fetchShape = (b.fetchCol && typeof b.fetchCol === 'object') ? b.fetchCol : {};
+    const fetchRef = String(fetchShape.colRef || b.fetchColRef || '').trim();
+    const fetchMode = ((fetchShape.mode || b.fetchColMode) === 'text') ? 'text' : 'index';
     const fetchLetter = fetchRef
-      ? await letterOf(fetchRef, b.fetchColMode)
+      ? await letterOf(fetchRef, fetchMode)
       : indexToLetter(rangeStart);
-    if (!fetchLetter) return { ids: [], scanned: 0, dropped: 0, note: `ID column '${fetchRef}' not found` };
+    if (!fetchLetter) return { ids: [], scanned: 0, dropped: 0, dropIds: [], fetchCol: fetchRef || '(range start)', fetchLetter: null, note: `ID column '${fetchRef}' not found` };
     const rules = Array.isArray(b.filters) ? b.filters.filter(r => r && String(r.colRef || '').trim() && r.op) : [];
     const useOr = rules.length > 0 && b.filterLogic === 'OR';
     const colCache = {};
@@ -2012,8 +2020,8 @@
     }
     const idCol = await colOf(
       fetchRef || indexToLetter(rangeStart),
-      fetchRef ? (b.fetchColMode || 'index') : 'index');
-    if (!idCol) return { ids: [], scanned: 0, dropped: 0, note: 'ID column not found' };
+      fetchRef ? fetchMode : 'index');
+    if (!idCol) return { ids: [], scanned: 0, dropped: 0, dropIds: [], fetchCol: fetchRef || '(range start)', fetchLetter: null, note: 'ID column not found' };
     const ids = [];
     let dropped = 0;
     const dropByRule = {}; // rule idx -> rows it rejected (for the diagnostic note)
@@ -2047,7 +2055,7 @@
           (got ? ` (sheet has '${got}')` : ' (sheet cell blank)');
       }
     }
-    return { ids, scanned: idCol.length, dropped, dropIds, note: missing.length ? `Column ${[...new Set(missing)].join(',')} not found (skipped)` : diagNote };
+    return { ids, scanned: idCol.length, dropped, dropIds, fetchCol: (fetchRef || '(range start)') + '→' + fetchLetter, fetchLetter, note: missing.length ? `Column ${[...new Set(missing)].join(',')} not found (skipped)` : diagNote };
   }
 
   // ── BULK SYNC TO SHEET (header) ────────────────────────────────
