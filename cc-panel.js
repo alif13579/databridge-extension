@@ -1799,8 +1799,19 @@
   function cellPassJs(op, cell, value, valueType) {
     const c = String(cell == null ? '' : cell).trim();
     const vt = valueType || 'text';
-    const t = vt === 'today' ? dhakaTodayKey().replace(/-/g, '') : String(value == null ? '' : value).trim();
-    const num = s => { const n = parseFloat(String(s).replace(/,/g, '')); return Number.isFinite(n) ? n : null; };
+    // App parity (SheetCellCompare.pass): TODAY is ISO YYYY-MM-DD (Dhaka), NOT
+    // digits-stripped — "20260918" is unparseable as a date and silently
+    // dropped every row (the 2721/2721 case).
+    const t = vt === 'today' ? dhakaTodayKey() : String(value == null ? '' : value).trim();
+    // App parity (compareOrdered): Kotlin's toDoubleOrNull needs the WHOLE
+    // string numeric — parseFloat("18-09-2026") partial-parses to 18, which
+    // turned date cells into bogus numbers. Number() matches (NaN → date/string).
+    const num = s => {
+      const x = String(s).trim().replace(/,/g, '');
+      if (!x) return null;
+      const n = Number(x);
+      return Number.isFinite(n) ? n : null;
+    };
     const ord = (a, b) => {
       const an = num(a), bn = num(b);
       if (an !== null && bn !== null) return an < bn ? -1 : an > bn ? 1 : 0;
@@ -1881,15 +1892,36 @@
     if (!idCol) return { ids: [], scanned: 0, dropped: 0, note: 'ID column not found' };
     const ids = [];
     let dropped = 0;
+    const dropByRule = {}; // rule idx -> rows it rejected (for the diagnostic note)
+    let dropSample = null; // first dropped row's rule-cell values
     idCol.forEach((cell, i) => {
       const cid = String(cell || '').trim();
       if (!cid) return;
       const results = ruleCols.map(({ r, vals }) => cellPassJs(r.op, vals[i] || '', r.value, r.valueType));
       const pass = useOr && results.length ? results.some(Boolean) : results.every(Boolean);
-      if (!pass) { dropped++; return; }
+      if (!pass) {
+        dropped++;
+        results.forEach((ok, ri) => { if (!ok) dropByRule[ri] = (dropByRule[ri] || 0) + 1; });
+        if (!dropSample) dropSample = ruleCols.map(({ vals }) => vals[i] || '');
+        return;
+      }
       if (ids.indexOf(cid) === -1) ids.push(cid);
     });
-    return { ids, scanned: idCol.length, dropped, note: missing.length ? `Column ${[...new Set(missing)].join(',')} not found (skipped)` : null };
+    let diagNote = null;
+    if (!ids.length && dropped > 0 && ruleCols.length) {
+      // All rows gone — say WHICH rule rejected most + what it saw, so the
+      // cause ("filter/scope mismatch") is actionable instead of a dead end.
+      const top = Object.entries(dropByRule).sort((a, b) => b[1] - a[1])[0];
+      if (top) {
+        const ri = +top[0];
+        const r = ruleCols[ri].r;
+        const want = (r.valueType === 'today') ? 'today' : String(r.value || '').trim();
+        const got = (dropSample ? String(dropSample[ri] || '') : '').trim().slice(0, 24);
+        diagNote = `${String(r.colRef || '').trim()} ${r.op} ${want ? `'${want}'` : '(blank)'} rejected ${top[1]}/${dropped}` +
+          (got ? ` (sheet has '${got}')` : ' (sheet cell blank)');
+      }
+    }
+    return { ids, scanned: idCol.length, dropped, note: missing.length ? `Column ${[...new Set(missing)].join(',')} not found (skipped)` : diagNote };
   }
 
   // ── BULK SYNC TO SHEET (header) ────────────────────────────────
