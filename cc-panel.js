@@ -711,7 +711,9 @@
       // In-flight guard: manual ⟳ / post-save reload / visibility reload must
       // not overlap into parallel Supabase+Firebase storms + out-of-order render.
       // Past dates are static — no auto-refresh (manual ⟳ still works).
-      if (document.hidden || !ccBodyEl || ccLoading || ccDateKey !== todayBdDateKey()) return;
+      // Remark being written — skip this tick so typed notes/chips are never
+      // wiped mid-write; the next tick (30s) picks up the change.
+      if (document.hidden || !ccBodyEl || ccLoading || ccDateKey !== todayBdDateKey() || ccRemarkOpen()) return;
       loadAndRender(ccBodyEl, { quiet: true }).catch(e => console.warn('[DB CC Panel] auto-refresh failed:', e));
     }, CC_REFRESH_MS);
     document.addEventListener('visibilitychange', () => {
@@ -745,7 +747,18 @@
   let ccRefreshTimer = null;
   let ccLoading = false; // in-flight guard for auto/manual/visibility reloads
   let ccLiveNote = null; // Live ID না এলে SPECIFIC কারণ (access/tab/filter/binding) — render empty-state-এ দেখায়
-  const CC_REFRESH_MS = 60_000; // auto-refresh: new parcels + called-status updates
+  const CC_REFRESH_MS = 30_000; // auto-refresh: app-er save ≤30s-এ panel-e (new parcels + status updates)
+  let ccLastVisible = []; // last rendered card refs — maps open History sections across refreshes
+
+  /** True while any remark composer is open — auto-refresh must not wipe it. */
+  function ccRemarkOpen() {
+    try {
+      if (!ccBodyEl) return false;
+      const secs = ccBodyEl.querySelectorAll('.db-cc-remark-section');
+      for (const s of secs) if (s.style.display !== 'none') return true;
+    } catch (_) {}
+    return false;
+  }
 
   function computeSummaryRows(allRows) {
     const groups = {};
@@ -976,6 +989,18 @@
   }
 
   function render(bodyEl, branchNames) {
+    // Preserve open History sections across auto-refresh re-renders (keyed by
+    // consignment — sorted indexes shift as cards validate). Remark composers
+    // are never rebuilt under the user: the auto tick skips while one is open.
+    const openHistCids = new Set();
+    try {
+      bodyEl.querySelectorAll('.db-cc-hist-section').forEach(s => {
+        if (s.style.display !== 'none') {
+          const c = ccLastVisible[+s.dataset.idx]?.cId;
+          if (c) openHistCids.add(c);
+        }
+      });
+    } catch (_) {}
     const totalReq   = summaryRows.length;
     const pendingCnt = summaryRows.filter(r => r.stillPending).length;
     const noneCnt    = summaryRows.filter(r => r.noActivity).length;
@@ -1112,6 +1137,18 @@
     bodyEl.querySelectorAll('.db-cc-remark-btn').forEach(btn => {
       btn.addEventListener('click', () => toggleCcRemarkSection(bodyEl, visible, +btn.dataset.idx));
     });
+
+    // Re-open History sections that were open before this re-render.
+    if (openHistCids.size) {
+      bodyEl.querySelectorAll('.db-cc-hist-btn').forEach(btn => {
+        const cid = btn.closest('.db-cc-row')?.getAttribute('data-cid');
+        if (cid && openHistCids.has(cid)) {
+          const idx = visible.findIndex(r => r.cId === cid);
+          if (idx >= 0) toggleCcHistory(bodyEl, visible, idx, btn);
+        }
+      });
+    }
+    ccLastVisible = visible;
 
     // Live presence overlay (sync paint from piggybacked snapshot + 20s poll).
     attachCcPresence(bodyEl, visible);

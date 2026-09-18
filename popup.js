@@ -3341,7 +3341,7 @@ function getSelectedHvBranchIds() {
     }
   }
 
-async function generateHoldValidationReport({ skipRender = false } = {}) {
+async function generateHoldValidationReport({ skipRender = false, quiet = false } = {}) {
   const statusEl    = document.getElementById('dash-hv-status');
   const fromInput   = document.getElementById('dash-hv-from');
   const toInput     = document.getElementById('dash-hv-to');
@@ -3349,14 +3349,21 @@ async function generateHoldValidationReport({ skipRender = false } = {}) {
   const setStatus   = msg => { if (statusEl) statusEl.textContent = msg; };
 
   hvReportRows = [];
-  hvSummaryFilter = 'all';
-  hvSearch = '';
+  // Quiet auto-refresh keeps the user's Total/Validated/Pending filter +
+  // search text; a manual Generate always starts fully visible.
+  if (!quiet) {
+    hvSummaryFilter = 'all';
+    hvSearch = '';
+  }
   hvPresenceStopPoll();
+  hvReportStopPoll();
   const hvSB = document.getElementById('dash-hv-searchbar');
   const hvSI = document.getElementById('dash-hv-search');
-  if (hvSB) hvSB.style.display = 'none';
-  if (hvSI) hvSI.value = '';
-  if (!skipRender && reportEl) reportEl.innerHTML = '';
+  if (!quiet) {
+    if (hvSB) hvSB.style.display = 'none';
+    if (hvSI) hvSI.value = '';
+  }
+  if (!skipRender && !quiet && reportEl) reportEl.innerHTML = '';
 
   if (!fromInput?.value || !toInput?.value) {
     setStatus('⚠ Select both From and To dates');
@@ -3674,6 +3681,13 @@ async function generateHoldValidationReport({ skipRender = false } = {}) {
     } else {
       setStatus(`✓ ${hvReportRows.length}remarks found`);
     }
+
+    // Auto-refresh: app-er save ≤30s-এ dashboard-e (presence poll 20s-এর
+    // পাশাপাশি data-ও). Remark লেখা চললে tick skip — open composer wipe হবে না।
+    hvReportStopPoll();
+    if (!skipRender && hvReportRows.length) {
+      try { hvReportTimer = setInterval(hvReportTick, HV_REPORT_POLL_MS); } catch (_) {}
+    }
   } catch (e) {
     console.error('[DB] generateHoldValidationReport failed:', e);
     setStatus('⚠ Report load failed — check console (F12)');
@@ -3710,7 +3724,28 @@ const HV_PRESENCE_FRESH_MS = 5 * 60 * 1000;
 const HV_PRESENCE_SHOW_AFTER_MS = 2 * 60 * 1000;
 const HV_PRESENCE_POLL_MS = 20000;
 const HV_PRESENCE_MAX_CARDS = 120;
+// HV report data auto-refresh (app → extension gap closer). Presence-এর 20s
+// poll শুধু badge আনে; এটা 30s-এ পুরো report quietly re-fetch করে —
+// filter/search preserved, remark composer খোলা থাকলে tick skip.
+const HV_REPORT_POLL_MS = 30000;
+let hvReportTimer = null;
 let hvPresenceTimer = null;
+
+function hvReportStopPoll() {
+  try { if (hvReportTimer) clearInterval(hvReportTimer); } catch (_) {}
+  hvReportTimer = null;
+}
+
+function hvReportTick() {
+  try {
+    if (document.hidden || !hvReportRows.length) return;
+    const reportEl = document.getElementById('dash-hv-report');
+    if (!reportEl) return;
+    const secs = reportEl.querySelectorAll('.dash-hv-remark-section');
+    for (const s of secs) if (s.style.display !== 'none') return; // composer open — skip
+    generateHoldValidationReport({ quiet: true }).catch(() => {});
+  } catch (_) {}
+}
 
 function hvPresenceStopPoll() {
   try { if (hvPresenceTimer) clearInterval(hvPresenceTimer); } catch (_) {}
