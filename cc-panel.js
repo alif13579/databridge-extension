@@ -1706,7 +1706,15 @@
     } catch (e) {
       console.error('[DB CC Panel] load failed:', e);
       if (ccBodyEl === bodyEl) {
-        bodyEl.innerHTML = '<div class="db-cc-status">⚠ Load failed — check console (F12)</div>';
+        if (isContextDead(e)) {
+          // Update-er por page reload na howa porjonto protita chrome.* call
+          // fail korbe — britha poll thamay, reload notice dekhay.
+          ccDataPollStop();
+          try { if (window.DbRealtimeFeed) DbRealtimeFeed.stop(); } catch (_) {}
+          bodyEl.innerHTML = '<div class="db-cc-status">⚠ Extension updated — page-ta reload dao (F5), panel abar kaj korbe.</div>';
+        } else {
+          bodyEl.innerHTML = '<div class="db-cc-status">⚠ Load failed — check console (F12)</div>';
+        }
         if (prevBulkMsg) bulkSay(prevBulkMsg);
       }
     } finally {
@@ -2159,7 +2167,16 @@
     return { ids, scanned: idCol.length, dropped, dropIds, fetchCol: (fetchRef || '(range start)') + '→' + fetchLetter, fetchLetter, note: missing.length ? `Column ${[...new Set(missing)].join(',')} not found (skipped)` : diagNote };
   }
 
-  // ── BULK SYNC TO SHEET (header) ────────────────────────────────
+  // Extension reload/update (notun version install) hole already-injected
+  // script-er chrome.* API more jay — protita call "Extension context
+  // invalidated" throw kore. Eta bug na: page reload (F5) dilei notun script
+  // inject hoy. Ei check dead-context-ke normal error theke alada kore
+  // sothik notice dekhay + britha retry loop thamay.
+  function isContextDead(e) {
+    return /extension context invalidated/i.test(String((e && e.message) || e || ''));
+  }
+
+  // ── BULK SYNC TO SHEET (header) ─────────────────────────────────────────
   // Branch-wise: every branch uses ONLY its own remark connections
   // (config/connectors/{branchId}/current) → its own sheet.
   // Sheet-driven: read the connection's today tab, take rows whose write
