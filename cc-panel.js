@@ -188,20 +188,27 @@
 
   // Live card-er jonno nirdisto ID-gulor validations (app buildLiveParcels-er moto).
   // author/assigned join soho — name display-er jonno lage.
-  async function fetchValidationsByIds(ids, idToken) {
+  // diag (optional): per-chunk {n, status, count} collector for the 📋 log button.
+  async function fetchValidationsByIds(ids, idToken, diag) {
     const uniq = [...new Set((ids || []).map(String).map(s => s.trim()).filter(Boolean))];
     const out = [];
     for (let i = 0; i < uniq.length; i += 200) {
       const ch = uniq.slice(i, i + 200);
-      const res = await fetch(`${SUPABASE_URL}/rest/v1/validations` +
-        `?select=consignment,branch_id,assigned_to_system_id,author_system_id,source,remarks_status,consignment_status,remarks,note,customer_phone,created_at,author:users!validations_author_system_id_fkey(name,employee_id),assigned:users!validations_assigned_to_system_id_fkey(name,employee_id)` +
-        `&consignment=in.(${ch.map(encodeURIComponent).join(',')})` +
-        `&order=created_at.desc`, {
-        headers: { 'apikey': SUPABASE_ANON_KEY, 'Authorization': `Bearer ${idToken}`, 'Accept': 'application/json' },
-      });
-      if (!res.ok) throw new Error(`Supabase validations fetch failed (${res.status})`);
-      const arr = await res.json().catch(() => []);
-      if (Array.isArray(arr)) out.push(...arr);
+      const rec = { n: ch.length, status: 0, count: 0 };
+      try {
+        const res = await fetch(`${SUPABASE_URL}/rest/v1/validations` +
+          `?select=consignment,branch_id,assigned_to_system_id,author_system_id,source,remarks_status,consignment_status,remarks,note,customer_phone,created_at,author:users!validations_author_system_id_fkey(name,employee_id),assigned:users!validations_assigned_to_system_id_fkey(name,employee_id)` +
+          `&consignment=in.(${ch.map(encodeURIComponent).join(',')})` +
+          `&order=created_at.desc`, {
+          headers: { 'apikey': SUPABASE_ANON_KEY, 'Authorization': `Bearer ${idToken}`, 'Accept': 'application/json' },
+        });
+        rec.status = res.status;
+        if (!res.ok) throw new Error(`Supabase validations fetch failed (${res.status})`);
+        const arr = await res.json().catch(() => []);
+        if (Array.isArray(arr)) { out.push(...arr); rec.count = arr.length; }
+      } finally {
+        if (diag) diag.push(rec);
+      }
     }
     return out;
   }
@@ -488,7 +495,7 @@
     panel.innerHTML = `
       <div class="db-cc-hdr" id="db-cc-hdr">
         <span>☎️ Call Center — Hold Validation</span>
-        <span><span id="db-cc-live" class="db-cc-live" data-mode="off" title="Live sync status">●</span><button id="db-cc-sync-sheet" title="Sync to Sheet — blank cells of the selected date\u2019s sheet updated from Supabase CC">⇪ Sheet</button><button id="db-cc-refresh" title="Reload now">⟳</button><button id="db-cc-min" title="Minimize">−</button></span>
+        <span><span id="db-cc-live" class="db-cc-live" data-mode="off" title="Live sync status">●</span><button id="db-cc-sync-sheet" title="Sync to Sheet — blank cells of the selected date\u2019s sheet updated from Supabase CC">⇪ Sheet</button><button id="db-cc-log" title="Copy debug log — Live mismatch hole eta paste koro">📋</button><button id="db-cc-refresh" title="Reload now">⟳</button><button id="db-cc-min" title="Minimize">−</button></span>
       </div>
       <div class="db-cc-datebar">
         <span>📅</span><input type="date" id="db-cc-date"><span id="db-cc-date-label"></span>
@@ -577,6 +584,69 @@
       btn.textContent = '⏳';
       try { if (ccBodyEl) await loadAndRender(ccBodyEl); }
       finally { btn.textContent = '⟳'; }
+    });
+
+    // 📋 Log — copies the last load's pipeline snapshot (sheet → IDs →
+    // validations → enrich) so a Live-vs-app mismatch is diagnosable from
+    // chat instead of screenshots.
+    panel.querySelector('#db-cc-log').addEventListener('click', async (e) => {
+      e.stopPropagation();
+      const btn = e.currentTarget;
+      const orig = btn.textContent;
+      const lines = ['[DB CC live diag]'];
+      try {
+        let ver = '';
+        try { ver = (chrome.runtime.getManifest() || {}).version || ''; } catch (_) {}
+        lines.push(`ext: ${ver}`);
+      } catch (_) {}
+      if (!ccLastDiag) {
+        lines.push('no load yet — panel khule Live/Sheet mode-e reload dao, tarpor abar chap dao');
+      } else {
+        const d = ccLastDiag;
+        lines.push(`ts: ${d.ts}`);
+        lines.push(`mode: ${d.mode} · date: ${d.dateKey} · branches: ${(d.branches || []).join(',')}`);
+        lines.push(`auth: googleUid=${d.auth.googleUid} tokenLen=${d.auth.tokenLen} · realtime=${d.realtime}`);
+        (d.targets || []).forEach(t => {
+          lines.push(`sheet[${t.branch}]: tab='${t.tab}' fetchCol=${t.fetchCol} filters=[${(t.filters || []).join(' | ')}] (${t.logic})`);
+          lines.push(`  scanned=${t.scanned} dropped=${t.dropped} ids=${t.idsCount}` +
+            (t.sampleIds && t.sampleIds.length ? ` sample=${t.sampleIds.join(',')}` : '') +
+            (t.note ? ` NOTE: ${t.note}` : ''));
+        });
+        if (d.live) lines.push(`liveIds: total=${d.live.idsTotal} sample=${(d.live.sampleIds || []).join(',')}` +
+          (d.live.problems && d.live.problems.length ? ` problems=${d.live.problems.join(' · ')}` : ''));
+        if (d.validations) {
+          lines.push(`validations: requested=${d.validations.requested} returned=${d.validations.returned}`);
+          (d.validations.chunks || []).forEach((c, i) =>
+            lines.push(`  chunk${i}: n=${c.n} http=${c.status} rows=${c.count}`));
+          if (d.validations.sampleReturned && d.validations.sampleReturned.length)
+            lines.push(`  sampleReturned=${d.validations.sampleReturned.join(',')}`);
+        } else {
+          lines.push('validations: (no live IDs → not queried)');
+        }
+        if (d.enrich) lines.push(`enrich: cards=${d.enrich.cards} withFirebaseName=${d.enrich.withName}`);
+        if (d.cards) lines.push(`cards: total=${d.cards.total} noActivity=${d.cards.noActivity} pending=${d.cards.pending}`);
+        if (d.note) lines.push(`panelNote: ${d.note}`);
+      }
+      const text = lines.join('\n');
+      let ok = false;
+      try {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          await navigator.clipboard.writeText(text);
+          ok = true;
+        }
+      } catch (_) {}
+      if (!ok) {
+        try {
+          const ta = document.createElement('textarea');
+          ta.value = text;
+          document.documentElement.appendChild(ta);
+          ta.select();
+          ok = document.execCommand('copy');
+          ta.remove();
+        } catch (_) {}
+      }
+      btn.textContent = ok ? '✓' : '✕';
+      setTimeout(() => { btn.textContent = orig; }, 1500);
     });
 
     // Date picker — default today; বদলালে ওই date-এর Supabase data + sync scope.
@@ -764,6 +834,7 @@
   let ccRefreshTimer = null;
   let ccLoading = false; // in-flight guard for auto/manual/visibility reloads
   let ccLiveNote = null; // Live ID না এলে SPECIFIC কারণ (access/tab/filter/binding) — render empty-state-এ দেখায়
+  let ccLastDiag = null; // last load's pipeline snapshot — 📋 button copies it for mismatch debugging
   const CC_REFRESH_MS = 30_000; // auto-refresh: app-er save ≤30s-এ panel-e (new parcels + status updates)
   let ccLastVisible = []; // last rendered card refs — maps open History sections across refreshes
 
@@ -1411,6 +1482,16 @@
     const startIso = new Date(`${dateKey}T00:00:00+06:00`).toISOString();
     const endIso   = new Date(new Date(startIso).getTime() + 24 * 60 * 60 * 1000).toISOString();
 
+    // 📋 pipeline snapshot — every leg a Live mismatch can hide in.
+    ccLastDiag = {
+      ts: new Date().toISOString(), mode: ccMode, dateKey,
+      branches: branchIds.slice(),
+      auth: { googleUid: String(google_uid || '').slice(0, 8) + '…', tokenLen: (idToken || '').length },
+      targets: [], live: null, validations: null, enrich: null, cards: null,
+      realtime: (window.DbRealtimeFeed ? DbRealtimeFeed.getStatus() : 'n/a'),
+      note: null,
+    };
+
     const allRows = [];
       await Promise.all(branchIds.map(async id => {
         const rows = await fetchSupabaseReportRows(id, startIso, endIso, idToken);
@@ -1430,23 +1511,51 @@
           let liveScanned = 0, liveDropped = 0;
           await Promise.all(targets.map(async t => {
             const sheetLabel = t.lib.sheetName || t.lib.sheetId || t.branchId;
+            const tDiag = {
+              branch: t.branchId,
+              sheet: String(t.lib.sheetId || '').slice(0, 20) + '…',
+              tab: resolveConnTab(t.lib.tabPattern, dateKey),
+              fetchCol: String(t.binding.fetchColRef || '').trim() || '(range start)',
+              filters: (Array.isArray(t.binding.filters) ? t.binding.filters : [])
+                .filter(f => f && String(f.colRef || '').trim() && f.op)
+                .map(f => `${String(f.colRef).trim()} ${f.op} ${f.valueType === 'today' ? 'TODAY' : String(f.value || '')}`),
+              logic: t.binding.filterLogic || 'AND',
+              scanned: 0, dropped: 0, note: null, idsCount: 0, sampleIds: [],
+            };
+            if (ccLastDiag) ccLastDiag.targets.push(tDiag);
             try {
               const r = await fetchLiveIdsForBinding(sheetsToken, t.binding, t.lib, dateKey);
               liveScanned += r.scanned || 0;
               liveDropped += r.dropped || 0;
+              tDiag.scanned = r.scanned || 0;
+              tDiag.dropped = r.dropped || 0;
+              tDiag.note = r.note || null;
+              tDiag.idsCount = (r.ids || []).length;
+              tDiag.sampleIds = (r.ids || []).slice(0, 5);
               if (r.note) liveProblems.push(`${sheetLabel}: ${r.note}`);
               if (r.ids.length) {
                 liveIdsByBranch[t.branchId] = [...(liveIdsByBranch[t.branchId] || []), ...r.ids];
               }
             } catch (e) {
               const msg = e?.message || 'could not read sheet';
+              tDiag.note = 'ERROR: ' + msg;
               console.warn('[DB CC] live fetch failed:', t.branchId, msg);
               liveProblems.push(`${sheetLabel}: ${msg}`);
             }
           }));
           const liveIds = [...new Set(Object.values(liveIdsByBranch).flat())];
+          if (ccLastDiag) ccLastDiag.live = {
+            scanned: liveScanned, dropped: liveDropped,
+            problems: liveProblems.slice(0, 3),
+            idsTotal: liveIds.length, sampleIds: liveIds.slice(0, 5),
+          };
           if (liveIds.length) {
-            const liveRows = await fetchValidationsByIds(liveIds, idToken);
+            const diagChunks = [];
+            const liveRows = await fetchValidationsByIds(liveIds, idToken, diagChunks);
+            if (ccLastDiag) ccLastDiag.validations = {
+              requested: liveIds.length, returned: liveRows.length, chunks: diagChunks,
+              sampleReturned: [...new Set(liveRows.map(r => r.consignment))].slice(0, 5),
+            };
             const rowsByCid = {};
             liveRows.forEach(r => { (rowsByCid[r.consignment] = rowsByCid[r.consignment] || []).push(r); });
             const liveCards = buildLiveCards(liveIdsByBranch, rowsByCid, dateKey);
@@ -1474,6 +1583,19 @@
       ccAllReportRows = allRows;
       await enrichWithParcelDetails(idToken);
       render(bodyEl, branchNames);
+      if (ccLastDiag) {
+        ccLastDiag.enrich = {
+          cards: summaryRows.length,
+          withName: summaryRows.filter(r => (r.customerName || '').trim()).length,
+        };
+        ccLastDiag.cards = {
+          total: summaryRows.length,
+          noActivity: summaryRows.filter(r => r.noActivity).length,
+          pending: summaryRows.filter(r => r.stillPending && !r.noActivity).length,
+        };
+        ccLastDiag.note = ccLiveNote;
+        ccLastDiag.realtime = (window.DbRealtimeFeed ? DbRealtimeFeed.getStatus() : 'n/a');
+      }
       ccEnsureFeed(); // live → data poll pauses; drop → poll resumes
       if (prevBulkMsg) bulkSay(prevBulkMsg);
       if (prevBulkMsg && !prevBulkVisible) { const el = bulkStatusEl(); if (el) el.style.display = 'none'; }
