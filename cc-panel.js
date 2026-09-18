@@ -442,6 +442,9 @@
         const c = await res.json() || {};
         r.customerName = (c.recipientName || '').trim();
         r.address = (c.recipientAddress || '').trim();
+        // Row-less live cards have no phone from Supabase — fill from the
+        // consignment node like the app (never overwrite a present value).
+        if (!r.customerPhone) r.customerPhone = (c.recipientPhone || '').trim();
         const cod = c.collectableAmount;
         r.codAmount = typeof cod === 'number' ? cod : parseFloat(cod) || 0;
         r.parcelStatus = (c.status || '').trim();
@@ -625,6 +628,8 @@
           lines.push('validations: (no live IDs → not queried)');
         }
         if (d.enrich) lines.push(`enrich: cards=${d.enrich.cards} withFirebaseName=${d.enrich.withName}`);
+        if (d.assignees) lines.push(`assignees: rowlessWanted=${d.assignees.wanted} resolved=${d.assignees.resolved}` +
+          (d.assignees.sample && d.assignees.sample.length ? ` ${d.assignees.sample.join(',')}` : ''));
         if (d.cards) lines.push(`cards: total=${d.cards.total} noActivity=${d.cards.noActivity} pending=${d.cards.pending}`);
         if (d.note) lines.push(`panelNote: ${d.note}`);
       }
@@ -912,11 +917,94 @@
     });
   }
 
+  // Row-less live IDs still need an agent — app-er IncomingCallerLookup
+  // .resolveTodayAssignees-er same niyom: per-consignment run index, then
+  // branch-index scan, then run nodes (agent + consignments invert).
+  // Returns {cid: {sys}} — names come from fillCcCardNames as usual.
+  // Best-effort: uncovered IDs simply keep blank agent (never throws).
+  async function resolveLiveAssignees(wantedCids, branchIds, dateKey, idToken) {
+    const out = {};
+    try {
+      const wanted = [...new Set((wantedCids || []).map(String).map(s => s.trim()).filter(Boolean))];
+      if (!wanted.length || !idToken) return out;
+      const ymd = String(dateKey || '').replace(/-/g, '');
+      const prefix = ymd ? `run_${ymd}_` : null;
+      if (!prefix) return out;
+      const auth = `?auth=${idToken}`;
+      const candKeys = []; // [runType, runId]
+      const covered = new Set();
+      const have = (rt, rid) => candKeys.some(([a, b]) => a === rt && b === rid);
+      // Fast path — per-consignment run index.
+      await Promise.all(wanted.map(async cid => {
+        try {
+          const res = await fetch(`${FIREBASE_URL}/courier/runs_by_consignmentId/${encodeURIComponent(cid)}.json${auth}`);
+          if (!res.ok) return;
+          const node = await res.json().catch(() => null);
+          if (!node || typeof node !== 'object') return;
+          Object.entries(node).forEach(([rt, runs]) => {
+            if (!runs || typeof runs !== 'object') return;
+            Object.keys(runs).forEach(rid => {
+              if (rid && rid.startsWith(prefix) && !have(rt, rid)) {
+                candKeys.push([rt, rid]); covered.add(cid);
+              }
+            });
+          });
+        } catch (_) {}
+      }));
+      // Fallback — branch-index scan for anything still uncovered.
+      const rest = wanted.filter(c => !covered.has(c));
+      if (rest.length && Array.isArray(branchIds) && branchIds.length) {
+        const endAt = prefix + '\uf8ff';
+        for (const branchId of branchIds) {
+          try {
+            const tRes = await fetch(`${FIREBASE_URL}/courier/runs_by_branchId/${encodeURIComponent(branchId)}.json?shallow=true${'&auth=' + idToken}`);
+            if (!tRes.ok) continue;
+            const types = Object.keys(await tRes.json().catch(() => ({})) || {});
+            await Promise.all(types.map(async rt => {
+              try {
+                const url = `${FIREBASE_URL}/courier/runs_by_branchId/${encodeURIComponent(branchId)}/${encodeURIComponent(rt)}.json` +
+                  `?orderBy=%22%24key%22&startAt=%22${encodeURIComponent(prefix)}%22&endAt=%22${encodeURIComponent(endAt)}%22&auth=${idToken}`;
+                const rRes = await fetch(url);
+                if (!rRes.ok) return;
+                Object.keys(await rRes.json().catch(() => ({})) || {}).forEach(rid => {
+                  if (rid && !have(rt, rid)) candKeys.push([rt, rid]);
+                });
+              } catch (_) {}
+            }));
+          } catch (_) {}
+        }
+      }
+      // Stage 2 — run nodes → agent, inverted to cid (cap: bounded reads).
+      const wantedSet = new Set(wanted);
+      const jobs = candKeys.slice(0, 60);
+      await Promise.all(jobs.map(async ([rt, rid]) => {
+        try {
+          const res = await fetch(`${FIREBASE_URL}/courier/run_routes/${encodeURIComponent(rt)}/${encodeURIComponent(rid)}.json${auth}`);
+          if (!res.ok) return;
+          const node = await res.json().catch(() => null);
+          if (!node || typeof node !== 'object') return;
+          let agent = String(node.agentSystemId || '').trim();
+          if (!agent) {
+            const parts = String(rid).split('_');
+            if (parts.length >= 3) agent = parts.slice(2).join('_').trim();
+          }
+          if (!agent) return;
+          const cons = node.consignments && typeof node.consignments === 'object' ? Object.keys(node.consignments) : [];
+          cons.forEach(cid => {
+            if (wantedSet.has(cid) && !out[cid]) out[cid] = { sys: agent };
+          });
+        } catch (_) {}
+      }));
+    } catch (_) {}
+    return out;
+  }
+
   // Live/Mix card builder — request card-er same shape (render FILTER chips reuse),
   // sudhu source: sheet library ID + Supabase rows. Row nei = noActivity.
-  function buildLiveCards(liveIdsByBranch, rowsByCid, dateKey) {
+  function buildLiveCards(liveIdsByBranch, rowsByCid, dateKey, assignees) {
     const [y, m, d] = String(dateKey || '').split('-');
     const dateLabel = (d && m && y) ? `${d}-${m}-${y}` : (dateKey || '');
+    const asg = assignees || {};
     const cards = [];
     Object.entries(liveIdsByBranch).forEach(([branchId, ids]) => {
       (ids || []).forEach(cId => {
@@ -927,13 +1015,16 @@
         const ccRows = rows.filter(r => r.source === 'CC');
         const firstWorker = workerRows.length ? workerRows[0] : null;
         const lastCc = ccRows.length ? ccRows[ccRows.length - 1] : null;
+        // Row-less live IDs (blank-feedback parcels): today's run assignment,
+        // app parity (IncomingCallerLookup.resolveTodayAssignees fallback).
+        const runAsg = (!latest && asg[cId]) ? asg[cId] : null;
         const agentName = (latest?.assigned?.name || rows.find(r => r.assigned?.name)?.assigned?.name || '').trim();
         const validatorName = (lastCc?.author?.name || '').trim();
         const validatorEmp = (lastCc?.author?.employee_id || '').trim();
         cards.push({
           dateLabel, branchId, cId,
-          agentSystemId: latest ? (latest.assigned_to_system_id || '') : '',
-          agentName,
+          agentSystemId: latest ? (latest.assigned_to_system_id || '') : ((runAsg && runAsg.sys) || ''),
+          agentName: agentName || ((runAsg && runAsg.name) || ''),
           validatorName,
           validatorSystemId: lastCc ? (lastCc.author_system_id || '') : '',
           validatorEmpId: validatorEmp,
@@ -1561,7 +1652,17 @@
             };
             const rowsByCid = {};
             liveRows.forEach(r => { (rowsByCid[r.consignment] = rowsByCid[r.consignment] || []).push(r); });
-            const liveCards = buildLiveCards(liveIdsByBranch, rowsByCid, dateKey);
+            // Row-less live IDs (blank feedback, no remarks yet): resolve
+            // today's run agent so the card shows who holds it, like the app.
+            const rowless = liveIds.filter(cid => !(rowsByCid[cid] && rowsByCid[cid].length));
+            const liveAsg = rowless.length
+              ? await resolveLiveAssignees(rowless, branchIds, dateKey, idToken).catch(() => ({}))
+              : {};
+            if (ccLastDiag) ccLastDiag.assignees = {
+              wanted: rowless.length, resolved: Object.keys(liveAsg).length,
+              sample: Object.entries(liveAsg).slice(0, 5).map(([c, a]) => `${c}→${a.sys}`),
+            };
+            const liveCards = buildLiveCards(liveIdsByBranch, rowsByCid, dateKey, liveAsg);
             if (ccMode === 'live') {
               summaryRows = liveCards;
             } else {
@@ -1586,6 +1687,7 @@
       ccAllReportRows = allRows;
       await enrichWithParcelDetails(idToken);
       render(bodyEl, branchNames);
+      ccEnsureFeed(); // live → data poll pauses; drop → poll resumes
       if (ccLastDiag) {
         ccLastDiag.enrich = {
           cards: summaryRows.length,
@@ -1599,7 +1701,6 @@
         ccLastDiag.note = ccLiveNote;
         ccLastDiag.realtime = (window.DbRealtimeFeed ? DbRealtimeFeed.getStatus() : 'n/a');
       }
-      ccEnsureFeed(); // live → data poll pauses; drop → poll resumes
       if (prevBulkMsg) bulkSay(prevBulkMsg);
       if (prevBulkMsg && !prevBulkVisible) { const el = bulkStatusEl(); if (el) el.style.display = 'none'; }
     } catch (e) {
