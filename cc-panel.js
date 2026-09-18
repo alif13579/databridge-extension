@@ -503,14 +503,14 @@
       <div class="db-cc-datebar">
         <span>📅</span><input type="date" id="db-cc-date"><span id="db-cc-date-label"></span>
         <span class="db-cc-modes" id="db-cc-modes">
-          <button type="button" class="db-cc-mode-btn" data-mode="live" title="Today\u2019s IDs from the sheet library">Live</button><button type="button" class="db-cc-mode-btn" data-mode="request" title="Supabase validation requests">Req</button><button type="button" class="db-cc-mode-btn" data-mode="mix" title="Live + Request eksathe">Mix</button>
+          <button type="button" class="db-cc-mode-btn" data-mode="live" title="Today\u2019s IDs from the sheet library">Live</button><button type="button" class="db-cc-mode-btn" id="db-cc-sheets-switch" title="Switch Google account for Sheets (sheet access may be on another Gmail)">🔄</button><button type="button" class="db-cc-mode-btn" data-mode="request" title="Supabase validation requests">Req</button><button type="button" class="db-cc-mode-btn" data-mode="mix" title="Live + Request eksathe">Mix</button>
         </span>
       </div>
       <div class="db-cc-searchbar">
         <span>🔍</span><input type="text" id="db-cc-search" placeholder="Consignment / phone / name…" autocomplete="off"><button type="button" id="db-cc-search-clear" title="Clear search">✕</button>
       </div>
       <div class="db-cc-sheets-acct" id="db-cc-sheets-acct">
-        <span>📧</span><span id="db-cc-sheets-email" class="db-cc-sheets-email">Chrome profile account</span><button type="button" class="db-cc-sheets-switch" id="db-cc-sheets-switch" title="Switch Google account for Sheets (sheet access may be on another Gmail)">🔄 Switch</button>
+        <span>📧</span><span id="db-cc-sheets-email" class="db-cc-sheets-email">Chrome profile account</span>
       </div>
       <div class="db-cc-body" id="db-cc-body">
         <div class="db-cc-status">⏳ Loading…</div>
@@ -1280,7 +1280,7 @@
       };
       let chatHtml = '';
       if (r.noActivity) {
-        chatHtml = `<div class="db-cc-chat"><div class="db-cc-bubble db-cc-bubble-pending">➖ No activity on this ID today</div></div>`;
+        chatHtml = '';
       } else if (r.trail && r.trail.length) {
         const last = r.trail.slice(-CC_CHAT_LAST);
         const more = r.trail.length - last.length;
