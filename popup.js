@@ -3109,6 +3109,7 @@ function getSelectedHvBranchIds() {
   function hvDeriveFinalStatus(consignmentStatus) {
     const s = String(consignmentStatus || '').trim().toLowerCase();
     if (!s) return 'Hold';
+    if (s === 'assigned' || s.startsWith('assigned ') || s.includes('on the way')) return '';
     if (s === 'delivered' || s === 'partial delivery' || s === 'paid return') return 'Delivered';
     if (s === 'return' || s === 'return requested') return 'Returned';
     return 'Hold';
