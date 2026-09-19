@@ -3002,6 +3002,39 @@ function getSelectedHvBranchIds() {
     if (!res.ok) throw new Error(`Sheets write ${res.status}`);
   }
 
+  // App parity (ConfigSheetDriveApi.batchWriteCellValues): one values:batchUpdate
+  // per ~200 cells instead of one PUT per cell — stays far under Google's
+  // ~60 writes/min quota (HTTP 429) on real-size syncs.
+  function hvQuoteTabRef(tabName) {
+    const t = String(tabName || '').trim();
+    return /[' !"()+\-*/:?@]/.test(t) ? "'" + t.replace(/'/g, "''") + "'" : t;
+  }
+  function hvSleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+  async function hvSheetsBatchWriteCells(token, sheetId, tab, cells, chunkSize = 200) {
+    if (!cells.length) return;
+    const quoted = hvQuoteTabRef(tab);
+    const chunks = [];
+    for (let i = 0; i < cells.length; i += Math.max(1, chunkSize)) chunks.push(cells.slice(i, i + Math.max(1, chunkSize)));
+    for (const chunk of chunks) {
+      const data = chunk.map(({ letter, row1, value }) => ({
+        range: `${quoted}!${letter}${row1}`,
+        majorDimension: 'ROWS',
+        values: [[value]],
+      }));
+      const res = await fetch(
+        `https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values:batchUpdate`,
+        {
+          method: 'POST',
+          headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ valueInputOption: 'RAW', data }),
+        });
+      if (!res.ok) {
+        const txt = await res.text().catch(() => '');
+        throw new Error(`Sheets batch write ${res.status} ${txt.slice(0, 120)}`.trim());
+      }
+    }
+  }
+
   function hvEffectiveRules(conn, kind) {
     const list = kind === 'lookup' ? (conn.lookups || []) : (conn.writes || []);
     return list.filter(r => r && String(r.colRef || '').trim())
@@ -3179,6 +3212,34 @@ function getSelectedHvBranchIds() {
       if (!writeCols.has(letter)) writeCols.set(letter, await colValues(letter));
     }
     res.scanned = cidCol.length;
+    // Queue, don't write: 1 batchUpdate per ~200 cells (app RemarkSheetMirror
+    // parity) — counts land only on successful flush.
+    const pending = [];
+    async function flushQueue() {
+      if (!pending.length) return;
+      const cells = pending.map(p => ({ letter: p.letter, row1: p.row1, value: p.value }));
+      const waits = [0, 30000, 60000]; // try now, +30s, +60s on 429
+      for (let attempt = 0; attempt < waits.length; attempt++) {
+        if (waits[attempt] > 0) await hvSleep(waits[attempt]);
+        try {
+          await hvSheetsBatchWriteCells(token, conn.sheetId, tab, cells);
+          const rowsF = new Set(), rowsO = new Set();
+          let fills = 0, overs = 0;
+          for (const p of pending) {
+            if (p.isBlank) { fills++; rowsF.add(p.row1); }
+            else { overs++; rowsO.add(p.row1); }
+            res.perKind[p.kind] = (res.perKind[p.kind] || 0) + 1;
+          }
+          if (fills) { res.syncedRows += rowsF.size; res.syncedCells += fills; }
+          if (overs) { res.overwrittenRows += rowsO.size; res.overwrittenCells += overs; }
+          pending.length = 0;
+          return;
+        } catch (e) {
+          const quota = String(e && e.message || '').includes('429');
+          if (!quota || attempt === waits.length - 1) throw e;
+        }
+      }
+    }
     for (let i = 0; i < cidCol.length; i++) {
       const cid = String(cidCol[i] || '').trim();
       if (!cid) continue;
@@ -3199,22 +3260,18 @@ function getSelectedHvBranchIds() {
         if (cur !== v) needs.push({ rule, letter, v, isBlank: cur === '' });
       }
       if (!needs.length) { res.filled++; continue; }
-      try {
-        let filledInRow = 0, overInRow = 0;
-        for (const { rule, letter, v, isBlank } of needs) {
-          await hvSheetsWriteCell(token, conn.sheetId, tab, letter, i + 1, v);
-          const col = writeCols.get(letter) || [];
-          col[i] = v;
-          if (isBlank) { res.syncedCells++; filledInRow++; } else { res.overwrittenCells++; overInRow++; }
-          const k = rule.kind; res.perKind[k] = (res.perKind[k] || 0) + 1;
-        }
-        if (filledInRow) res.syncedRows++;
-        if (overInRow) res.overwrittenRows++;
-      } catch (e) {
-        res.skipped++;
-        console.warn('[DB] HV sync: row write failed:', cid, e);
+      for (const { rule, letter, v, isBlank } of needs) {
+        pending.push({ letter, row1: i + 1, value: v, isBlank, kind: rule.kind });
+        const col = writeCols.get(letter) || [];
+        col[i] = v;
+      }
+      if (pending.length >= 200) {
+        try { await flushQueue(); }
+        catch (e) { res.skipped += needs.length; console.warn('[DB] HV sync: batch write failed:', e); pending.length = 0; }
       }
     }
+    try { await flushQueue(); }
+    catch (e) { res.skipped += pending.length; console.warn('[DB] HV sync: final flush failed:', e); pending.length = 0; }
     return res;
   }
 

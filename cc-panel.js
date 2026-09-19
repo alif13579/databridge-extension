@@ -2214,6 +2214,39 @@
     if (!res.ok) throw new Error(`Sheets write ${res.status}`);
   }
 
+  // App parity (ConfigSheetDriveApi.batchWriteCellValues): one values:batchUpdate
+  // per ~200 cells instead of one PUT per cell — stays far under Google's
+  // ~60 writes/min quota (HTTP 429) on real-size syncs.
+  function quoteCcTabRef(tabName) {
+    const t = String(tabName || '').trim();
+    return /[' !"()+\-*/:?@]/.test(t) ? "'" + t.replace(/'/g, "''") + "'" : t;
+  }
+  function ccSleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+  async function sheetsBatchWriteCells(token, sheetId, tab, cells, chunkSize = 200) {
+    if (!cells.length) return;
+    const quoted = quoteCcTabRef(tab);
+    const chunks = [];
+    for (let i = 0; i < cells.length; i += Math.max(1, chunkSize)) chunks.push(cells.slice(i, i + Math.max(1, chunkSize)));
+    for (const chunk of chunks) {
+      const data = chunk.map(({ letter, row1, value }) => ({
+        range: `${quoted}!${letter}${row1}`,
+        majorDimension: 'ROWS',
+        values: [[value]],
+      }));
+      const res = await fetch(
+        `https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values:batchUpdate`,
+        {
+          method: 'POST',
+          headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ valueInputOption: 'RAW', data }),
+        });
+      if (!res.ok) {
+        const txt = await res.text().catch(() => '');
+        throw new Error(`Sheets batch write ${res.status} ${txt.slice(0, 120)}`.trim());
+      }
+    }
+  }
+
   // Consolidated CC per (branch, consignment) for today: latest CC row →
   // feedback (catalog map) / validation (derived) / validator_name / finalStatus / action (+ created_at for compat).
   async function buildConsolidatedCc() {
@@ -2293,6 +2326,38 @@
       if (!writeCols.has(letter)) writeCols.set(letter, await colValues(letter));
     }
     res.scanned = cidCol.length;
+    // Queue, don't write: 1 batchUpdate per ~200 cells (app RemarkSheetMirror
+    // parity) — counts land only on successful flush, so quota failure never
+    // over-reports.
+    const pending = [];
+    async function flushQueue() {
+      if (!pending.length) return;
+      const cells = pending.map(p => ({ letter: p.letter, row1: p.row1, value: p.value }));
+      const waits = [0, 30000, 60000]; // try now, +30s, +60s on 429
+      for (let attempt = 0; attempt < waits.length; attempt++) {
+        if (waits[attempt] > 0) {
+          bulkSay(`⏳ Google quota — retrying in ${waits[attempt] / 1000}s…`);
+          await ccSleep(waits[attempt]);
+        }
+        try {
+          await sheetsBatchWriteCells(token, conn.sheetId, tab, cells);
+          const rowsF = new Set(), rowsO = new Set();
+          let fills = 0, overs = 0;
+          for (const p of pending) {
+            if (p.isBlank) { fills++; rowsF.add(p.row1); }
+            else { overs++; rowsO.add(p.row1); }
+            res.perKind[p.kind] = (res.perKind[p.kind] || 0) + 1;
+          }
+          if (fills) { res.syncedRows += rowsF.size; res.syncedCells += fills; }
+          if (overs) { res.overwrittenRows = (res.overwrittenRows || 0) + rowsO.size; res.overwrittenCells = (res.overwrittenCells || 0) + overs; }
+          pending.length = 0;
+          return;
+        } catch (e) {
+          const quota = String(e && e.message || '').includes('429');
+          if (!quota || attempt === waits.length - 1) throw e;
+        }
+      }
+    }
     for (let i = 0; i < cidCol.length; i++) {
       const cid = String(cidCol[i] || '').trim();
       if (!cid) continue;
@@ -2314,22 +2379,18 @@
         if (cur !== v) needs.push({ rule, letter, v, isBlank: cur === '' });
       }
       if (!needs.length) { res.filled++; continue; }
-      try {
-        let filledInRow = 0, overwrittenInRow = 0;
-        for (const { rule, letter, v, isBlank } of needs) {
-          await sheetsWriteCell(token, conn.sheetId, tab, letter, i + 1, v);
-          const col = writeCols.get(letter) || [];
-          col[i] = v;
-          if (isBlank) { res.syncedCells++; filledInRow++; } else { res.overwrittenCells = (res.overwrittenCells || 0) + 1; overwrittenInRow++; }
-          res.perKind[rule.kind] = (res.perKind[rule.kind] || 0) + 1;
-        }
-        if (filledInRow) res.syncedRows++;
-        if (overwrittenInRow) res.overwrittenRows = (res.overwrittenRows || 0) + 1;
-      } catch (e) {
-        res.skipped++;
-        console.warn('[DB CC Panel] bulk row write failed:', cid, e);
+      for (const { rule, letter, v, isBlank } of needs) {
+        pending.push({ letter, row1: i + 1, value: v, isBlank, kind: rule.kind });
+        const col = writeCols.get(letter) || [];
+        col[i] = v;
+      }
+      if (pending.length >= 200) {
+        try { await flushQueue(); }
+        catch (e) { res.skipped += needs.length; console.warn('[DB CC Panel] bulk batch write failed:', e); pending.length = 0; }
       }
     }
+    try { await flushQueue(); }
+    catch (e) { res.skipped += pending.length; console.warn('[DB CC Panel] bulk final flush failed:', e); pending.length = 0; }
     return res;
   }
 
