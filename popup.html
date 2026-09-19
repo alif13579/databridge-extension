@@ -24,6 +24,7 @@
   <div class="bottom-nav">
     <div class="nav-item" id="nav-dashboard"><span class="nav-icon">📊</span>Dashboard</div>
     <div class="nav-item" id="nav-run"><span class="nav-icon">🚚</span>Run</div>
+    <div class="nav-item" id="nav-scheduled"><span class="nav-icon">📅</span>Scheduled<span class="sched-badge" id="sched-badge" style="display:none"></span></div>
     <div class="nav-item" id="nav-routing"><span class="nav-icon">🛣️</span>Routing</div>
     <div class="nav-item active" id="nav-history"><span class="nav-icon">📋</span>History</div>
     <div class="nav-item" id="nav-scan"><span class="nav-icon"><svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><rect x="1" y="2" width="1.5" height="12"/><rect x="3.5" y="2" width="1" height="12"/><rect x="5.5" y="2" width="2" height="12"/><rect x="8.5" y="2" width="1" height="12"/><rect x="10.5" y="2" width="1.5" height="12"/><rect x="13" y="2" width="2" height="12"/></svg></span>Barcodes</div>
@@ -147,6 +148,19 @@
       <div id="run-report-summary"></div>
       <div class="dash-sec-title" style="margin-top:10px">By Status</div>
       <div id="run-report-bystatus"></div>
+    </div>
+  </div>
+
+  <!-- ── Scheduled Reminders Tab ── -->
+  <div class="tab-content" id="tab-scheduled">
+    <div class="dash-cc-section">
+      <div class="dash-sec-title">📅 Scheduled Delivery Reminders</div>
+      <div class="dash-cc-row">
+        <button class="dash-export-btn dash-cc-export-btn" id="sched-refresh-btn" style="flex:1">🔄 Refresh</button>
+        <button class="dash-export-btn dash-cc-export-btn" id="sched-download-btn" style="flex:1">⬇ CSV</button>
+      </div>
+      <div class="dash-cc-status" id="sched-status">Refresh চাপ দাও — scheduled_date ওয়ালা consignments আসবে।</div>
+      <div class="dash-hv-report" id="sched-report"></div>
     </div>
   </div>
 

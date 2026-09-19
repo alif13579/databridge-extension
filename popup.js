@@ -98,13 +98,14 @@ function switchTab(tab) {
   if (navEl) navEl.classList.add('active');
 }
 function setupNavigation() {
-  ['history', 'scan', 'dashboard', 'run', 'routing', 'connect', 'settings'].forEach(tab => {
+  ['history', 'scan', 'dashboard', 'run', 'scheduled', 'routing', 'connect', 'settings'].forEach(tab => {
     const el = document.getElementById(`nav-${tab}`);
     if (el) el.addEventListener('click', () => {
       switchTab(tab);
       if (tab === 'history' && isInitialized) loadHistory(false);
       if (tab === 'scan') loadScanHistory();
       if (tab === 'run') { bindSheetsAccountOnce(); refreshSheetsAccountRow(); loadRunReport(false); }
+      if (tab === 'scheduled') loadScheduledTab();
       if (tab === 'routing') loadRoutingTab();
       if (tab === 'dashboard') {
         loadDashboardTabAndAutoGenerate();
@@ -1787,6 +1788,7 @@ async function init() {
     setupSortButton();
     setupScanTab(); // 📷 Scanner tab
     setupDashboardTab(); // 📊 Dashboard tab
+    setupScheduledTab(); // 📅 Scheduled reminders tab
     setupConnectedInfoCopy();
     setupAutoRefresh();
 
@@ -2558,6 +2560,128 @@ function downloadCsv(filename, rows) {
   a.click();
   document.body.removeChild(a);
   URL.revokeObjectURL(url);
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// 📅 SCHEDULED DELIVERY REMINDERS (all branches — Firebase)
+// Reads courier/consignments via orderBy="scheduled_date" — needs
+// ".indexOn" including "scheduled_date" at courier/consignments
+// (database.rules.json, App repo). Buckets vs Dhaka today: Overdue
+// (date < today, undelivered = miss risk) / Due today / Upcoming.
+// Delivered-family with a past date counts as done, never a miss.
+// ══════════════════════════════════════════════════════════════════════
+
+let schedRowsCache = []; // last loaded rows (CSV source)
+
+function schedBucket(dateStr, statusRaw, todayKey) {
+  const d = String(dateStr || '').trim();
+  const slow = String(statusRaw || '').trim().toLowerCase();
+  const done = slow === 'delivered' || slow === 'partial delivery' ||
+    slow === 'paid return' || slow === 'exchange';
+  if (!d) return 'nodate';
+  if (d < todayKey) return done ? 'done' : 'overdue';
+  if (d === todayKey) return done ? 'done' : 'today';
+  return 'upcoming';
+}
+
+function schedDaysOverdue(dateStr, todayKey) {
+  const d = String(dateStr || '').trim();
+  if (!d || d >= todayKey) return 0;
+  const ms = Date.parse(d + 'T00:00:00+06:00') - Date.parse(todayKey + 'T00:00:00+06:00');
+  if (isNaN(ms)) return 0;
+  return Math.max(0, Math.round(-ms / 86400000));
+}
+
+function schedSetBadge(overdueCount) {
+  const badge = document.getElementById('sched-badge');
+  if (!badge) return;
+  if (overdueCount > 0) {
+    badge.textContent = overdueCount > 99 ? '99+' : String(overdueCount);
+    badge.style.display = '';
+  } else {
+    badge.style.display = 'none';
+  }
+}
+
+async function loadScheduledTab() {
+  const statusEl = document.getElementById('sched-status');
+  const reportEl = document.getElementById('sched-report');
+  const setStatus = msg => { if (statusEl) statusEl.textContent = msg; };
+  setStatus('⏳ Loading scheduled deliveries…');
+  if (reportEl) reportEl.innerHTML = '';
+  try {
+    const idToken = await getValidFirebaseIdToken().catch(() => null);
+    if (!idToken) { setStatus('⚠ Log in first'); return; }
+    const todayKey = dhakaTodayKey();
+    const url = `${FIREBASE_URL}/courier/consignments.json?orderBy="scheduled_date"&startAt=""&limitToFirst=2000&auth=${idToken}`;
+    const res = await fetch(url);
+    if (!res.ok) {
+      const txt = await res.text().catch(() => '');
+      if (/index not defined/i.test(txt)) {
+        setStatus('⚠ DB index missing — App repo থেকে deploy দাও: npx firebase-tools deploy --only database --project databridgebd');
+        return;
+      }
+      throw new Error(`Firebase ${res.status}`);
+    }
+    const obj = await res.json().catch(() => null) || {};
+    const rows = [];
+    Object.entries(obj).forEach(([cid, n]) => {
+      if (!n || typeof n !== 'object') return;
+      const date = String(n.scheduled_date || '').trim();
+      if (!date) return;
+      const bucket = schedBucket(date, n.status, todayKey);
+      rows.push({
+        cid: String(cid),
+        date,
+        customer: String(n.recipientName || n.recipient_name || '').trim(),
+        phone: String(n.recipientPhone || n.recipient_phone || '').trim(),
+        status: String(n.status || '').trim(),
+        by: String(n.scheduled_by || '').trim(),
+        bucket,
+        overdueDays: bucket === 'overdue' ? schedDaysOverdue(date, todayKey) : 0,
+      });
+    });
+    schedRowsCache = rows;
+    const byDate = (a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0);
+    const over = rows.filter(r => r.bucket === 'overdue').sort(byDate);
+    const today = rows.filter(r => r.bucket === 'today').sort(byDate);
+    const up = rows.filter(r => r.bucket === 'upcoming').sort(byDate);
+    const done = rows.filter(r => r.bucket === 'done');
+    schedSetBadge(over.length);
+    if (!rows.length) { setStatus('No scheduled deliveries found.'); return; }
+    setStatus(`🔴 ${over.length} overdue · 🟡 ${today.length} today · 🟢 ${up.length} upcoming · ✅ ${done.length} done`);
+    const esc = s => String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    const rowHtml = r => {
+      const dot = r.bucket === 'overdue' ? '🔴' : r.bucket === 'today' ? '🟡' : '🟢';
+      const od = r.bucket === 'overdue' && r.overdueDays > 0 ? ` · ${r.overdueDays}d late` : '';
+      return `<div class="sched-row"><span>${dot} <b>${esc(r.cid)}</b> → ${esc(r.date)}${od}</span>` +
+        `<span class="sched-sub">${esc(r.customer)} · ${esc(r.phone)} · ${esc(r.status)}</span></div>`;
+    };
+    let html = '';
+    if (over.length) html += `<div class="sched-group">🔴 Overdue — miss risk</div>` + over.map(rowHtml).join('');
+    if (today.length) html += `<div class="sched-group">🟡 Due today</div>` + today.map(rowHtml).join('');
+    if (up.length) html += `<div class="sched-group">🟢 Upcoming</div>` + up.map(rowHtml).join('');
+    reportEl.innerHTML = html;
+  } catch (e) {
+    setStatus(`✕ ${e.message || 'load failed'}`);
+  }
+}
+
+function downloadScheduledCsv() {
+  if (!schedRowsCache.length) return;
+  const rows = [['Consignment', 'Customer', 'Phone', 'Scheduled Date', 'Status', 'Bucket', 'Days Overdue', 'Scheduled By']];
+  schedRowsCache.forEach(r => rows.push([
+    r.cid, r.customer, r.phone, r.date, r.status, r.bucket,
+    r.overdueDays ? String(r.overdueDays) : '', r.by,
+  ]));
+  downloadCsv(`databridge-scheduled-${dhakaTodayKey()}.csv`, rows);
+}
+
+function setupScheduledTab() {
+  const refreshBtn = document.getElementById('sched-refresh-btn');
+  if (refreshBtn) refreshBtn.addEventListener('click', () => loadScheduledTab());
+  const downloadBtn = document.getElementById('sched-download-btn');
+  if (downloadBtn) downloadBtn.addEventListener('click', () => downloadScheduledCsv());
 }
 
 // ══════════════════════════════════════════════════════════════════════

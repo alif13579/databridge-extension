@@ -595,6 +595,42 @@ input:checked + .toggle-slider:before { transform: translateX(14px); }
   margin-left: auto;
 }
 
+/* ══════════════════════════════
+   📅 Scheduled Reminders Tab
+   ══════════════════════════════ */
+
+.sched-badge {
+  font-size: 10px;
+  font-weight: 700;
+  color: #fff;
+  background: #ef4444;
+  padding: 1px 6px;
+  border-radius: 10px;
+  margin-left: 4px;
+}
+
+.sched-group {
+  font-size: 12px;
+  font-weight: 700;
+  margin: 10px 0 4px;
+}
+
+.sched-row {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 12px;
+  padding: 6px 8px;
+  border: 1px solid #0f3460;
+  border-radius: 8px;
+  margin-bottom: 6px;
+}
+
+.sched-sub {
+  font-size: 11px;
+  opacity: 0.75;
+}
+
 .scan-list {
   flex: 1;
   min-height: 0;
