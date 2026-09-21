@@ -64,6 +64,9 @@ pollIncomingCommands();
 // sendToFirebase() directly — it has to relay through here. Used by the Hold Validation
 // summary card's "📞 Call" button to send a customer phone number to the app the same way
 // the existing context-menu/keyboard-shortcut paths above already do.
+// Localhost BT dial helper (bt-dial/server.js) — config.json-er port bodlale
+// ekhaneo milate hobe. Manifest host_permissions-eo ei origin allow kora.
+const BT_DIAL_URL = 'http://127.0.0.1:17891/dial';
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   // Sender check: only our own pages/content scripts (same extension id) may
   // trigger sends — a compromised web page cannot spoof `sender`.
@@ -71,6 +74,22 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message?.action === 'send_to_app' && message.text) {
     sendToFirebase(message.text).then(() => sendResponse({ ok: true }));
     return true; // keep the message channel open for the async sendResponse above
+  }
+  // BT dial: paired button/feature phone thakle localhost helper (bt-dial/)
+  // RFCOMM-e ATD pathay — phone nije dial kore. Helper offline/error hole
+  // caller Firebase path-e fallback kore (upore send_to_app).
+  if (message?.action === 'db_bt_dial' && message.phone) {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => { try { ctrl.abort(); } catch (_) {} }, 25000);
+    fetch(BT_DIAL_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ phone: message.phone, agent: message.agent || '' }),
+      signal: ctrl.signal,
+    }).then(r => r.json().catch(() => ({ ok: false, error: `BT helper HTTP ${r.status}` })))
+      .then(d => { clearTimeout(timer); sendResponse(d && typeof d === 'object' ? d : { ok: false, error: 'bad BT helper reply' }); })
+      .catch(e => { clearTimeout(timer); sendResponse({ ok: false, error: String((e && e.message) || e) }); });
+    return true;
   }
 });
 

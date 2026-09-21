@@ -1373,7 +1373,7 @@
             ${r.stillPending ? '⏳ Pending' : (r.noActivity ? '➖ No activity' : '✓ Validated')}
           </span>
           <span>
-            ${r.customerPhone ? `<button type="button" class="db-cc-call-btn" data-phone="${escapeHtml(r.customerPhone)}">📞 Call</button>` : ''}
+            ${r.customerPhone ? `<button type="button" class="db-cc-call-btn" data-phone="${escapeHtml(r.customerPhone)}" data-agent="${escapeHtml(r.agentSystemId || '')}">📞 Call</button>` : ''}
             <button type="button" class="db-cc-hist-btn" data-idx="${idx}">▼ History (${r.trail.length})</button>
             <button type="button" class="db-cc-remark-btn" data-idx="${idx}">📝 Remarks</button>
           </span>
@@ -1413,17 +1413,29 @@
       render(bodyEl, branchNames);
     });
     bodyEl.querySelectorAll('.db-cc-call-btn').forEach(btn => {
-      // Same as the dashboard's Hold Validation Call button: send the number to
-      // the app (background → Firebase session → app auto-dial), NOT a tel: link.
+      // Dial order: (1) paired button phone via localhost BT helper
+      // (background → RFCOMM ATD, phone nije dial kore); (2) helper offline/
+      // error hole ager moto Firebase-e app-er kache pathao (app auto-dial),
+      // NOT a tel: link.
       btn.addEventListener('click', () => {
         const cleaned = btn.dataset.phone.replace(/[\s-()]/g, '');
+        const agent = btn.dataset.agent || '';
         const originalText = btn.textContent;
         btn.disabled = true;
         btn.textContent = '⏳ …';
-        chrome.runtime.sendMessage({ action: 'send_to_app', text: cleaned }, () => {
-          btn.textContent = '📞 Sent!';
+        const done = text => {
+          btn.textContent = text;
           setTimeout(() => { btn.textContent = originalText; btn.disabled = false; }, 1500);
-        });
+        };
+        const viaApp = () => {
+          chrome.runtime.sendMessage({ action: 'send_to_app', text: cleaned }, () => done('📞 Sent!'));
+        };
+        try {
+          chrome.runtime.sendMessage({ action: 'db_bt_dial', phone: cleaned, agent }, res => {
+            if (res && res.ok) done('📞 Dialed!');
+            else viaApp();
+          });
+        } catch (_) { viaApp(); }
       });
     });
     bodyEl.querySelectorAll('.db-cc-hist-btn').forEach(btn => {

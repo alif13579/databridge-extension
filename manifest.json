@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "DataBridge",
-  "version": "2.173",
+  "version": "2.174",
   "author": "Alif Hossain",
   "description": "Seamless data transfer between platforms.",
   "permissions": [
@@ -22,7 +22,8 @@
     "https://identitytoolkit.googleapis.com/*",
     "https://securetoken.googleapis.com/*",
     "https://jlmvpozfacpxphftzfvw.supabase.co/*",
-    "https://sheets.googleapis.com/*"
+    "https://sheets.googleapis.com/*",
+    "http://127.0.0.1:17891/*"
   ],
   "oauth2": {
     "client_id": "757742303355-7lggpq342m98c89ebdg3r8b58kkli4me.apps.googleusercontent.com",

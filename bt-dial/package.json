@@ -1,0 +1,14 @@
+{
+  "name": "databridge-bt-dial",
+  "version": "1.0.0",
+  "description": "Localhost BT dial server for DataBridge (Windows): dials a number on a paired button/feature phone over Bluetooth RFCOMM (ATD).",
+  "main": "server.js",
+  "license": "UNLICENSED",
+  "private": true,
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "bluetooth-serial-port": "^2.2.7"
+  }
+}
