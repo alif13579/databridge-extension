@@ -503,7 +503,7 @@
       <div class="db-cc-datebar">
         <span>📅</span><input type="date" id="db-cc-date"><span id="db-cc-date-label"></span>
         <span class="db-cc-modes" id="db-cc-modes">
-          <button type="button" class="db-cc-mode-btn" data-mode="live" title="Today\u2019s IDs from the sheet library">Live</button><button type="button" class="db-cc-mode-btn" id="db-cc-sheets-switch" title="Switch Google account for Sheets (sheet access may be on another Gmail)">🔄</button><button type="button" class="db-cc-mode-btn" data-mode="request" title="Supabase validation requests">Req</button><button type="button" class="db-cc-mode-btn" data-mode="mix" title="Live + Request eksathe">Mix</button>
+          <button type="button" class="db-cc-mode-btn" data-mode="live" title="Today\u2019s IDs from the sheet library">Live</button><button type="button" class="db-cc-mode-btn" id="db-cc-sheets-switch" title="Switch Google account for Sheets (sheet access may be on another Gmail)">🔄</button><button type="button" class="db-cc-mode-btn" data-mode="request" title="Supabase validation requests">Req</button><button type="button" class="db-cc-mode-btn" data-mode="mix" title="Live + Request eksathe">Mix</button><button type="button" class="db-cc-mode-btn" data-mode="run" title="Oi date-er run-er SOB parcel, agent-wise (request charao)">Run</button>
         </span>
       </div>
       <div class="db-cc-searchbar">
@@ -689,7 +689,7 @@
     };
     try {
       chrome.storage.local.get(['db-cc-mode'], r => {
-        if (r && (r['db-cc-mode'] === 'live' || r['db-cc-mode'] === 'mix')) ccMode = r['db-cc-mode'];
+        if (r && (r['db-cc-mode'] === 'live' || r['db-cc-mode'] === 'mix' || r['db-cc-mode'] === 'run')) ccMode = r['db-cc-mode'];
         paintModes();
       });
     } catch {}
@@ -829,7 +829,7 @@
   let summaryRows = [];
   let filter = 'all'; // 'all' | 'pending' | 'validated'
   let ccSearch = ''; // live text filter — consignment / phone / customer name
-  let ccMode = 'request'; // 'live' | 'request' | 'mix' — app-er same library (bindings) theke Live
+  let ccMode = 'request'; // 'live' | 'request' | 'mix' | 'run' — run = oi date-er run-er sob parcel (app CallCenter-er moto)
   let ccDateKey = todayBdDateKey(); // picked date (default today) — panel + sync scope
   let ccIdToken = null;      // set per loadAndRender — remark options + save reuse it
   let ccBodyEl = null;
@@ -997,6 +997,64 @@
         } catch (_) {}
       }));
     } catch (_) {}
+    return out;
+  }
+
+  // Run mode: oi date-er run-er SOB parcel, agent-wise — app CallCenter-er
+  // moto (runs_by_branchId range query run_YYYYMMDD_ prefix-e, tarpor
+  // run_routes node theke consignments + agent). Request na thakleo card
+  // asbe (noActivity) — validation row thakle trail soho merge hobe.
+  async function fetchDateRunParcels(branchIds, dateKey, idToken) {
+    const ymd = String(dateKey || '').replace(/-/g, '');
+    const out = { idsByBranch: {}, assignees: {}, runCount: 0 };
+    if (!ymd || !idToken) return out;
+    const prefix = `run_${ymd}_`;
+    const endAt = prefix + '\uf8ff';
+    const runKeys = []; // [branchId, runType, runId]
+    await Promise.all((branchIds || []).map(async branchId => {
+      try {
+        const tRes = await fetch(`${FIREBASE_URL}/courier/runs_by_branchId/${encodeURIComponent(branchId)}.json?shallow=true&auth=${idToken}`);
+        if (!tRes.ok) return;
+        const types = Object.keys(await tRes.json().catch(() => ({})) || {});
+        await Promise.all(types.map(async rt => {
+          try {
+            const url = `${FIREBASE_URL}/courier/runs_by_branchId/${encodeURIComponent(branchId)}/${encodeURIComponent(rt)}.json` +
+              `?orderBy=%22%24key%22&startAt=%22${encodeURIComponent(prefix)}%22&endAt=%22${encodeURIComponent(endAt)}%22&auth=${idToken}`;
+            const rRes = await fetch(url);
+            if (!rRes.ok) return;
+            Object.keys(await rRes.json().catch(() => ({})) || {}).forEach(rid => {
+              if (rid) runKeys.push([branchId, rt, rid]);
+            });
+          } catch (_) {}
+        }));
+      } catch (_) {}
+    }));
+    // Cap: ek dine onek run hote pare — 60 ta node porjonto (live stage-2 cap-er moto).
+    const seen = {};
+    const jobs = runKeys.slice(0, 60);
+    await Promise.all(jobs.map(async ([branchId, rt, rid]) => {
+      try {
+        const res = await fetch(`${FIREBASE_URL}/courier/run_routes/${encodeURIComponent(rt)}/${encodeURIComponent(rid)}.json?auth=${idToken}`);
+        if (!res.ok) return;
+        const node = await res.json().catch(() => null);
+        if (!node || typeof node !== 'object') return;
+        let agent = String(node.agentSystemId || '').trim();
+        if (!agent) {
+          const parts = String(rid).split('_');
+          if (parts.length >= 3) agent = parts.slice(2).join('_').trim();
+        }
+        const cons = node.consignments && typeof node.consignments === 'object' ? Object.keys(node.consignments) : [];
+        if (!cons.length) return;
+        out.runCount++;
+        if (!seen[branchId]) { seen[branchId] = new Set(); out.idsByBranch[branchId] = []; }
+        cons.forEach(cid => {
+          if (!cid || seen[branchId].has(cid)) return;
+          seen[branchId].add(cid);
+          out.idsByBranch[branchId].push(cid);
+          if (agent && !out.assignees[cid]) out.assignees[cid] = { sys: agent };
+        });
+      } catch (_) {}
+    }));
     return out;
   }
 
@@ -1684,6 +1742,35 @@
         } else {
           ccLiveNote = 'Live: no CC binding for this date — bind a sheet from the CallCenter socket (check scope)';
           if (ccMode === 'live') summaryRows = [];
+        }
+      }
+      // Run mode: oi date-er run-er SOB parcel (request charao) — app-er moto.
+      if (ccMode === 'run') {
+        try {
+          const runRes = await fetchDateRunParcels(branchIds, dateKey, idToken);
+          const runCids = [...new Set(Object.values(runRes.idsByBranch).flat())];
+          if (ccLastDiag) ccLastDiag.run = {
+            runs: runRes.runCount, parcels: runCids.length,
+            sample: runCids.slice(0, 5),
+          };
+          if (runCids.length) {
+            const diagChunks = [];
+            const runRows = await fetchValidationsByIds(runCids, idToken, diagChunks);
+            if (ccLastDiag) ccLastDiag.validations = {
+              requested: runCids.length, returned: runRows.length, chunks: diagChunks,
+              sampleReturned: [...new Set(runRows.map(r => r.consignment))].slice(0, 5),
+            };
+            const rowsByCid = {};
+            runRows.forEach(r => { (rowsByCid[r.consignment] = rowsByCid[r.consignment] || []).push(r); });
+            summaryRows = buildLiveCards(runRes.idsByBranch, rowsByCid, dateKey, runRes.assignees);
+          } else {
+            ccLiveNote = `Run: oi date-e (${dateKey}) kono run pai nai — run toiri hoy nai ba scope-er baire`;
+            summaryRows = [];
+          }
+        } catch (e) {
+          console.warn('[DB CC] run fetch failed:', e?.message || e);
+          ccLiveNote = 'Run: ' + (e?.message || 'run read failed');
+          summaryRows = [];
         }
       }
       await fillCcCardNames(idToken, summaryRows);
