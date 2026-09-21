@@ -902,7 +902,8 @@
         validatorSystemId: lastCc ? (lastCc.author_system_id || '') : '',
         validatorEmpId: validatorEmp,
         validatorEmployeeId: validatorEmp || (lastCc ? (lastCc.author_system_id || '') : ''),
-        customerPhone:     (latestOfAll.customer_phone || '').trim(),
+        customerPhone:     ((latestOfAll.customer_phone || '').trim()
+          || (((g.rows.find(r => ((r.customer_phone || '') + '').trim()) || {}).customer_phone || '') + '').trim()),
         parcelStatus:      ((latestOfAll.consignment_status || (lastCc && lastCc.consignment_status) || firstWorker.consignment_status || '') + '').trim(),
         firstWorkerRemark: firstWorker.remarks || firstWorker.note || '',
         firstWorkerStatus: firstWorker.remarks_status || '',
@@ -1029,7 +1030,11 @@
           validatorSystemId: lastCc ? (lastCc.author_system_id || '') : '',
           validatorEmpId: validatorEmp,
           validatorEmployeeId: validatorEmp || (lastCc ? (lastCc.author_system_id || '') : ''),
-          customerPhone: latest ? (latest.customer_phone || '').trim() : '',
+          // Latest row-er phone blank hole onno row-er ta nao (live-e latest
+          // CC row-e phone nao thakte pare) — tarpor enrich Firebase node
+          // thekeo fill kore (row-less card-er jonno).
+          customerPhone: (((latest && latest.customer_phone) || '').trim())
+            || (((rows.find(r => ((r.customer_phone || '') + '').trim()) || {}).customer_phone || '') + '').trim(),
           parcelStatus: latest ? ((latest.consignment_status || '') + '').trim() : '',
           firstWorkerRemark: firstWorker ? (firstWorker.remarks || firstWorker.note || '') : '',
           firstWorkerStatus: firstWorker ? (firstWorker.remarks_status || '') : '',
@@ -1302,6 +1307,7 @@
         </div>
         ${r.customerName ? `<div class="db-cc-row-meta">👤 ${escapeHtml(r.customerName)}${r.codAmount ? ` • ${escapeHtml(fmtTaka(r.codAmount))}` : ''}</div>` : (r.codAmount ? `<div class="db-cc-row-meta">${escapeHtml(fmtTaka(r.codAmount))}</div>` : '')}
         ${r.address ? `<div class="db-cc-row-meta">📍 ${escapeHtml(r.address)}</div>` : ''}
+        ${r.customerPhone ? `<div class="db-cc-row-meta">📱 ${escapeHtml(r.customerPhone)}</div>` : ''}
         <div class="db-cc-row-meta">👤 ${escapeHtml(agentDisplay)}${r.parcelStatus ? ` · 📦 ${escapeHtml(r.parcelStatus)}` : ''}${!r.noActivity && vShort ? ' → ✓ ' + escapeHtml(vShort) : ''}</div>
         ${chatHtml}
         <div class="db-cc-row-bottom">
