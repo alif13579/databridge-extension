@@ -1,4 +1,4 @@
-# BT Dial Server (Windows) — button phone diye dial
+# BT Dial Server (Windows + macOS) — button phone diye dial
 
 Laptop-e paired button/feature phone thakle DataBridge extension-er 📞 Call
 button chaplei phone nijer SIM diye dial korbe — Bluetooth RFCOMM-e
@@ -6,7 +6,31 @@ button chaplei phone nijer SIM diye dial korbe — Bluetooth RFCOMM-e
 Helper offline thakle extension ager moto Firebase path-e (app auto-dial)
 fallback kore, tai server na chalaleo kichu bhangbe na.
 
-## Setup (protita CC PC-te ekbar)
+## macOS setup (ei MacBook-er jonno)
+
+`npm install` lagena — backend age thekei build kora CLI (`mac/bt-dial-cli`).
+
+1. **Phone pair koro:** System Settings → Bluetooth → phone connect koro.
+   Prothom dial-e macOS Bluetooth permission chaite pare — Allow koro.
+2. **MAC bosao:**
+   ```
+   cd bt-dial
+   cp config.example.json config.json   # prothombar sudhu
+   ```
+   `config.json`-e `defaultDevice`-te phone-er MAC dao. MAC pabe:
+   `http://127.0.0.1:17891/devices` (server chalu thakle) ba phone-er
+   Settings → About → Bluetooth address theke.
+3. **Chalao:** `node server.js` (Node 18+ thaklei hobe) → browser-e
+   `http://127.0.0.1:17891/status` khule check koro (`btAvailable: true`).
+4. **Autostart (optional):** System Settings → General → Login Items-e
+   `node server.js` chalanor choto script (Automator/LaunchAgent) rakho.
+5. Extension reload koro → jekono card-e 📞 Call chap dao → phone-e call
+   lagle button-e `📞 Dialed!` uthbe.
+
+CLI rebuild (source change korle Sudhu):
+`cd mac && swiftc -O -o bt-dial-cli bt-dial-cli.swift -framework IOBluetooth`
+
+## Windows setup (protita CC PC-te ekbar)
 
 1. **Node.js LTS** install koro (https://nodejs.org) — `node -v` te 18+ dekhabe.
 2. **Phone pair koro:** Windows Settings → Bluetooth & devices → Add device →

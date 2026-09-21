@@ -6,5 +6,6 @@
   "channels": {
   },
   "connectTimeoutMs": 12000,
-  "commandTimeoutMs": 10000
+  "commandTimeoutMs": 10000,
+  "macCli": "./mac/bt-dial-cli"
 }

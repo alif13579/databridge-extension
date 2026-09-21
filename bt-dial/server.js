@@ -18,6 +18,7 @@
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
+const { spawnSync } = require('child_process');
 
 const VERSION = '1.0.0';
 const CONFIG_PATH = path.join(__dirname, 'config.json');
@@ -30,6 +31,7 @@ function loadConfig() {
     channels: {},
     connectTimeoutMs: 12000,
     commandTimeoutMs: 10000,
+    macCli: './mac/bt-dial-cli', // macOS backend (IOBluetooth CLI); Windows uses the node module
   };
   try {
     const raw = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
@@ -39,10 +41,12 @@ function loadConfig() {
 }
 
 let BTSerialPort = null;
-try {
-  BTSerialPort = require('bluetooth-serial-port').BluetoothSerialPort;
-} catch (e) {
-  console.warn('[bt-dial] bluetooth-serial-port module missing — run `npm install`. BT dial disabled until then.');
+if (process.platform !== 'darwin') {
+  try {
+    BTSerialPort = require('bluetooth-serial-port').BluetoothSerialPort;
+  } catch (e) {
+    console.warn('[bt-dial] bluetooth-serial-port module missing — run `npm install`. BT dial disabled until then.');
+  }
 }
 
 function cleanPhone(phone) {
@@ -50,7 +54,47 @@ function cleanPhone(phone) {
 }
 
 function normMac(mac) {
-  return String(mac || '').trim().toUpperCase();
+  return String(mac || '').trim().toUpperCase().replace(/-/g, ':');
+}
+
+function isMac() {
+  return process.platform === 'darwin';
+}
+
+function macCliPath(cfg) {
+  const p = String(cfg.macCli || './mac/bt-dial-cli');
+  return path.isAbsolute(p) ? p : path.join(__dirname, p);
+}
+
+// macOS backend: IOBluetooth CLI (RFCOMM ATD) — node module Windows-only.
+function macDial(cfg, device, phone, channelOverride) {
+  const cli = macCliPath(cfg);
+  if (!fs.existsSync(cli)) {
+    throw new Error('mac CLI missing at ' + cli + ' (rebuild: see bt-dial/mac build command in README)');
+  }
+  const args = ['--mac', device, '--dial', phone, '--timeout',
+    String(Math.ceil((cfg.connectTimeoutMs + cfg.commandTimeoutMs) / 1000))];
+  if (channelOverride) args.push('--channel', String(channelOverride));
+  const r = spawnSync(cli, args, { encoding: 'utf8', timeout: cfg.connectTimeoutMs + cfg.commandTimeoutMs + 5000 });
+  if (r.error) throw new Error('mac CLI failed to run: ' + (r.error.message || r.error));
+  let out = null;
+  try { out = JSON.parse(String(r.stdout || '').trim().split('\n').pop() || '{}'); }
+  catch (_) { throw new Error('mac CLI bad output: ' + String(r.stdout || r.stderr || '').slice(0, 120)); }
+  if (!out || out.ok !== true) throw new Error((out && out.error) || 'mac dial failed');
+  return { ok: true, device, channel: out.channel };
+}
+
+function macPairedDevices(cfg) {
+  try {
+    const cli = macCliPath(cfg);
+    if (!fs.existsSync(cli)) return null;
+    const r = spawnSync(cli, ['--list'], { encoding: 'utf8', timeout: 15000 });
+    const out = JSON.parse(String(r.stdout || '').trim().split('\n').pop() || '{}');
+    if (out && out.ok && Array.isArray(out.paired)) {
+      return out.paired.map(p => ({ name: p.name || '', mac: normMac(p.mac) }));
+    }
+  } catch (_) {}
+  return null;
 }
 
 function resolveDevice(cfg, agent) {
@@ -145,7 +189,7 @@ async function handleDial(cfg, body) {
   if (!phone || !/^\+?\d{7,15}$/.test(phone)) {
     return { ok: false, error: 'invalid phone number' };
   }
-  if (!BTSerialPort) {
+  if (!BTSerialPort && !isMac()) {
     return { ok: false, error: 'BT module not installed (run npm install in bt-dial)' };
   }
   const device = resolveDevice(cfg, body && body.agent);
@@ -153,6 +197,10 @@ async function handleDial(cfg, body) {
     return { ok: false, error: 'no BT phone configured (set defaultDevice in config.json)' };
   }
   const override = cfg.channels ? cfg.channels[device] || cfg.channels[device.toLowerCase()] : null;
+  if (isMac()) {
+    // CLI does SDP discovery itself unless --channel given.
+    return macDial(cfg, device, phone, override);
+  }
   const channel = override || await findChannel(device, cfg.connectTimeoutMs);
   await dialOnce(device, channel, phone, cfg);
   return { ok: true, device, channel };
@@ -162,6 +210,11 @@ function listDevices(cfg) {
   return new Promise(resolve => {
     const configured = Object.entries(cfg.devices || {}).map(([agent, mac]) => ({ agent, mac: normMac(mac) }));
     if (cfg.defaultDevice) configured.unshift({ agent: 'default', mac: normMac(cfg.defaultDevice) });
+    // macOS: CLI --list gives real paired devices (node module is Windows-only).
+    if (isMac()) {
+      const paired = macPairedDevices(cfg);
+      return resolve({ ok: true, configured, paired: paired || [], note: paired ? undefined : 'CLI list failed' });
+    }
     if (!BTSerialPort) return resolve({ ok: true, configured, paired: [], note: 'BT module missing — configured list only' });
     try {
       const probe = new BTSerialPort();
@@ -194,8 +247,10 @@ function start() {
         return res.end();
       }
       if (req.method === 'GET' && url.pathname === '/status') {
+        const macBackend = isMac() && fs.existsSync(macCliPath(cfg));
         return send(res, 200, {
-          ok: true, version: VERSION, btAvailable: !!BTSerialPort,
+          ok: true, version: VERSION, btAvailable: !!(BTSerialPort || macBackend),
+          backend: isMac() ? 'mac-cli' : 'node-bt',
           defaultDevice: normMac(cfg.defaultDevice),
           devices: cfg.devices || {},
         });
@@ -218,7 +273,8 @@ function start() {
     }
   });
   server.listen(cfg.port, '127.0.0.1', () => {
-    console.log(`[bt-dial] v${VERSION} listening on http://127.0.0.1:${cfg.port} (BT ${BTSerialPort ? 'available' : 'UNAVAILABLE — npm install'})`);
+    const backend = isMac() ? 'mac-cli' : (BTSerialPort ? 'node-bt' : 'NONE — npm install (Windows)');
+    console.log(`[bt-dial] v${VERSION} listening on http://127.0.0.1:${cfg.port} (BT backend: ${backend})`);
   });
 }
 
