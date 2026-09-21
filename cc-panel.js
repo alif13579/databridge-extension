@@ -1517,8 +1517,8 @@
   }
 
   // Per-row 📝 Remarks → CC options + note + save, same catalog + write path as
-  // the dashboard (popup.js toggleHvRemarkSection) and the app's CC sheet.
-  // No sheet-verdict mirror here (needs the device Google account, app-side only).
+  // the dashboard (popup.js toggleHvRemarkSection) and the app's CC sheet —
+  // plus app-parity sheet mirror (mirrorSavedRemarkToSheet) after save.
   async function toggleCcRemarkSection(bodyEl, rows, idx) {
     const card = rows[idx];
     const section = bodyEl.querySelector(`.db-cc-remark-section[data-idx="${idx}"]`);
@@ -1596,7 +1596,10 @@
         });
         const data = await res.json().catch(() => ({}));
         if (!res.ok || data.ok === false) throw new Error(data.error || `HTTP ${res.status}`);
-        say('✓ Remark saved — reloading…');
+        // App parity: Supabase save-er pashapashi sheet-eo mirror (best-effort).
+        say('✓ Remark saved — mirroring to sheet…');
+        const mirrorMsg = await mirrorSavedRemarkToSheet(card);
+        say(`✓ Remark saved · ${mirrorMsg} — reloading…`);
         setTimeout(() => { if (ccBodyEl) loadAndRender(ccBodyEl, { quiet: true }); }, 800);
       } catch (e) {
         say(`⚠ Save failed — ${e.message || 'network error'}`);
@@ -2372,6 +2375,79 @@
       });
     });
     return out;
+  }
+
+  // Remark save → sheet mirror (app RemarkSheetMirror parity): Supabase
+  // write-er por oi card-er latest CC row thekei consolidated value baniye
+  // remark connection-gulote likhe dao — ⇪ Sheet bulk path-er moto, kintu
+  // sudhu ei consignment-er jonno (bulkSyncOneConnection reuse — matching +
+  // write semantics identical). Best-effort: fail korle save-ke fail kore na.
+  async function mirrorSavedRemarkToSheet(card) {
+    try {
+      if (!card || !card.cId || !card.branchId || !ccIdToken) return 'skipped (login)';
+      const { token, error } = await getSheetsToken();
+      if (!token) return `skipped (${error || 'no Sheets permission'})`;
+      const dateKey = ccDateKey || todayBdDateKey();
+      // Fresh rows (read-your-write — Edge write already committed) theke
+      // latest CC row, buildConsolidatedCc-er same derivation.
+      const rows = await fetchValidationsByIds([card.cId], ccIdToken).catch(() => []);
+      const ccRows = (rows || [])
+        .filter(r => r && r.branch_id === card.branchId && r.source === 'CC')
+        .sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+      if (!ccRows.length) return 'skipped (no CC row yet)';
+      const latest = ccRows[ccRows.length - 1];
+      const opts = await fetchCcRemarkOptions().catch(() => []);
+      const engKey = (latest.remarks || '').trim();
+      const hit = (opts || []).find(o => o.english === engKey);
+      const feedback = (hit && hit.category) || '';
+      const finalStatus = deriveFinalStatus(latest.consignment_status || '');
+      const consolidated = new Map([ [`${card.branchId}__${card.cId}`, {
+        feedback,
+        validation: deriveValidation(feedback),
+        validator_name: ((latest.author && latest.author.name) || latest.author_system_id || '').trim(),
+        consignment_status: finalStatus,
+        action: deriveActionFromFinalStatus(finalStatus),
+        created_at: latest.created_at || '',
+      }]]);
+      // Remark connections: legacy connectors + adapted bindings, date scope.
+      const adapted = [];
+      try {
+        const tgts = await fetchCcTargets(ccIdToken, [card.branchId], dateKey);
+        tgts.forEach(t => {
+          const ad = ccAdaptBinding(t.binding, t.lib);
+          if (ad.lookups.length && ad.writes.length) adapted.push(ad);
+        });
+      } catch (e) {
+        console.warn('[DB CC] mirror: bindings read failed:', e?.message || e);
+      }
+      let conns = [];
+      try {
+        const connRes = await fetch(
+          `${FIREBASE_URL}/config/connectors/${encodeURIComponent(card.branchId)}/current.json?auth=${ccIdToken}`);
+        const connObj = await connRes.json().catch(() => ({})) || {};
+        conns = selectForDate(
+          [...Object.values(connObj).filter(isRemarkConn).filter(c => c.enabled !== false), ...adapted],
+          dateKey);
+      } catch (e) {
+        return 'skipped (connection unreadable)';
+      }
+      if (!conns.length) return 'skipped (no remark connection)';
+      let rowsN = 0, cellsN = 0;
+      const errs = [];
+      for (const conn of conns) {
+        try {
+          const r = await bulkSyncOneConnection(token, card.branchId, conn, consolidated, dateKey);
+          rowsN += r.syncedRows; cellsN += r.syncedCells;
+        } catch (e) {
+          errs.push(e?.message || 'sync failed');
+        }
+      }
+      if (!rowsN && errs.length) return `⚠ Sheet mirror failed — ${errs[0]}`;
+      if (!rowsN) return 'skipped (row not found in sheet)';
+      return `✓ Sheet mirrored (${rowsN} row, ${cellsN} cells)`;
+    } catch (e) {
+      return `⚠ Sheet mirror failed — ${e?.message || 'network error'}`;
+    }
   }
 
   // One connection → its own sheet. Returns counts for the summary line.

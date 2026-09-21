@@ -3411,6 +3411,86 @@ function getSelectedHvBranchIds() {
     });
   }
 
+  // Single-remark sheet mirror (app RemarkSheetMirror parity): Supabase
+  // write-er por oi card-er latest CC row thekei value baniye remark
+  // connection-gulote likhe dao — syncHvToSheet bulk path-er moto, kintu
+  // sudhu ei consignment-er jonno (hvBulkSyncOneConnection reuse).
+  // Best-effort: fail korle save-ke fail kore na.
+  async function hvMirrorSavedRemarkToSheet(card, idToken) {
+    try {
+      if (!card || !card.cId || !card.branchId || !idToken) return 'skipped (login)';
+      const dateKey = card.dateKey || null;
+      if (!dateKey) return 'skipped (no date)';
+      const { token, error } = await hvGetSheetsToken();
+      if (!token) return `skipped (${error || 'no Sheets permission'})`;
+      // Fresh rows (read-your-write — Edge write already committed) theke
+      // latest CC row, hvBuildConsolidatedCc-er same derivation.
+      const res = await fetch(`${SUPABASE_URL}/rest/v1/validations` +
+        `?select=consignment,branch_id,author_system_id,source,remarks_status,consignment_status,remarks,note,created_at,author:users!validations_author_system_id_fkey(name,employee_id)` +
+        `&consignment=eq.${encodeURIComponent(card.cId)}&branch_id=eq.${encodeURIComponent(card.branchId)}&source=eq.CC&order=created_at.desc&limit=5`, {
+        headers: { 'apikey': SUPABASE_ANON_KEY, 'Authorization': `Bearer ${idToken}`, 'Accept': 'application/json' },
+      });
+      if (!res.ok) return 'skipped (CC row unreadable)';
+      const rows = await res.json().catch(() => []);
+      const latest = (Array.isArray(rows) && rows.length) ? rows[0] : null;
+      if (!latest) return 'skipped (no CC row yet)';
+      const catMap = await hvFetchRemarkCategories(idToken).catch(() => new Map());
+      const engKey = (latest.remarks || '').trim();
+      const feedback = (catMap && catMap.get(engKey)) || '';
+      const finalStatus = hvDeriveFinalStatus(latest.consignment_status || '');
+      const consolidated = new Map([[`${card.branchId}__${card.cId}`, {
+        feedback,
+        validation: hvDeriveValidation(feedback),
+        validator_name: ((latest.author && latest.author.name) || latest.author_system_id || '').trim(),
+        consignment_status: finalStatus,
+        action: hvDeriveAction(finalStatus),
+        created_at: latest.created_at || '',
+      }]]);
+      // Remark connections: adapted bindings + legacy, date scope.
+      let conns = [];
+      try {
+        const [bRes, lRes] = await Promise.all([
+          fetch(`${FIREBASE_URL}/config/sheetBindings/${encodeURIComponent(card.branchId)}/cc.json?auth=${idToken}`),
+          fetch(`${FIREBASE_URL}/config/connectors/${encodeURIComponent(card.branchId)}/current.json?auth=${idToken}`),
+        ]);
+        const bObj = await bRes.json().catch(() => ({})) || {};
+        const lObj = await lRes.json().catch(() => ({})) || {};
+        const libs = {};
+        Object.entries(lObj).forEach(([lid, l]) => {
+          if (l && l.isLibrary && l.enabled !== false) libs[lid] = l;
+        });
+        const adapted = [];
+        Object.entries(bObj).forEach(([, b]) => {
+          if (!b || b.enabled === false) return;
+          const lib = libs[b.libraryId];
+          if (!lib) return;
+          const ad = hvAdaptBinding(b, lib);
+          if (ad.lookups.length && ad.writes.length) adapted.push(ad);
+        });
+        const legacy = Object.values(lObj).filter(hvIsRemarkConn).filter(c => c.enabled !== false);
+        conns = hvSelectForDate([...adapted, ...legacy], dateKey);
+      } catch (e) {
+        return 'skipped (connection unreadable)';
+      }
+      if (!conns.length) return 'skipped (no remark connection)';
+      let rowsN = 0, cellsN = 0;
+      const errs = [];
+      for (const conn of conns) {
+        try {
+          const r = await hvBulkSyncOneConnection(token, card.branchId, conn, consolidated, dateKey);
+          rowsN += r.syncedRows; cellsN += r.syncedCells;
+        } catch (e) {
+          errs.push(e?.message || 'sync failed');
+        }
+      }
+      if (!rowsN && errs.length) return `⚠ Sheet mirror failed — ${errs[0]}`;
+      if (!rowsN) return 'skipped (row not found in sheet)';
+      return `✓ Sheet mirrored (${rowsN} row, ${cellsN} cells)`;
+    } catch (e) {
+      return `⚠ Sheet mirror failed — ${e?.message || 'network error'}`;
+    }
+  }
+
   async function syncHvToSheet() {
     const statusEl  = document.getElementById('dash-hv-status');
     const fromInput = document.getElementById('dash-hv-from');
@@ -4396,7 +4476,11 @@ async function toggleHvRemarkSection(reportEl, sorted, idx) {
         const total = hvReportRows.length;
         const pend = hvReportRows.filter(r => r.stillPending).length;
         const statusEl = document.getElementById('dash-hv-status');
-        if (statusEl) statusEl.textContent = `✓ Validated ${card.cId} · Validated ${total - pend} · Pending ${pend}`;
+        // App parity: Supabase save-er pashapashi sheet-eo mirror (best-effort).
+        let mirrorMsg = '';
+        try { mirrorMsg = await hvMirrorSavedRemarkToSheet(card, idToken); }
+        catch (e) { mirrorMsg = `⚠ Sheet mirror failed — ${e?.message || 'network error'}`; }
+        if (statusEl) statusEl.textContent = `✓ Validated ${card.cId} · Validated ${total - pend} · Pending ${pend} · ${mirrorMsg}`;
       } catch (_) {}
       renderHvReport();
     } catch (e) {
