@@ -184,10 +184,20 @@
     try { await chrome.storage.session.set({ [key]: v }); } catch { /* quota/unsupported — memory still helps */ }
   }
 
+  /* ── timing: per-stage ms into the diagnostics log ── */
+  function tlog(tag, t0, extra = '') {
+    try {
+      D.log('time', `${tag}: ${Math.round(performance.now() - t0)}ms${extra ? ' ' + extra : ''}`);
+    } catch { /* ignore */ }
+  }
+
   async function loadParcels() {
     const branchId = $('cc-branch').value;
     const dateStr = $('cc-date').value;
     if (!branchId || !dateStr) return;
+    const t0 = performance.now();
+    state.loadT0 = t0;
+    D.log('time', `load start branch=${branchId} date=${dateStr} source=${state.source}`);
     setLoading(true, state.source === 'request' ? 'Loading runs…' : 'Reading sheet…');
     $('cc-empty').hidden = true;
     $('cc-list').innerHTML = '';
@@ -449,6 +459,7 @@
     $('cc-search').value = '';
     renderAll();
     renderMissing();
+    if (state.loadT0) tlog('load total (incl render)', state.loadT0, `parcels=${parcels.length}`);
   }
 
   /* ── filtering + sorting ── */
@@ -589,7 +600,7 @@
         ${agentLine}
         ${remarkLine}
         <div class="cc-actions">
-          <a class="cc-act cc-act-call" style="text-decoration:none;text-align:center" href="tel:${D.esc(String(p.phone).replace(/\D/g, ''))}">📞 Call</a>
+          <button class="cc-act cc-act-call" data-act="call" title="Send number to app (app auto-dials)">📞 Call</button>
           <button class="cc-act cc-act-remark" data-act="remark">✏️ Remarks</button>
           <button class="cc-act cc-act-wa" data-act="wa-agent" title="Send parcel info to agent on WhatsApp">💬</button>
           <button class="cc-act cc-act-log" data-act="journey">🕘 Journey</button>
@@ -673,6 +684,30 @@
   function wireCards(root) {
     root.querySelectorAll('[data-copy]').forEach((el) => {
       el.addEventListener('click', (e) => { e.stopPropagation(); copyText(el.dataset.copy, el); });
+    });
+    // 📞 Call → number goes to the app (auto-dial), popup parity.
+    root.querySelectorAll('[data-act="call"]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const p = state.parcels.find((x) => x.id === btn.closest('.cc-card').dataset.id);
+        if (!p || !p.phone) return;
+        const cleaned = String(p.phone).replace(/[\s-()]/g, '');
+        const originalText = btn.textContent;
+        btn.disabled = true;
+        btn.textContent = '⏳ …';
+        try {
+          chrome.runtime.sendMessage({ action: 'send_to_app', text: cleaned }, () => {
+            if (chrome.runtime.lastError) {
+              btn.textContent = '❌ Failed';
+            } else {
+              btn.textContent = '📞 Sent!';
+            }
+            setTimeout(() => { btn.textContent = originalText; btn.disabled = false; }, 1500);
+          });
+        } catch {
+          btn.textContent = '❌ Failed';
+          setTimeout(() => { btn.textContent = originalText; btn.disabled = false; }, 1500);
+        }
+      });
     });
     root.querySelectorAll('[data-act="remark"]').forEach((btn) => {
       btn.addEventListener('click', () => {
