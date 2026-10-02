@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Call Center — DataBridge</title>
+  <link rel="stylesheet" href="cc.css">
+  <script src="theme-boot.js"></script>
+</head>
+<body>
+  <div class="cc-wrap">
+
+    <!-- ── Header ── -->
+    <header class="cc-header">
+      <div class="cc-title-row">
+        <h2>☎️ Call Center</h2>
+        <div class="cc-conn" id="cc-conn" title="Connection">🔴 Guest</div>
+      </div>
+      <div class="cc-controls">
+        <input type="date" id="cc-date" class="cc-input" title="Sheet date">
+        <select id="cc-branch" class="cc-input" title="Branch"></select>
+        <button class="cc-btn cc-btn-primary" id="cc-load-btn">🔄 Load</button>
+      </div>
+    </header>
+
+    <!-- ── Stats ── -->
+    <section class="cc-stats" id="cc-stats">
+      <button class="cc-stat" data-stat="all">
+        <span class="cc-stat-val" id="cc-stat-total">0</span>
+        <span class="cc-stat-label">Total</span>
+      </button>
+      <button class="cc-stat" data-stat="request">
+        <span class="cc-stat-val cc-green" id="cc-stat-request">0</span>
+        <span class="cc-stat-label">Total Request</span>
+      </button>
+      <button class="cc-stat" data-stat="served">
+        <span class="cc-stat-val cc-yellow" id="cc-stat-served">0</span>
+        <span class="cc-stat-label">Total Served</span>
+      </button>
+      <button class="cc-stat" data-stat="rejected">
+        <span class="cc-stat-val cc-red" id="cc-stat-rejected">0</span>
+        <span class="cc-stat-label">Rejected</span>
+      </button>
+    </section>
+
+    <!-- ── Toolbar ── -->
+    <section class="cc-toolbar">
+      <div class="cc-searchbar">
+        <span class="cc-search-icon">🔍</span>
+        <input type="text" id="cc-search" placeholder="Search phone, ID, customer, COD…" autocomplete="off">
+        <button id="cc-search-clear" title="Clear">✕</button>
+      </div>
+      <div class="cc-toolbar-row">
+        <select id="cc-agent" class="cc-input" title="Agent">
+          <option value="">👥 All Agents</option>
+        </select>
+        <select id="cc-sort" class="cc-input" title="Sort by">
+          <option value="auto">👥 Agents</option>
+          <option value="attempt">🔁 Attempt</option>
+          <option value="aging">🕐 Aging</option>
+          <option value="smart">🧠 Smart</option>
+        </select>
+      </div>
+    </section>
+
+    <!-- ── Status chips ── -->
+    <div class="cc-chips" id="cc-chips"></div>
+
+    <!-- ── Result info ── -->
+    <div class="cc-result" id="cc-result" hidden></div>
+
+    <!-- ── Parcel list ── -->
+    <main class="cc-list" id="cc-list"></main>
+    <div class="cc-empty" id="cc-empty" hidden>📭<br>No parcels found</div>
+    <div class="cc-loading" id="cc-loading" hidden>
+      <div class="cc-spinner"></div>
+      <div id="cc-loading-text">Loading…</div>
+    </div>
+
+    <!-- ── Remarks dialog ── -->
+    <div class="cc-modal" id="cc-remark-modal" hidden>
+      <div class="cc-dialog">
+        <div class="cc-dialog-title" id="cc-remark-title">Set Remarks</div>
+        <div class="cc-opt-list" id="cc-remark-opts"></div>
+        <textarea id="cc-remark-note" rows="2" placeholder="Note (optional)…"></textarea>
+        <div class="cc-dialog-actions">
+          <button class="cc-btn" id="cc-remark-cancel">Cancel</button>
+          <button class="cc-btn cc-btn-primary" id="cc-remark-save">💾 Save</button>
+        </div>
+        <div class="cc-msg" id="cc-remark-msg" hidden></div>
+      </div>
+    </div>
+
+    <!-- ── Journey dialog ── -->
+    <div class="cc-modal" id="cc-journey-modal" hidden>
+      <div class="cc-dialog cc-dialog-wide">
+        <div class="cc-dialog-title-row">
+          <div class="cc-dialog-title" id="cc-journey-title">Journey Log</div>
+          <button class="cc-icon-btn" id="cc-journey-close" title="Close">✕</button>
+        </div>
+        <div class="cc-journey-sub" id="cc-journey-sub"></div>
+        <div class="cc-timeline" id="cc-journey-timeline"></div>
+      </div>
+    </div>
+
+    <div class="cc-toast" id="cc-toast" hidden></div>
+  </div>
+
+  <script src="config.js"></script>
+  <script src="cc-data.js"></script>
+  <script src="cc.js"></script>
+</body>
+</html>

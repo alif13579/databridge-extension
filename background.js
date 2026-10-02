@@ -129,6 +129,15 @@ function askContentScript(tabId) {
         target: { tabId },
         func: () => window.getSelection().toString().trim()
       }, (r) => {
+        // Reading lastError clears Chrome's "Unchecked runtime.lastError" warning.
+        // It fires on pages we can't touch (chrome://, Web Store, new-tab, etc.)
+        // where the manifest has no host access — not a bug, just nothing to send.
+        const err = chrome.runtime.lastError;
+        if (err) {
+          console.log('[DB] askContentScript: page not accessible —',
+            err.message, '— nothing to send');
+          return;
+        }
         if (r?.[0]?.result) sendToFirebase(r[0].result);
         else console.log('[DB] askContentScript: fallback getSelection() was also empty — nothing to send');
       });

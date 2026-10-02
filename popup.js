@@ -1399,6 +1399,12 @@ function setupSettings() {
       chrome.tabs.create({ url: chrome.runtime.getURL('converter.html') });
     });
   }
+  const ccBtn = document.getElementById('open-cc-view-btn');
+  if (ccBtn) {
+    ccBtn.addEventListener('click', () => {
+      chrome.tabs.create({ url: chrome.runtime.getURL('cc.html') });
+    });
+  }
   const clearBtn = document.getElementById('clear-history-btn');
   if (!clearBtn) return;
   clearBtn.addEventListener('click', async () => {
@@ -5924,7 +5930,12 @@ function openRunDetails(query) {
 function sendBgMessage(msg) {
   return new Promise(resolve => {
     try {
-      chrome.runtime.sendMessage(msg, res => resolve(res || {}));
+      chrome.runtime.sendMessage(msg, res => {
+        // Reading lastError clears Chrome's "Unchecked runtime.lastError" warning
+        // (e.g. background worker restarting) — resolve empty so callers fall back.
+        if (chrome.runtime.lastError) return resolve({});
+        resolve(res || {});
+      });
     } catch (e) { resolve({}); }
   });
 }
