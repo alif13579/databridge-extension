@@ -235,11 +235,57 @@
     return out;
   }
 
-  /* ── latest validation per consignment (chunked `in` query).
-   *  NOTE: no author embed — validations.author_system_id has NO foreign key
-   *  (plain text), so a users!…_fkey embed 400s the whole query. Names resolve
-   *  separately via loadUsersBySystemIds (app parity). */
-  async function loadLatestValidations(idToken, ids) {
+  /* ── Edge report (PROVEN path — same call the HV dashboard uses).
+   *  Service-role, bypasses RLS; supports consignment/author/status eq filters;
+   *  returns author + assigned embeds and Bangla labels. PostgREST direct reads
+   *  need a synced role claim and can come back RLS-empty — hence Edge first. */
+  async function edgeReport(idToken, { branchId, startIso, endIso, consignment }) {
+    const rows = [];
+    let page = 0;
+    for (;;) {
+      const body = {
+        action: 'report', branch_id: branchId,
+        start_iso: startIso, end_iso: endIso, page, page_size: 100,
+      };
+      if (consignment) body.consignment = consignment;
+      const res = await fetch(`${SUPABASE_URL}/functions/v1/validations`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${idToken}` },
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) {
+        const t = await res.text().catch(() => '');
+        throw new Error(`Edge report ${res.status}: ${t.slice(0, 120)}`);
+      }
+      const data = await res.json().catch(() => []);
+      if (!Array.isArray(data)) throw new Error('Edge report non-array');
+      rows.push(...data);
+      if (data.length < 100) break;
+      page++;
+      if (page > 50) break; // safety cap (5000 rows)
+    }
+    return rows;
+  }
+
+  function isoDaysAgo(n) {
+    return new Date(Date.now() - n * 86400000).toISOString();
+  }
+
+  /* ── branch validations window (for card latest-remarks) ── */
+  async function loadBranchValidations(idToken, branchId, days = 60) {
+    try {
+      return await edgeReport(idToken, {
+        branchId, startIso: isoDaysAgo(days), endIso: new Date().toISOString(),
+      });
+    } catch (e) {
+      console.warn('[CC] branch validations (Edge) failed:', e && e.message);
+      return [];
+    }
+  }
+
+  /* ── chunked PostgREST latest (gap-fill only — RLS may return empty;
+   *  Edge branch window is primary) ── */
+  async function loadLatestRest(idToken, ids) {
     const uniq = [...new Set(ids)];
     const out = {};
     for (const ch of chunk(uniq, 60)) {
@@ -247,7 +293,7 @@
       const rows = await sbGet(
         `validations?select=consignment,branch_id,assigned_to_system_id,author_system_id,source,remarks_status,remarks,note,created_at` +
         `&consignment=in.(${list})&order=created_at.desc`, idToken).catch((e) => {
-          console.warn('[CC] latest validations failed:', e && e.message);
+          console.warn('[CC] latest validations (REST) failed:', e && e.message);
           return [];
         });
       for (const r of rows) {
@@ -257,17 +303,48 @@
     return out;
   }
 
-  /* ── validation history per consignment (no branch filter — app parity:
-   *  fetchHistory queries consignment only, branch mismatch would hide rows) ── */
-  async function loadHistory(idToken, consignmentId) {
-    const q = `validations?select=consignment,branch_id,assigned_to_system_id,author_system_id,source,remarks_status,remarks,remarks_bn,note,created_at` +
-      `&consignment=eq.${encodeURIComponent(consignmentId)}&order=created_at.desc`;
-    const rows = await sbGet(q, idToken).catch((e) => {
-      console.warn('[CC] history failed for', consignmentId, ':', e && e.message);
-      return [];
-    });
-    try { console.log('[CC] history rows for', consignmentId, ':', rows.length); } catch { /* ignore */ }
-    return rows;
+  function latestFromRows(rows) {
+    const out = {};
+    for (const r of rows || []) {
+      if (r && r.consignment && !out[r.consignment]) out[r.consignment] = r;
+    }
+    return out; // rows arrive created_at desc — first wins
+  }
+
+  /* ── validation history per consignment (Edge wide-range first,
+   *  PostgREST fallback; merged + deduped by id) ── */
+  async function loadHistory(idToken, consignmentId, branchId) {
+    let edgeRows = [];
+    if (branchId) {
+      try {
+        edgeRows = await edgeReport(idToken, {
+          branchId, startIso: '2020-01-01T00:00:00.000Z',
+          endIso: new Date().toISOString(), consignment: consignmentId,
+        });
+      } catch (e) {
+        console.warn('[CC] history (Edge) failed for', consignmentId, ':', e && e.message);
+      }
+    }
+    let restRows = [];
+    try {
+      const q = `validations?select=consignment,branch_id,assigned_to_system_id,author_system_id,source,remarks_status,remarks,remarks_bn,note,created_at` +
+        `&consignment=eq.${encodeURIComponent(consignmentId)}&order=created_at.desc`;
+      restRows = await sbGet(q, idToken);
+    } catch (e) {
+      console.warn('[CC] history (REST) failed for', consignmentId, ':', e && e.message);
+    }
+    const seen = new Set();
+    const merged = [];
+    for (const r of [...edgeRows, ...restRows]) {
+      if (!r || typeof r !== 'object') continue;
+      const id = r.id ? String(r.id) : `noid:${r.created_at}:${r.remarks_status}:${r.remarks}:${r.note}`;
+      if (seen.has(id)) continue;
+      seen.add(id);
+      merged.push(r);
+    }
+    merged.sort((a, b) => new Date(a.created_at || 0) - new Date(b.created_at || 0));
+    try { console.log('[CC] history rows for', consignmentId, ':', merged.length, `(edge:${edgeRows.length} rest:${restRows.length})`); } catch { /* ignore */ }
+    return merged;
   }
 
   /* ── users by system_id (names + phones) ── */
@@ -372,7 +449,7 @@
     loadBranches, loadStatusMeta,
     isVerifyRequest, isValidated, isDeliveryRequest, effectiveStatus,
     loadRunIds, loadRunRoute, loadConsignments,
-    loadLatestValidations, loadHistory, loadUsersBySystemIds,
+    loadBranchValidations, latestFromRows, loadLatestRest, loadHistory, loadUsersBySystemIds,
     loadRemarkOptions, loadAssignments, saveRemark,
   };
 })();

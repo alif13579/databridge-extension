@@ -67,7 +67,8 @@
     const remarks = String(r.remarks_bn || r.remarks || '').trim();
     const note = String(r.note || '').trim();
     const eff = D.effectiveStatus(remarkStatus, p.status, state.meta);
-    const authorName = (state.users[r.author_system_id] ? state.users[r.author_system_id].name : '') ||
+    const authorName = (r.author && r.author.name ? String(r.author.name).trim() : '') ||
+      (state.users[r.author_system_id] ? state.users[r.author_system_id].name : '') ||
       String(r.author_system_id || '').trim();
     return {
       ...p,
@@ -281,7 +282,18 @@
       }
       const conIds = [...new Set(routes.flatMap((r) => r.consignmentIds))];
       if (!conIds.length) return [];
-      const latestMap = await D.loadLatestValidations(state.idToken, conIds);
+      // Latest remarks: branch window (Edge, proven) + REST gap-fill for ids
+      // whose latest remark predates the window.
+      setLoading(true, 'Loading remarks…');
+      const branchRows = await D.loadBranchValidations(state.idToken, branchId, 60);
+      const latestMap = D.latestFromRows(branchRows);
+      const missingIds = conIds.filter((cid) => !latestMap[cid]);
+      if (missingIds.length) {
+        const gap = await D.loadLatestRest(state.idToken, missingIds).catch(() => ({}));
+        for (const [cid, row] of Object.entries(gap || {})) {
+          if (!latestMap[cid]) latestMap[cid] = row;
+        }
+      }
       return assembleParcels(routes, consMap, latestMap, branchId, branchName);
   }
 
@@ -323,8 +335,17 @@
       }
     });
     await Promise.all(workers);
-    const latestMap = await D.loadLatestValidations(
-      state.idToken, fresh.filter((cid) => consMap[cid])).catch(() => ({}));
+    const withCons = fresh.filter((cid) => consMap[cid]);
+    setLoading(true, 'Loading remarks…');
+    const branchRows = await D.loadBranchValidations(state.idToken, branchId, 60).catch(() => []);
+    const latestMap = D.latestFromRows(branchRows);
+    const missingIds = withCons.filter((cid) => !latestMap[cid]);
+    if (missingIds.length) {
+      const gap = await D.loadLatestRest(state.idToken, missingIds).catch(() => ({}));
+      for (const [cid, row] of Object.entries(gap || {})) {
+        if (!latestMap[cid]) latestMap[cid] = row;
+      }
+    }
     const parcels = await assembleParcels(routes, consMap, latestMap || {}, branchId, branchName);
     return { parcels, missing };
   }
@@ -764,7 +785,7 @@
     $('cc-journey-modal').hidden = false;
     try {
       const [rows, assigns] = await Promise.all([
-        D.loadHistory(state.idToken, p.id),
+        D.loadHistory(state.idToken, p.id, p.branchId),
         D.loadAssignments(state.idToken, p.id).catch(() => []),
       ]);
       const nameMap = {};
