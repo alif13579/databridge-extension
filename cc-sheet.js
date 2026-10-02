@@ -264,9 +264,10 @@
     const ids = [];
     const seen = new Set();
     let dropped = 0;
+    let blankIds = 0;
     idCol.forEach((cell, i) => {
       const cid = String(cell || '').trim();
-      if (!cid) return;
+      if (!cid) { blankIds++; return; }
       const results = ruleCols.map(({ filter, values }) =>
         values === null ? true : filterPass(filter.op, values[i] || '', filter.value, filter.valueType));
       const pass = useOr && results.length ? results.some(Boolean) : results.every(Boolean);
@@ -276,7 +277,11 @@
       ids.push({ cid, dateKeys: rowDateKeys(dateCols, i) });
     });
     return {
-      ids, scanned: idCol.length, dropped,
+      ids, scanned: idCol.length, dropped, blankIds,
+      fetchCol: wantFetchRef,
+      filterDesc: rules.length
+        ? rules.map((r) => `${r.colRef} ${r.op}${r.value ? ` "${r.value}"` : ''}`).join(useOr ? ' OR ' : ' + ')
+        : 'none',
       note: missing.length ? `Column ${[...new Set(missing)].join(',')} not found (skipped)` : null,
     };
   }
@@ -328,13 +333,19 @@
         }
         const ids = [];
         const seenIds = new Set();
-        let scanned = 0, dropped = 0;
+        let scanned = 0, dropped = 0, blankIds = 0;
         const notes = [];
+        const details = [];
         const headerCache = new Map();
         for (const { b, lib } of targets) {
-          const r = await fetchLiveIdsForBinding(token, b, lib, headerCache).catch(() => null);
+          const r = await fetchLiveIdsForBinding(token, b, lib, headerCache).catch((e) => ({
+            ids: [], scanned: 0, dropped: 0, blankIds: 0,
+            fetchCol: (b.fetchColRef || '?'), filterDesc: 'read-failed',
+            note: `read failed (${String((e && e.message) || e).slice(0, 100)})`,
+          }));
           if (!r) { notes.push(`${lib.nickname || lib.sheetName}: read failed`); continue; }
-          scanned += r.scanned; dropped += r.dropped;
+          scanned += r.scanned || 0; dropped += r.dropped || 0; blankIds += r.blankIds || 0;
+          details.push(`${lib.nickname || lib.sheetName}: IDs from ${r.fetchCol || '?'} + filter [${r.filterDesc || 'none'}] → kept ${r.ids.length}`);
           if (r.note) notes.push(`${lib.nickname || lib.sheetName}: ${r.note}`);
           for (const e of r.ids) {
             if (seenIds.has(e.cid)) continue;
@@ -347,11 +358,15 @@
           const t = String(n).split(': ').slice(1).join(': ').trim();
           return t && !genuine.some((g) => t.startsWith(g));
         });
+        const detailStr = details.join(' | ');
         out.push({
           branchId, ids,
           note: ids.length && notes.length ? notes.join('; ')
-            : ids.length ? null
-            : notes[0] || `No consignments today (${scanned} rows scanned)`,
+            : ids.length ? (detailStr || null)
+            : [
+              `No consignments today (${scanned} scanned, ${dropped} filtered out, ${blankIds} blank IDs)`,
+              detailStr,
+            ].filter(Boolean).join(' — '),
           failed: failedRead,
         });
       } catch (e) {
