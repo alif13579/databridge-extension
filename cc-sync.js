@@ -198,15 +198,20 @@
     const raw = String(cell || '').trim();
     if (!raw) return false;
     const res = [
-      [/^(\d{4})-(\d{2})-(\d{2})$/, (m) => [m[1], m[2], m[3]]],
-      [/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/, (m) => [m[3], m[1].padStart(2, '0'), m[2].padStart(2, '0')]],
-      [/^(\d{1,2})-(\d{1,2})-(\d{4})$/, (m) => [m[3], m[2].padStart(2, '0'), m[1].padStart(2, '0')]],
-      [/^(\d{4})\/(\d{2})\/(\d{2})$/, (m) => [m[1], m[2], m[3]]],
-      [/^(\d{1,2})\.(\d{1,2})\.(\d{4})$/, (m) => [m[3], m[2].padStart(2, '0'), m[1].padStart(2, '0')]],
+      // Slashed full-year: d/M FIRST (existing dd/MM sheets), then M/d fallback.
+      [/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/, (m) => [[m[3], m[2].padStart(2, '0'), m[1].padStart(2, '0')], [m[3], m[1].padStart(2, '0'), m[2].padStart(2, '0')]]],
+      [/^(\d{4})-(\d{2})-(\d{2})$/, (m) => [[m[1], m[2], m[3]]]],
+      [/^(\d{1,2})-(\d{1,2})-(\d{4})$/, (m) => [[m[3], m[2].padStart(2, '0'), m[1].padStart(2, '0')]]],
+      [/^(\d{4})\/(\d{2})\/(\d{2})$/, (m) => [[m[1], m[2], m[3]]]],
+      [/^(\d{1,2})\.(\d{1,2})\.(\d{4})$/, (m) => [[m[3], m[2].padStart(2, '0'), m[1].padStart(2, '0')]]],
     ];
     for (const [re, fn] of res) {
       const m = raw.match(re);
-      if (m) { const [y, mo, d] = fn(m); if (`${y}-${mo}-${d}` === dateKey) return true; }
+      if (m) {
+        for (const [y, mo, d] of fn(m)) {
+          if (`${y}-${mo}-${d}` === dateKey) return true;
+        }
+      }
     }
     return false;
   }

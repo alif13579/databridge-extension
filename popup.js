@@ -3124,12 +3124,14 @@ function getSelectedHvBranchIds() {
   // (latest CC remark per consignment) ওই দিনের tab/date-cell-এ, blank-only.
   const HV_SYNC_MAX_DAYS = 31;
   const HV_SHEET_DATE_RES = [
-    [/^(\d{4})-(\d{2})-(\d{2})$/, (m) => [m[1], m[2], m[3]]],
-    [/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/, (m) => [m[3], m[1].padStart(2, '0'), m[2].padStart(2, '0')]],
-    [/^(\d{1,2})\/(\d{1,2})\/(\d{2})$/, (m) => ['20' + m[3], m[1].padStart(2, '0'), m[2].padStart(2, '0')]], // M/d/yy
-    [/^(\d{1,2})-(\d{1,2})-(\d{4})$/, (m) => [m[3], m[2].padStart(2, '0'), m[1].padStart(2, '0')]],
-    [/^(\d{4})\/(\d{2})\/(\d{2})$/, (m) => [m[1], m[2], m[3]]],
-    [/^(\d{1,2})\.(\d{1,2})\.(\d{4})$/, (m) => [m[3], m[2].padStart(2, '0'), m[1].padStart(2, '0')]],
+    [/^(\d{4})-(\d{2})-(\d{2})$/, (m) => [[m[1], m[2], m[3]]]],
+    // Slashed full-year: d/M FIRST (existing dd/MM sheets), then M/d fallback —
+    // app SheetCellCompare.parseDate parity (single M/d reading dropped rows).
+    [/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/, (m) => [[m[3], m[2].padStart(2, '0'), m[1].padStart(2, '0')], [m[3], m[1].padStart(2, '0'), m[2].padStart(2, '0')]]],
+    [/^(\d{1,2})\/(\d{1,2})\/(\d{2})$/, (m) => [['20' + m[3], m[1].padStart(2, '0'), m[2].padStart(2, '0')]]], // M/d/yy
+    [/^(\d{1,2})-(\d{1,2})-(\d{4})$/, (m) => [[m[3], m[2].padStart(2, '0'), m[1].padStart(2, '0')]]],
+    [/^(\d{4})\/(\d{2})\/(\d{2})$/, (m) => [[m[1], m[2], m[3]]]],
+    [/^(\d{1,2})\.(\d{1,2})\.(\d{4})$/, (m) => [[m[3], m[2].padStart(2, '0'), m[1].padStart(2, '0')]]],
   ];
   const HV_MONTHS = { jan: '01', feb: '02', mar: '03', apr: '04', may: '05', jun: '06', jul: '07', aug: '08', sep: '09', oct: '10', nov: '11', dec: '12' };
   function hvSheetCellIsDate(cell, dateKey) {
@@ -3137,7 +3139,11 @@ function getSelectedHvBranchIds() {
     if (!raw) return false;
     for (const [re, fn] of HV_SHEET_DATE_RES) {
       const m = raw.match(re);
-      if (m) { const [y, mo, d] = fn(m); if (`${y}-${mo}-${d}` === dateKey) return true; }
+      if (m) {
+        for (const [y, mo, d] of fn(m)) {
+          if (`${y}-${mo}-${d}` === dateKey) return true;
+        }
+      }
     }
     let m = raw.match(/^(\d{1,2})-([A-Za-z]{3})-(\d{2}|\d{4})$/);
     if (m) {
