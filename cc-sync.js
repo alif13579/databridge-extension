@@ -316,8 +316,16 @@
   /* ── public: sync one branch + date ── */
   async function syncDay(idToken, sheetsToken, branchId, dateKey, dayRows, onStatus) {
     const say = (t) => { try { onStatus && onStatus(t); } catch { /* ignore */ } };
+    const t0 = (() => { try { return performance.now(); } catch { return 0; } })();
+    const tlog = (tag) => {
+      try {
+        window.CcData.log('sync', `${tag}: ${Math.round(performance.now() - t0)}ms`);
+      } catch { /* ignore */ }
+    };
+    tlog(`start branch=${branchId} date=${dateKey} rows=${(dayRows || []).length}`);
     const catMap = await fetchCategories(idToken);
     const consolidated = buildConsolidated(dayRows, dateKey, catMap);
+    tlog(`consolidated=${consolidated.size}`);
     if (!consolidated.size) return 'No CC remarks for this date — nothing to sync';
     const fbBase = `${FIREBASE_URL}/config`;
     const auth = `?auth=${encodeURIComponent(idToken)}`;
@@ -339,15 +347,22 @@
     });
     const legacy = Object.values(lObj || {}).filter(isRemarkConn).filter((c) => c.enabled !== false);
     const conns = selectForDate([...adapted, ...legacy], dateKey);
+    tlog(`connections=${conns.length} (adapted+legacy)`);
     if (!conns.length) return 'No remark connection for this date (check scope)';
     let rows = 0, cells = 0, filled = 0, noCc = 0, scanned = 0, dateSkipped = 0;
     const errs = [];
     for (const conn of conns) {
       say(`⏳ ${conn.sheetName || conn.sheetId || branchId} — syncing…`);
       try {
+        const c0 = (() => { try { return performance.now(); } catch { return 0; } })();
         const r = await syncOneConnection(sheetsToken, branchId, conn, consolidated, dateKey);
         rows += r.syncedRows; cells += r.syncedCells; filled += r.filled; noCc += r.noCc;
         scanned += r.scanned || 0; dateSkipped += r.dateSkipped || 0;
+        try {
+          window.CcData.log('sync',
+            `${conn.sheetName || conn.sheetId}: ${Math.round(performance.now() - c0)}ms ` +
+            `scanned=${r.scanned} synced=${r.syncedRows}/${r.syncedCells} filled=${r.filled} noCc=${r.noCc} dateSkipped=${r.dateSkipped || 0}`);
+        } catch { /* ignore */ }
       } catch (e) {
         errs.push(e.message || 'sync failed');
       }

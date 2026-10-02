@@ -3571,6 +3571,13 @@ function getSelectedHvBranchIds() {
   }
 
   async function syncHvToSheet() {
+    const hvSyncLog = [];
+    const t0 = Date.now();
+    const tlog = (msg) => {
+      hvSyncLog.push(`${((Date.now() - t0) / 1000).toFixed(1)}s ${msg}`);
+      if (hvSyncLog.length > 200) hvSyncLog.splice(0, hvSyncLog.length - 200);
+    };
+    try { chrome.storage.local.set({ hv_sync_log: [] }); } catch { /* ignore */ }
     const statusEl  = document.getElementById('dash-hv-status');
     const fromInput = document.getElementById('dash-hv-from');
     const toInput   = document.getElementById('dash-hv-to');
@@ -3603,6 +3610,7 @@ function getSelectedHvBranchIds() {
       if (!idToken) { setStatus('⚠ Log in first'); return; }
 
       setStatus('⏳ Loading validation data from Supabase…');
+      tlog(`start branches=${branchesToQuery.join(',')} days=${dayKeys.join(',')}`);
       const startIso = fromDate;
       const endIso   = new Date(new Date(toDate).getTime() + 24 * 3600 * 1000).toISOString();
       const allRows = [];
@@ -3611,6 +3619,7 @@ function getSelectedHvBranchIds() {
         return { branchId, rows };
       }));
       settled.forEach(r => { if (r.status === 'fulfilled') allRows.push(...r.value.rows); });
+      tlog(`validations rows=${allRows.length}`);
       if (!allRows.length) { setStatus('No validation data in this date range/branch'); return; }
 
       const catMap = await hvFetchRemarkCategories(idToken);
@@ -3654,6 +3663,7 @@ function getSelectedHvBranchIds() {
       const errs = [];
       for (const dateKey of dayKeys) {
         const consolidated = hvBuildConsolidatedCc(allRows, dateKey, catMap);
+        tlog(`${dateKey} consolidated=${consolidated.size}`);
         if (!consolidated.size) continue;
         totDays++;
         for (const branchId of branchesToQuery) {
@@ -3666,8 +3676,10 @@ function getSelectedHvBranchIds() {
               const r = await hvBulkSyncOneConnection(token, branchId, conn, consolidated, dateKey);
               totScanned += r.scanned; totFilled += r.filled;
               totRows += r.syncedRows; totCells += r.syncedCells; totOverRows += (r.overwrittenRows || 0); totOverCells += (r.overwrittenCells || 0); totNoCc += r.noCc;
+              tlog(`${dateKey}/${conn.sheetName || conn.sheetId || branchId} scanned=${r.scanned} synced=${r.syncedRows}/${r.syncedCells} filled=${r.filled} noCc=${r.noCc}`);
               Object.entries(r.perKind || {}).forEach(([k, v]) => { totPerKind[k] = (totPerKind[k] || 0) + v; });
             } catch (e) {
+              tlog(`${dateKey}/${branchId} ERROR: ${e.message || 'sync failed'}`);
               errs.push(`${label}: ${e.message || 'sync failed'}`);
             }
           }
@@ -3679,6 +3691,8 @@ function getSelectedHvBranchIds() {
         (totOverRows ? ` · ${totOverRows} row updated (${totOverCells} cells overwritten)` : '') +
         ` · ${totFilled} already filled · ${totNoCc} no CC yet · ${totScanned} sheet rows দেখা (${totConns} connection)` + colsLine;
       if (errs.length) msg += ` · ⚠ ${errs.length} error: ${errs.slice(0, 2).join('; ')}${errs.length > 2 ? '…' : ''}`;
+      tlog(`done: ${msg}`);
+      try { chrome.storage.local.set({ hv_sync_log: hvSyncLog }); } catch { /* ignore */ }
       setStatus(msg);
     } catch (e) {
       console.error('[DB] HV sync failed:', e);
@@ -6079,6 +6093,14 @@ async function copyPopupDiagnostics() {
   lines.push(`hv rows=${hvReportRows.length}`);
   lines.push(`hv status=${t('dash-hv-status')}`);
   lines.push(`hv live=${t('dash-hv-live-text')}`);
+  try {
+    const stored = await new Promise((r) => chrome.storage.local.get(['hv_sync_log'], r));
+    const log = stored.hv_sync_log;
+    if (Array.isArray(log) && log.length) {
+      lines.push('--- sync log ---');
+      lines.push(...log.slice(-60));
+    }
+  } catch { /* ignore */ }
   await navigator.clipboard.writeText(lines.join('\n'));
 }
 
