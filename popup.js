@@ -3137,11 +3137,20 @@ function getSelectedHvBranchIds() {
   function hvSheetCellIsDate(cell, dateKey) {
     const raw = String(cell || '').trim();
     if (!raw) return false;
-    for (const [re, fn] of HV_SHEET_DATE_RES) {
-      const m = raw.match(re);
-      if (m) {
-        for (const [y, mo, d] of fn(m)) {
-          if (`${y}-${mo}-${d}` === dateKey) return true;
+    // Cells may carry a time suffix ("02/10/2026 14:30", ISO datetime) —
+    // try full text, then the leading date token.
+    const candidates = [raw];
+    const firstTok = raw.split(/\s+/)[0];
+    if (firstTok && firstTok !== raw) candidates.push(firstTok);
+    const tPart = raw.split('T')[0];
+    if (tPart && tPart !== raw && !candidates.includes(tPart)) candidates.push(tPart);
+    for (const text of candidates) {
+      for (const [re, fn] of HV_SHEET_DATE_RES) {
+        const m = text.match(re);
+        if (m) {
+          for (const [y, mo, d] of fn(m)) {
+            if (`${y}-${mo}-${d}` === dateKey) return true;
+          }
         }
       }
     }
