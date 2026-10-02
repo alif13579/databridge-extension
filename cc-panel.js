@@ -839,6 +839,7 @@
   let ccRemarkOpts = null;   // CC catalog, cached per page load
   let ccRefreshTimer = null;
   let ccLoading = false; // in-flight guard for auto/manual/visibility reloads
+  let ccDeadQuiet = false; // dead-context shutdown done once — no repeat spam
   let ccLiveNote = null; // Live ID না এলে SPECIFIC কারণ (access/tab/filter/binding) — render empty-state-এ দেখায়
   let ccLastDiag = null; // last load's pipeline snapshot — 📋 button copies it for mismatch debugging
   const CC_REFRESH_MS = 30_000; // auto-refresh: app-er save ≤30s-এ panel-e (new parcels + status updates)
@@ -1802,15 +1803,22 @@
       if (prevBulkMsg) bulkSay(prevBulkMsg);
       if (prevBulkMsg && !prevBulkVisible) { const el = bulkStatusEl(); if (el) el.style.display = 'none'; }
     } catch (e) {
-      console.error('[DB CC Panel] load failed:', e);
       if (ccBodyEl === bodyEl) {
         if (isContextDead(e)) {
           // Update-er por page reload na howa porjonto protita chrome.* call
-          // fail korbe — britha poll thamay, reload notice dekhay.
-          ccDataPollStop();
-          try { if (window.DbRealtimeFeed) DbRealtimeFeed.stop(); } catch (_) {}
+          // fail korbe — prothombar sob loop thamay + notice, tarpor chup.
+          // Nahole 30s poll + presence poll + realtime retry mile console-e
+          // eki error barbar aste thake.
+          if (!ccDeadQuiet) {
+            ccDeadQuiet = true;
+            ccDataPollStop();
+            ccPresenceStopPoll();
+            try { if (window.DbRealtimeFeed) DbRealtimeFeed.stop(); } catch (_) {}
+            try { console.warn('[DB CC Panel] extension updated — reload the page (F5).'); } catch (_) {}
+          }
           bodyEl.innerHTML = '<div class="db-cc-status">⚠ Extension updated — page-ta reload dao (F5), panel abar kaj korbe.</div>';
         } else {
+          try { console.error('[DB CC Panel] load failed:', (e && e.message) || e); } catch (_) {}
           bodyEl.innerHTML = '<div class="db-cc-status">⚠ Load failed — check console (F12)</div>';
         }
         if (prevBulkMsg) bulkSay(prevBulkMsg);
