@@ -980,7 +980,9 @@
     const branchId = $('cc-branch').value;
     const dateKey = $('cc-date').value;
     if (!branchId || !dateKey) { toast('Select branch + date first', false); return; }
+    const origBtn = btn.innerHTML;
     btn.disabled = true;
+    btn.innerHTML = '<span class="cc-mini-spinner"></span> Syncing…';
     const say = (t) => {
       res.hidden = false;
       res.textContent = t;
@@ -1003,6 +1005,7 @@
       say(`✕ ${e.message || 'sync failed'}`);
     } finally {
       btn.disabled = false;
+      btn.innerHTML = origBtn;
     }
   }
 
