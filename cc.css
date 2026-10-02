@@ -395,22 +395,33 @@ body {
 }
 .cc-day span { background: #1e293b; border-radius: 12px; padding: 2px 12px; }
 .cc-entry {
-  border-left: 2px solid #334155;
-  margin-left: 8px;
-  padding: 0 0 12px 14px;
+  border-radius: 14px;
+  padding: 8px 12px;
+  margin: 0 0 8px;
+  max-width: 88%;
   position: relative;
 }
-.cc-entry::before {
-  content: "";
-  position: absolute;
-  left: -6px; top: 2px;
-  width: 10px; height: 10px;
-  border-radius: 50%;
-  background: #475569;
+/* Worker left (grey), CC right (blue) — app applyChatStyle parity */
+.cc-entry.agent {
+  background: #1a2740;
+  border: 1px solid #2b3b58;
+  margin-right: auto;
 }
-.cc-entry.agent::before { background: #22c55e; }
-.cc-entry.cc::before { background: #00d4ff; }
-.cc-entry.system::before { background: #64748b; }
+.cc-entry.cc {
+  background: #0c2a3a;
+  border: 1px solid #0e7490;
+  margin-left: auto;
+  text-align: right;
+}
+.cc-entry.cc .cc-entry-remark { text-align: right; }
+.cc-entry.system {
+  background: transparent;
+  border: 1px dashed #334155;
+  margin-left: auto;
+  margin-right: auto;
+  max-width: 95%;
+  text-align: center;
+}
 .cc-entry-author { font-size: 12px; font-weight: bold; }
 .cc-entry-status {
   display: inline-block;
@@ -469,3 +480,5 @@ html[data-theme="light"] .cc-dialog textarea { background: #f8fafc; color: #0f17
 html[data-theme="light"] .cc-note-clear { background: #f1f5f9; }
 html[data-theme="light"] .cc-day span { background: #e2e8f0; }
 html[data-theme="light"] .cc-agent-count { background: #f1f5f9; }
+html[data-theme="light"] .cc-entry.agent { background: #f3f4f6; border-color: #e5e7eb; }
+html[data-theme="light"] .cc-entry.cc { background: #dbeafe; border-color: #bfdbfe; }
