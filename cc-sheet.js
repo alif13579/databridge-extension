@@ -279,8 +279,8 @@
     return {
       ids, scanned: idCol.length, dropped, blankIds,
       fetchCol: wantFetchRef,
-      filterDesc: rules.length
-        ? rules.map((r) => `${r.colRef} ${r.op}${r.value ? ` "${r.value}"` : ''}`).join(useOr ? ' OR ' : ' + ')
+      filterDesc: ruleCols.length
+        ? ruleCols.map(({ filter: r }) => `${r.colRef} ${r.op}${r.value ? ` "${r.value}"` : ''}`).join(useOr ? ' OR ' : ' + ')
         : 'none',
       note: missing.length ? `Column ${[...new Set(missing)].join(',')} not found (skipped)` : null,
     };
