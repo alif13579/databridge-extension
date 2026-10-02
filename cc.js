@@ -615,9 +615,6 @@
     if (state.search || state.statusFilter !== 'all' || state.statFilter !== 'all' || state.agentFilter) {
       res.hidden = false;
       res.textContent = `${list.length} result${list.length === 1 ? '' : 's'}`;
-    } else if (state.sheetNote && state.source !== 'request') {
-      res.hidden = false;
-      res.textContent = `Sheet: ${state.sheetNote}`;
     } else res.hidden = true;
     $('cc-empty').hidden = list.length > 0;
     box.innerHTML = '';
@@ -1024,6 +1021,21 @@
   async function refreshSheetsAccountRow() {
     const emailEl = $('cc-acct-email');
     if (!emailEl) return;
+    const switchBtn = $('cc-acct-switch');
+    const connectBtn = $('cc-acct-connect');
+    // Below Switch: the active Google account; logged out → Connect instead.
+    let uid = '';
+    try {
+      const s = await new Promise((r) => chrome.storage.local.get(['google_uid'], r));
+      uid = s.google_uid || '';
+    } catch { /* ignore */ }
+    if (switchBtn) switchBtn.style.display = uid ? '' : 'none';
+    if (connectBtn) connectBtn.style.display = uid ? 'none' : '';
+    if (!uid) {
+      emailEl.textContent = '📧 Not connected';
+      emailEl.title = 'Connect with Google to load parcels';
+      return;
+    }
     try {
       const res = await sendBgMessage({ action: 'get_sheets_account' });
       const email = res && res.email ? res.email : '';
@@ -1032,6 +1044,111 @@
     } catch {
       emailEl.textContent = '📧 Chrome profile account';
     }
+  }
+
+  /* Google connect from the CC page (popup handleGoogleLogin parity):
+   * background runs the chooser, then finish from google_pending_login. */
+  async function connectGoogle() {
+    const btn = $('cc-acct-connect');
+    if (btn) { btn.disabled = true; btn.textContent = '⏳ Signing in…'; }
+    try {
+      const res = await sendBgMessage({ action: 'db_google_login' });
+      if (!res || !res.ok) throw new Error((res && res.error) || 'Google login failed');
+      const done = await finishGoogleLoginFromPending();
+      if (!done) throw new Error('Google login failed');
+      toast('✅ Connected — reloading…');
+      await boot();
+    } catch (e) {
+      toast(`⚠ ${e.message || 'Google login failed'}`, false);
+    } finally {
+      if (btn) { btn.disabled = false; btn.textContent = 'Connect Google'; }
+    }
+  }
+
+  function getOrCreateExtensionID() {
+    return new Promise((resolve) => {
+      chrome.storage.local.get(['extension_id'], (result) => {
+        if (result.extension_id) return resolve(result.extension_id);
+        const now = new Date();
+        const dd = String(now.getDate()).padStart(2, '0');
+        const mm = String(now.getMonth() + 1).padStart(2, '0');
+        const yy = String(now.getFullYear()).slice(-2);
+        const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+        const bytes = new Uint8Array(6);
+        crypto.getRandomValues(bytes);
+        let suffix = '';
+        for (let i = 0; i < 6; i++) suffix += chars[bytes[i] % chars.length];
+        const newId = `DB-${dd}${mm}${yy}-${suffix}`;
+        chrome.storage.local.set({ extension_id: newId }, () => resolve(newId));
+      });
+    });
+  }
+
+  async function ensureUserProfileCc(uid, idToken, displayName, email, photoUrl) {
+    const authParam = idToken ? `?auth=${idToken}` : '';
+    const profileUrl = `${CONFIG.FIREBASE_URL}/users/${uid}/profile.json${authParam}`;
+    const existing = await fetch(profileUrl).then((r) => r.json()).catch(() => null);
+    if (existing) return existing;
+    const now = Date.now();
+    const fresh = {
+      name: displayName || (email ? email.split('@')[0] : 'User'),
+      email: email || '',
+      containerId: `container_${uid}`,
+      user_id: uid,
+      photo_url: photoUrl || '',
+      createdAt: now,
+      lastActive: now,
+      company_info: {
+        role_id: 'guest', branch_ids: [], employee_id: '', designation: '',
+        agent_type: '', salary_model: '', salary_type: '', fixed_amount: '', status: 'active',
+      },
+    };
+    await fetch(profileUrl, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(fresh),
+    });
+    return fresh;
+  }
+
+  async function finishGoogleLoginFromPending() {
+    const { google_pending_login: p } = await chrome.storage.local.get(['google_pending_login']);
+    if (!p || !p.uid || !p.idToken) return false;
+    const { uid, email, displayName, photoUrl, idToken, refreshToken, expiresIn } = p;
+    const profile = await ensureUserProfileCc(uid, idToken, displayName, email, photoUrl).catch(() => null);
+    const name = (profile && profile.name) || displayName || email;
+    await chrome.storage.local.set({
+      google_uid: uid,
+      google_email: email,
+      google_name: name,
+      google_photo_url: (profile && profile.photo_url) || photoUrl || '',
+      google_id_token: idToken,
+      google_refresh_token: refreshToken,
+      google_token_expires_at: Date.now() + expiresIn * 1000,
+      container_id: `container_${uid}`,
+      user_id: uid,
+    });
+    await chrome.storage.local.remove(['google_pending_login']).catch(() => {});
+    try {
+      const extensionId = await getOrCreateExtensionID();
+      const now = Date.now();
+      await fetch(`${CONFIG.FIREBASE_URL}/sessions/${extensionId}/meta.json`, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ google_uid: uid, google_email: email, linked_at: now }),
+      }).catch(() => {});
+      const freshToken = await D.getIdToken().catch(() => null);
+      const authP = freshToken ? `?auth=${freshToken}` : '';
+      const extConnPath = `users/${uid}/connections/extensions/${extensionId}`;
+      const existingConn = await fetch(`${CONFIG.FIREBASE_URL}/${extConnPath}.json${authP}`)
+        .then((r) => r.json()).catch(() => null);
+      await fetch(`${CONFIG.FIREBASE_URL}/${extConnPath}.json${authP}`, {
+        method: existingConn && typeof existingConn === 'object' ? 'PATCH' : 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(existingConn && typeof existingConn === 'object'
+          ? { status: 'connected', last_sync: now }
+          : { status: 'connected', type: 'google_linked', connected_at: now, last_sync: now }),
+      }).catch(() => {});
+    } catch { /* linking best-effort */ }
+    await refreshSheetsAccountRow();
+    return true;
   }
 
   function wireSheetsAccountOnce() {
@@ -1065,6 +1182,11 @@
     $('cc-sync-btn').onclick = syncToSheet;
     wireSheetsAccountOnce();
     refreshSheetsAccountRow();
+    const connectBtn = $('cc-acct-connect');
+    if (connectBtn && !connectBtn.dataset.bound) {
+      connectBtn.dataset.bound = '1';
+      connectBtn.addEventListener('click', connectGoogle);
+    }
     $('cc-load-btn').onclick = () => {
       try {
         chrome.storage.local.set({ cc_branch: $('cc-branch').value, cc_sort: state.sortMode, cc_source: state.source });
