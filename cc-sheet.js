@@ -271,22 +271,21 @@
       return colValues.get(letter);
     };
     const missing = [];
-    const ruleCols = [];
-    for (const r of binding.filters) {
+    const ruleCols = await Promise.all(binding.filters.map(async (r) => {
       const values = await colOf(r.colRef, r.mode).catch(() => null);
       if (values === null) missing.push(String(r.colRef).trim());
-      ruleCols.push({ filter: r, values });
-    }
+      return { filter: r, values };
+    }));
     const idCol = await colOf(wantFetchRef, binding.fetchColMode).catch(() => null);
     if (idCol === null) return { ids: [], scanned: 0, dropped: 0, note: `ID column '${wantFetchRef}' not found` };
     const useOr = binding.filters.length > 0 && binding.filterLogic === 'OR';
-    // date columns: lookup TODAY / CREATED_AT fields
-    const dateCols = [];
-    for (const lk of binding.lookups) {
-      if (lk.field !== 'today' && lk.field !== 'created_at') continue;
-      const vals = await colOf(lk.colRef, lk.mode).catch(() => null);
-      if (vals) dateCols.push(vals);
-    }
+    // date columns: lookup TODAY / CREATED_AT fields (parallel with above —
+    // colOf caches per letter, so shared columns add no extra reads)
+    const dateRules = binding.lookups
+      .filter((lk) => lk.field === 'today' || lk.field === 'created_at');
+    const dateCols = (
+      await Promise.all(dateRules.map((lk) => colOf(lk.colRef, lk.mode).catch(() => null)))
+    ).filter(Boolean);
     const ids = [];
     const seen = new Set();
     let dropped = 0;

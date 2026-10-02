@@ -213,7 +213,7 @@
 
   /* ── one connection sync ── */
   async function syncOneConnection(token, branchId, conn, consolidated, dateKey) {
-    const res = { scanned: 0, filled: 0, syncedRows: 0, syncedCells: 0, overwrittenRows: 0, overwrittenCells: 0, noCc: 0, skipped: 0, perKind: {} };
+    const res = { scanned: 0, filled: 0, syncedRows: 0, syncedCells: 0, overwrittenRows: 0, overwrittenCells: 0, noCc: 0, skipped: 0, dateSkipped: 0, perKind: {} };
     const lookups = effectiveRules(conn, 'lookup');
     const writes = effectiveRules(conn, 'write').filter((r) =>
       ['feedback', 'validation', 'validator_name', 'consignment_status', 'action'].includes(r.kind));
@@ -287,7 +287,7 @@
         const cell = (dateCols.get(letter) || [])[i] || '';
         if (!cellIsDate(String(cell || '').trim(), dateKey)) { dateOk = false; break; }
       }
-      if (!dateOk) continue;
+      if (!dateOk) { res.dateSkipped++; continue; }
       const vals = consolidated.get(`${branchId}__${cid}`);
       if (!vals) { res.noCc++; continue; }
       const needs = [];
@@ -340,18 +340,19 @@
     const legacy = Object.values(lObj || {}).filter(isRemarkConn).filter((c) => c.enabled !== false);
     const conns = selectForDate([...adapted, ...legacy], dateKey);
     if (!conns.length) return 'No remark connection for this date (check scope)';
-    let rows = 0, cells = 0, filled = 0, noCc = 0;
+    let rows = 0, cells = 0, filled = 0, noCc = 0, scanned = 0, dateSkipped = 0;
     const errs = [];
     for (const conn of conns) {
       say(`⏳ ${conn.sheetName || conn.sheetId || branchId} — syncing…`);
       try {
         const r = await syncOneConnection(sheetsToken, branchId, conn, consolidated, dateKey);
         rows += r.syncedRows; cells += r.syncedCells; filled += r.filled; noCc += r.noCc;
+        scanned += r.scanned || 0; dateSkipped += r.dateSkipped || 0;
       } catch (e) {
         errs.push(e.message || 'sync failed');
       }
     }
-    let msg = `✓ ${rows} row synced (${cells} cells) · ${filled} already filled · ${noCc} no CC yet`;
+    let msg = `✓ ${rows} row synced (${cells} cells) · ${filled} already filled · ${noCc} no CC yet · sheet rows ${scanned} (date-skipped ${dateSkipped})`;
     if (errs.length) msg += ` · ⚠ ${errs.length} error: ${errs.slice(0, 2).join('; ')}`;
     return msg;
   }

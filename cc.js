@@ -296,6 +296,7 @@
           })());
         }
         routes = (await Promise.all(routeResults)).flat();
+        if (state.loadT0) tlog('run routes', state.loadT0, `runs=${runs.length}`);
         const ids = [...new Set(routes.flatMap((r) => r.consignmentIds))];
         if (!ids.length) { await branchValidP.catch(() => []); return []; }
         setLoading(true, `Loading 0/${ids.length} parcel(s)…`);
@@ -304,6 +305,7 @@
           if (t) t.textContent = `Loading ${done}/${total} parcel(s)…`;
         });
         [consMap, branchRows] = await Promise.all([consP, branchValidP]);
+        if (state.loadT0) tlog('parcels + branch remarks (parallel)', state.loadT0, `parcels=${ids.length}`);
         writeParcelCache(cacheKey, { runKey, routes, cons: consMap });
       }
       const conIds = [...new Set(routes.flatMap((r) => r.consignmentIds))];
@@ -314,11 +316,14 @@
       const missingIds = conIds.filter((cid) => !latestMap[cid]);
       if (missingIds.length) {
         const gap = await D.loadLatestRest(state.idToken, missingIds).catch(() => ({}));
+        if (state.loadT0) tlog('remarks gap-fill', state.loadT0, `missing=${missingIds.length}`);
         for (const [cid, row] of Object.entries(gap || {})) {
           if (!latestMap[cid]) latestMap[cid] = row;
         }
       }
-      return assembleParcels(routes, consMap, latestMap, branchId, branchName);
+      const assembled = await assembleParcels(routes, consMap, latestMap, branchId, branchName);
+      if (state.loadT0) tlog('users + assemble', state.loadT0, `users=${Object.keys(state.users || {}).length}`);
+      return assembled;
   }
 
   /* Sheet extras: sheet IDs absent from the request set. Agent resolved via
@@ -359,10 +364,29 @@
       }
     });
     await Promise.all(workers);
+    if (state.loadT0) tlog('sheet agents resolved', state.loadT0);
     const withCons = fresh.filter((cid) => consMap[cid]);
     setLoading(true, 'Loading remarks…');
-    const branchRows = await D.loadBranchValidations(state.idToken, branchId, 60).catch(() => []);
-    const latestMap = D.latestFromRows(branchRows);
+    // Targeted per-parcel Edge latest (1 page each, parallel) — far cheaper
+    // than a 60-day branch scan when the sheet set is small.
+    const latestMap = {};
+    {
+      const q = [...withCons];
+      const perWorkers = Array(8).fill(0).map(async () => {
+        while (q.length) {
+          const cid = q.shift();
+          try {
+            const r = await D.edgeReport(state.idToken, {
+              branchId, startIso: '2020-01-01T00:00:00.000Z',
+              endIso: new Date().toISOString(), consignment: cid, maxPages: 1,
+            });
+            if (r.rows.length) latestMap[cid] = r.rows[0];
+          } catch { /* gap-fill below */ }
+        }
+      });
+      await Promise.all(perWorkers);
+    }
+    if (state.loadT0) tlog('remarks (targeted edge)', state.loadT0, `found=${Object.keys(latestMap).length}/${withCons.length}`);
     const missingIds = withCons.filter((cid) => !latestMap[cid]);
     if (missingIds.length) {
       const gap = await D.loadLatestRest(state.idToken, missingIds).catch(() => ({}));
@@ -665,6 +689,7 @@
       box.appendChild(wrap);
     }
     wireCards(box);
+    watchPresence();
   }
 
   function phoneGroup(parcels) {
@@ -1004,6 +1029,162 @@
     document.querySelectorAll('#cc-source-tabs .cc-tab').forEach((btn) => {
       btn.classList.toggle('active', btn.dataset.source === state.source);
     });
+  }
+
+  /* ── engaged presence (app EngagedStateManager parity, REST version).
+   *  Path: courier/consignments/{cid}/engaged_at/{uid} = {timestamp, agentName,
+   *  agentRole, state}. Freshness 5 min at display (same window as app).
+   *  REST has no onDisconnect: entries are cleared on leave/save/pagehide,
+   *  and anything older than 5 min is treated as gone (covers crashes).
+   *  Presence reads cover VISIBLE cards only (IntersectionObserver). ── */
+  const ENGAGED_FRESH_MS = 5 * 60 * 1000;
+  const engagedMine = new Set(); // cids this page marked
+  let engagedUid = '';
+  let engagedName = '';
+
+  async function engagedIdentity() {
+    if (engagedUid) return { uid: engagedUid, name: engagedName };
+    try {
+      const s = await new Promise((r) => chrome.storage.local.get(['google_uid', 'google_name', 'google_email'], r));
+      engagedUid = s.google_uid || '';
+      engagedName = s.google_name || (s.google_email ? s.google_email.split('@')[0] : '') || 'Agent';
+    } catch { engagedUid = ''; engagedName = 'Agent'; }
+    return { uid: engagedUid, name: engagedName };
+  }
+
+  async function markEngaged(cid) {
+    if (!cid || engagedMine.has(cid)) return;
+    const { uid, name } = await engagedIdentity();
+    if (!uid) return;
+    engagedMine.add(cid);
+    try {
+      await fetch(
+        `${CONFIG.FIREBASE_URL}/courier/consignments/${encodeURIComponent(cid)}/engaged_at/${encodeURIComponent(uid)}.json?auth=${encodeURIComponent(state.idToken)}`,
+        {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ timestamp: Date.now(), agentName: name, agentRole: 'cc', state: 'viewing' }),
+        });
+    } catch { /* best-effort */ }
+  }
+
+  async function clearEngaged(cid) {
+    if (!cid || !engagedMine.has(cid)) return;
+    engagedMine.delete(cid);
+    const { uid } = await engagedIdentity();
+    if (!uid) return;
+    try {
+      await fetch(
+        `${CONFIG.FIREBASE_URL}/courier/consignments/${encodeURIComponent(cid)}/engaged_at/${encodeURIComponent(uid)}.json?auth=${encodeURIComponent(state.idToken)}`,
+        { method: 'DELETE' });
+    } catch { /* best-effort */ }
+  }
+
+  function clearAllEngaged() {
+    if (!engagedMine.size) return;
+    const ids = [...engagedMine];
+    engagedMine.clear();
+    engagedIdentity().then(({ uid }) => {
+      if (!uid) return;
+      ids.forEach((cid) => {
+        try {
+          fetch(
+            `${CONFIG.FIREBASE_URL}/courier/consignments/${encodeURIComponent(cid)}/engaged_at/${encodeURIComponent(uid)}.json?auth=${encodeURIComponent(state.idToken)}`,
+            { method: 'DELETE', keepalive: true });
+        } catch { /* pagehide — best-effort */ }
+      });
+    });
+  }
+
+  async function fetchEngaged(cid) {
+    try {
+      const res = await fetch(
+        `${CONFIG.FIREBASE_URL}/courier/consignments/${encodeURIComponent(cid)}/engaged_at.json?auth=${encodeURIComponent(state.idToken)}`);
+      if (!res.ok) return [];
+      const obj = await res.json().catch(() => null);
+      if (!obj || typeof obj !== 'object') return [];
+      const now = Date.now();
+      return Object.entries(obj)
+        .map(([uid, e]) => ({
+          uid,
+          name: (e && e.agentName) || '',
+          ts: (e && e.timestamp) || 0,
+          state: (e && e.state) || 'viewing',
+        }))
+        .filter((a) => a.ts > 0 && now - a.ts < ENGAGED_FRESH_MS);
+    } catch { return []; }
+  }
+
+  /* Paint ring + avatars for one card element from an agents list. */
+  function paintPresence(cardEl, agents) {
+    if (!cardEl) return;
+    const others = agents.filter((a) => a.uid !== engagedUid);
+    const mine = agents.some((a) => a.uid === engagedUid);
+    cardEl.classList.toggle('engaged', others.length > 0 || mine);
+    let row = cardEl.querySelector('.cc-presence');
+    if (!others.length && !mine) {
+      if (row) row.remove();
+      return;
+    }
+    if (!row) {
+      row = document.createElement('div');
+      row.className = 'cc-presence';
+      const top = cardEl.querySelector('.cc-card-top');
+      if (top && top.nextSibling) top.parentNode.insertBefore(row, top.nextSibling);
+      else cardEl.prepend(row);
+    }
+    const show = [...others.slice(0, 3)];
+    row.innerHTML = show.map((a) => {
+      const initial = (a.name || '?').trim().charAt(0).toUpperCase();
+      return `<span class="cc-pres-av" title="${D.esc(a.name)}${a.state === 'calling' ? ' 📞 calling' : ' viewing'}">${D.esc(initial)}${a.state === 'calling' ? '<i>📞</i>' : ''}</span>`;
+    }).join('') +
+      (others.length > 3 ? `<span class="cc-pres-more">+${others.length - 3}</span>` : '') +
+      `<span class="cc-pres-text">${others.length ? `${D.esc(others[0].name)}${others.length > 1 ? ` +${others.length - 1}` : ''} viewing` : 'You are viewing'}</span>`;
+  }
+
+  /* Visible-card presence: observe + 30s poll (visible ids only). */
+  let presenceObserver = null;
+  let presenceTimer = null;
+  const presenceCache = new Map(); // cid -> {agents, at}
+
+  async function refreshPresenceFor(cid) {
+    const cardEl = document.querySelector(`.cc-card[data-id="${CSS.escape(cid)}"]`);
+    if (!cardEl) return;
+    const agents = await fetchEngaged(cid);
+    presenceCache.set(cid, { agents, at: Date.now() });
+    paintPresence(cardEl, agents);
+  }
+
+  function watchPresence() {
+    if (presenceObserver) presenceObserver.disconnect();
+    if (presenceTimer) { clearInterval(presenceTimer); presenceTimer = null; }
+    presenceCache.clear();
+    const cards = document.querySelectorAll('.cc-card[data-id]');
+    if (!cards.length || !('IntersectionObserver' in window)) return;
+    const visible = new Set();
+    presenceObserver = new IntersectionObserver((entries) => {
+      for (const en of entries) {
+        const cid = en.target.dataset && en.target.dataset.id;
+        if (!cid) continue;
+        if (en.isIntersecting) {
+          if (!visible.has(cid)) {
+            visible.add(cid);
+            refreshPresenceFor(cid);
+          }
+        } else visible.delete(cid);
+      }
+    }, { rootMargin: '200px' });
+    cards.forEach((el) => presenceObserver.observe(el));
+    presenceTimer = setInterval(() => {
+      [...visible].forEach((cid) => refreshPresenceFor(cid));
+    }, 30000);
+    // hover = working on the card (app expand parity)
+    cards.forEach((el) => {
+      const cid = el.dataset.id;
+      el.addEventListener('mouseenter', () => markEngaged(cid));
+      el.addEventListener('mouseleave', () => clearEngaged(cid));
+    });
+    window.addEventListener('pagehide', clearAllEngaged, { once: false });
   }
 
   /* ── Sheets account row (popup refreshSheetsAccountRow/bindSheetsAccountOnce parity) ── */
