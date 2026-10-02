@@ -51,6 +51,11 @@
         <button id="cc-search-clear" title="Clear">✕</button>
       </div>
       <div class="cc-toolbar-row">
+        <select id="cc-source" class="cc-input" title="Data source">
+          <option value="request">📋 Request</option>
+          <option value="live">📄 Sheets</option>
+          <option value="mix">📋+📄 Mix</option>
+        </select>
         <select id="cc-agent" class="cc-input" title="Agent">
           <option value="">👥 All Agents</option>
         </select>
@@ -65,6 +70,9 @@
 
     <!-- ── Status chips ── -->
     <div class="cc-chips" id="cc-chips"></div>
+
+    <!-- ── Sheet IDs missing in Firebase ── -->
+    <div class="cc-missing" id="cc-missing" hidden></div>
 
     <!-- ── Result info ── -->
     <div class="cc-result" id="cc-result" hidden></div>
@@ -111,6 +119,7 @@
 
   <script src="config.js"></script>
   <script src="cc-data.js"></script>
+  <script src="cc-sheet.js"></script>
   <script src="cc.js"></script>
 </body>
 </html>

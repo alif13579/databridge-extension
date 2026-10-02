@@ -15,6 +15,11 @@
     parcels: [],          // enriched parcel objects
     meta: {},             // statusMeta
     users: {},            // systemId -> {name, employeeId}
+    source: 'request',    // request | live | mix (app ccDataSource parity)
+    missingIds: [],       // sheet IDs absent in Firebase (ID-only chips)
+    sheetNote: '',        // sheet read note (binding/scope hints)
+    lastSheetSig: '',     // silent-tick change detection
+    tickTimer: null,
     statFilter: 'all',    // all | request | served | rejected
     statusFilter: 'all',
     search: '',
@@ -62,8 +67,7 @@
     const remarks = String(r.remarks_bn || r.remarks || '').trim();
     const note = String(r.note || '').trim();
     const eff = D.effectiveStatus(remarkStatus, p.status, state.meta);
-    const authorName = (r.author && r.author.name ? String(r.author.name).trim() : '') ||
-      (state.users[r.author_system_id] ? state.users[r.author_system_id].name : '') ||
+    const authorName = (state.users[r.author_system_id] ? state.users[r.author_system_id].name : '') ||
       String(r.author_system_id || '').trim();
     return {
       ...p,
@@ -130,11 +134,15 @@
         sel.appendChild(o);
       }
       try {
-        const saved = await chrome.storage.local.get(['cc_branch', 'cc_sort']);
+        const saved = await chrome.storage.local.get(['cc_branch', 'cc_sort', 'cc_source']);
         if (saved.cc_branch && branches.some((b) => b.id === saved.cc_branch)) sel.value = saved.cc_branch;
         if (saved.cc_sort && ['auto', 'attempt', 'aging', 'smart'].includes(saved.cc_sort)) {
           state.sortMode = saved.cc_sort;
           $('cc-sort').value = saved.cc_sort;
+        }
+        if (saved.cc_source && ['request', 'live', 'mix'].includes(saved.cc_source)) {
+          state.source = saved.cc_source;
+          $('cc-source').value = saved.cc_source;
         }
       } catch { /* fresh defaults */ }
       await loadParcels();
@@ -170,10 +178,53 @@
     const branchId = $('cc-branch').value;
     const dateStr = $('cc-date').value;
     if (!branchId || !dateStr) return;
-    setLoading(true, 'Loading runs…');
+    setLoading(true, state.source === 'request' ? 'Loading runs…' : 'Reading sheet…');
     $('cc-empty').hidden = true;
     $('cc-list').innerHTML = '';
+    state.missingIds = [];
+    state.sheetNote = '';
     try {
+      const branchName = $('cc-branch').selectedOptions[0]?.textContent || branchId;
+      if (state.source === 'request') {
+        const parcels = await buildRequestParcels(branchId, dateStr, branchName);
+        finishLoad(parcels || []);
+      } else {
+        // Sheet IDs first (bindings-driven, today's scope)
+        setLoading(true, 'Reading sheet…');
+        const live = await window.CcSheet.loadLiveIds(state.idToken, [branchId]);
+        const b = (live && live[0]) || { ids: [], note: 'Sheet read failed', failed: true };
+        state.sheetNote = b.note || '';
+        state.lastSheetSig = b.ids.map((e) => e.cid).sort().join('|');
+        if (b.failed) {
+          $('cc-empty').hidden = false;
+          $('cc-empty').textContent = `⚠ Sheet: ${b.note || 'read failed'}`;
+        }
+        if (state.source === 'live') {
+          const built = await buildSheetParcels(b.ids, [], branchId, branchName);
+          finishLoad(built.parcels);
+          state.missingIds = built.missing;
+          renderMissing();
+        } else {
+          // mix: request parcels + sheet extras (request wins on duplicates)
+          const req = await buildRequestParcels(branchId, dateStr, branchName);
+          const have = new Set((req || []).map((p) => p.id));
+          const built = await buildSheetParcels(b.ids, [...have], branchId, branchName);
+          finishLoad([...(req || []), ...built.parcels]);
+          state.missingIds = built.missing;
+          renderMissing();
+        }
+      }
+      restartTick();
+    } catch (e) {
+      $('cc-empty').hidden = false;
+      $('cc-empty').textContent = `⚠ Load failed — ${e.message || 'network error'}`;
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  /* Request flow (runs → routes → consignments), extracted for reuse. */
+  async function buildRequestParcels(branchId, dateStr, branchName) {
       // all run types for this branch+date (delivery/return/…):
       // read the whole branch index once, keep every runType for this date
       const idx = await (async () => {
@@ -191,12 +242,7 @@
           }
         }
       }
-      if (!runs.length) {
-        state.parcels = [];
-        renderAll();
-        setLoading(false);
-        return;
-      }
+      if (!runs.length) return [];
       // Master data (runs + consignments) changes rarely intraday → cache it;
       // remarks always load fresh. Same run set = cache hit, else full fetch.
       const runKey = runs.map((r) => `${r.runType}/${r.runId}`).sort().join('|');
@@ -225,12 +271,7 @@
         }
         routes = (await Promise.all(routeResults)).flat();
         const ids = [...new Set(routes.flatMap((r) => r.consignmentIds))];
-        if (!ids.length) {
-          state.parcels = [];
-          renderAll();
-          setLoading(false);
-          return;
-        }
+        if (!ids.length) return [];
         setLoading(true, `Loading 0/${ids.length} parcel(s)…`);
         consMap = await D.loadConsignments(state.idToken, ids, (done, total) => {
           const t = $('cc-loading-text');
@@ -239,59 +280,140 @@
         writeParcelCache(cacheKey, { runKey, routes, cons: consMap });
       }
       const conIds = [...new Set(routes.flatMap((r) => r.consignmentIds))];
-      if (!conIds.length) {
-        state.parcels = [];
-        renderAll();
-        setLoading(false);
-        return;
-      }
+      if (!conIds.length) return [];
       const latestMap = await D.loadLatestValidations(state.idToken, conIds);
-      // agent + worker names
-      const sysIds = routes.map((r) => r.agentSystemId).filter(Boolean);
-      Object.values(latestMap).forEach((r) => { if (r && r.author_system_id) sysIds.push(r.author_system_id); });
-      state.users = await D.loadUsersBySystemIds(state.idToken, sysIds).catch(() => ({}));
+      return assembleParcels(routes, consMap, latestMap, branchId, branchName);
+  }
 
-      const branchName = $('cc-branch').selectedOptions[0]?.textContent || branchId;
-      const parcels = [];
-      for (const id of conIds) {
-        const c = consMap[id];
-        if (!c) continue;
-        const holding = routes.filter((r) => r.consignmentIds.includes(id));
-        const workerId = (holding[0] && holding[0].agentSystemId) || '';
-        const workerName = (state.users[workerId] && state.users[workerId].name) || workerId || '—';
-        const workerPhone = (state.users[workerId] && state.users[workerId].phone) || '';
-        const base = {
-          id,
-          customer: c.recipientName || c.customerName || '—',
-          phone: c.recipientPhone || c.customerPhone || c.phone || '',
-          address: c.recipientAddress || c.address || '—',
-          hub: c.deliveryHub || c.hub || '',
-          cod: readCod(c),
-          status: c.status || 'pending',
-          createdAt: c.createdAt || 0,
-          updatedAt: c.updatedAt || 0,
-          attempt: c.attempt || c.attemptCount || 0,
-          worker: workerName,
-          workerId,
-          workerPhone,
-          branchId,
-          branchName,
-        };
-        parcels.push(enrichParcel(base, latestMap[id]));
+  /* Sheet extras: sheet IDs absent from the request set. Agent resolved via
+   *  runs_by_consignmentId (1 indexed read per id); Firebase-less IDs come
+   *  back as missing (ID-only chips, app parity). */
+  async function buildSheetParcels(sheetIds, knownIds, branchId, branchName) {
+    const fresh = (sheetIds || []).map((e) => e.cid).filter((cid) => cid && !knownIds.includes(cid));
+    if (!fresh.length) return { parcels: [], missing: [] };
+    setLoading(true, `Loading ${fresh.length} sheet parcel(s)…`);
+    const consMap = await D.loadConsignments(state.idToken, fresh, (done, total) => {
+      const t = $('cc-loading-text');
+      if (t) t.textContent = `Loading ${done}/${total} sheet parcel(s)…`;
+    });
+    const missing = fresh.filter((cid) => !consMap[cid]);
+    // agent per id via consignment index (parallel, best-effort)
+    const routes = [];
+    const queue = [...fresh.filter((cid) => consMap[cid])];
+    const workers = Array(8).fill(0).map(async () => {
+      while (queue.length) {
+        const cid = queue.shift();
+        try {
+          const res = await fetch(
+            `${CONFIG.FIREBASE_URL}/courier/runs_by_consignmentId/${encodeURIComponent(cid)}.json?auth=${encodeURIComponent(state.idToken)}`);
+          const idx = res.ok ? await res.json().catch(() => null) : null;
+          if (idx && typeof idx === 'object') {
+            outer: for (const [runType, runs] of Object.entries(idx)) {
+              if (!runs || typeof runs !== 'object') continue;
+              for (const runId of Object.keys(runs)) {
+                const route = await D.loadRunRoute(state.idToken, runType, runId).catch(() => null);
+                if (route && route.agentSystemId) {
+                  routes.push({ runType, runId, ...route, consignmentIds: [cid] });
+                  break outer;
+                }
+              }
+            }
+          }
+        } catch { /* best-effort — card still renders without agent */ }
       }
-      // worker phones best-effort (not blocking render if slow — resolve lazily)
-      state.parcels = parcels;
-      state.statFilter = 'all';
-      state.statusFilter = 'all';
-      state.search = '';
-      $('cc-search').value = '';
-      renderAll();
-    } catch (e) {
-      $('cc-empty').hidden = false;
-      $('cc-empty').textContent = `⚠ Load failed — ${e.message || 'network error'}`;
-    } finally {
-      setLoading(false);
+    });
+    await Promise.all(workers);
+    const latestMap = await D.loadLatestValidations(
+      state.idToken, fresh.filter((cid) => consMap[cid])).catch(() => ({}));
+    const parcels = await assembleParcels(routes, consMap, latestMap || {}, branchId, branchName);
+    return { parcels, missing };
+  }
+
+  function renderMissing() {
+    const box = $('cc-missing');
+    if (!box) return;
+    const ids = state.missingIds || [];
+    if (!ids.length) {
+      box.hidden = true;
+      box.innerHTML = '';
+      return;
     }
+    box.hidden = false;
+    box.innerHTML = '';
+    const label = document.createElement('span');
+    label.style.cssText = 'font-size:11px;color:#94a3b8;align-self:center;flex:0 0 auto';
+    label.textContent = `Sheet-only (${ids.length}):`;
+    box.appendChild(label);
+    ids.slice(0, 50).forEach((cid) => {
+      const b = document.createElement('button');
+      b.className = 'cc-miss';
+      b.textContent = cid;
+      b.title = 'In sheet, not in Firebase — tap to copy';
+      b.onclick = () => copyText(cid, b);
+      box.appendChild(b);
+    });
+  }
+
+  /* 45s silent sheet tick (Sheets has no push — app parity). Rebuilds only
+   * when the sheet ID set actually changed. */
+  function restartTick() {
+    if (state.tickTimer) { clearInterval(state.tickTimer); state.tickTimer = null; }
+    if (state.source !== 'live' && state.source !== 'mix') return;
+    state.tickTimer = setInterval(async () => {
+      try {
+        const branchId = $('cc-branch').value;
+        if (!branchId || (state.source !== 'live' && state.source !== 'mix')) return;
+        const live = await window.CcSheet.loadLiveIds(state.idToken, [branchId]).catch(() => null);
+        const ids = ((live && live[0] && live[0].ids) || []).map((e) => e.cid).sort().join('|');
+        if (ids && ids !== state.lastSheetSig) await loadParcels();
+      } catch { /* silent tick never disturbs */ }
+    }, 45000);
+  }
+
+  /* Shared parcel assembly: users + enrich (request flow and sheet extras). */
+  async function assembleParcels(routes, consMap, latestMap, branchId, branchName) {
+    const sysIds = (routes || []).map((r) => r.agentSystemId).filter(Boolean);
+    Object.values(latestMap || {}).forEach((r) => { if (r && r.author_system_id) sysIds.push(r.author_system_id); });
+    state.users = await D.loadUsersBySystemIds(state.idToken, sysIds).catch(() => ({}));
+    const conIds = Object.keys(consMap || {});
+    const parcels = [];
+    for (const id of conIds) {
+      const c = consMap[id];
+      if (!c) continue;
+      const holding = (routes || []).filter((r) => r.consignmentIds.includes(id));
+      const workerId = (holding[0] && holding[0].agentSystemId) || '';
+      const workerName = (state.users[workerId] && state.users[workerId].name) || workerId || '—';
+      const workerPhone = (state.users[workerId] && state.users[workerId].phone) || '';
+      const base = {
+        id,
+        customer: c.recipientName || c.customerName || '—',
+        phone: c.recipientPhone || c.customerPhone || c.phone || '',
+        address: c.recipientAddress || c.address || '—',
+        hub: c.deliveryHub || c.hub || '',
+        cod: readCod(c),
+        status: c.status || 'pending',
+        createdAt: c.createdAt || 0,
+        updatedAt: c.updatedAt || 0,
+        attempt: c.attempt || c.attemptCount || 0,
+        worker: workerName,
+        workerId,
+        workerPhone,
+        branchId,
+        branchName,
+      };
+      parcels.push(enrichParcel(base, (latestMap || {})[id]));
+    }
+    return parcels;
+  }
+
+  function finishLoad(parcels) {
+    state.parcels = parcels;
+    state.statFilter = 'all';
+    state.statusFilter = 'all';
+    state.search = '';
+    $('cc-search').value = '';
+    renderAll();
+    renderMissing();
   }
 
   /* ── filtering + sorting ── */
@@ -447,6 +569,9 @@
     if (state.search || state.statusFilter !== 'all' || state.statFilter !== 'all' || state.agentFilter) {
       res.hidden = false;
       res.textContent = `${list.length} result${list.length === 1 ? '' : 's'}`;
+    } else if (state.sheetNote && state.source !== 'request') {
+      res.hidden = false;
+      res.textContent = `Sheet: ${state.sheetNote}`;
     } else res.hidden = true;
     $('cc-empty').hidden = list.length > 0;
     box.innerHTML = '';
@@ -644,6 +769,10 @@
       ]);
       const nameMap = {};
       assigns.forEach((a) => { if (a.agentSystemId && !nameMap[a.agentSystemId]) nameMap[a.agentSystemId] = true; });
+      rows.forEach((r) => {
+        const sid = String((r && r.author_system_id) || '').trim();
+        if (sid && !nameMap[sid]) nameMap[sid] = true;
+      });
       const users = await D.loadUsersBySystemIds(state.idToken, Object.keys(nameMap)).catch(() => ({}));
       const items = [];
       for (const r of rows) {
@@ -651,10 +780,12 @@
         const rem = String(r.remarks_bn || r.remarks || '').trim();
         const note = String(r.note || '').trim();
         if (!st && !rem && !note) continue;
-        const author = (r.author && r.author.name ? String(r.author.name).trim() : '') ||
-          (users[r.author_system_id] ? users[r.author_system_id].name : '') ||
-          String(r.author_system_id || '').trim() || (String(r.source).toUpperCase() === 'WORKER' ? 'Agent' : 'CC');
+        // Author name: users map first (no FK embed — plain system_id text),
+        // then raw id, then role fallback (app parity).
         const fromWorker = String(r.source || '').toUpperCase() === 'WORKER';
+        const sid = String(r.author_system_id || '').trim();
+        const author = (users[sid] && users[sid].name) || sid ||
+          (fromWorker ? 'Agent' : 'CC');
         const ts = Date.parse(r.created_at) || 0;
         items.push({
           ts,
@@ -705,7 +836,7 @@
   function wireStatic() {
     $('cc-load-btn').onclick = () => {
       try {
-        chrome.storage.local.set({ cc_branch: $('cc-branch').value, cc_sort: state.sortMode });
+        chrome.storage.local.set({ cc_branch: $('cc-branch').value, cc_sort: state.sortMode, cc_source: state.source });
       } catch { /* ignore */ }
       loadParcels();
     };
@@ -732,6 +863,13 @@
       searchEl.focus();
     };
     $('cc-agent').onchange = (e) => { state.agentFilter = e.target.value; renderList(); };
+    $('cc-source').onchange = (e) => {
+      const v = e.target.value;
+      if (!['request', 'live', 'mix'].includes(v)) return;
+      state.source = v;
+      try { chrome.storage.local.set({ cc_source: v }); } catch { /* ignore */ }
+      loadParcels();
+    };
     $('cc-sort').onchange = (e) => {
       state.sortMode = e.target.value;
       try { chrome.storage.local.set({ cc_sort: state.sortMode }); } catch { /* ignore */ }

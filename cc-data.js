@@ -235,15 +235,21 @@
     return out;
   }
 
-  /* ── latest validation per consignment (chunked `in` query) ── */
+  /* ── latest validation per consignment (chunked `in` query).
+   *  NOTE: no author embed — validations.author_system_id has NO foreign key
+   *  (plain text), so a users!…_fkey embed 400s the whole query. Names resolve
+   *  separately via loadUsersBySystemIds (app parity). */
   async function loadLatestValidations(idToken, ids) {
     const uniq = [...new Set(ids)];
     const out = {};
     for (const ch of chunk(uniq, 60)) {
       const list = ch.map(encodeURIComponent).join(',');
       const rows = await sbGet(
-        `validations?select=consignment,branch_id,assigned_to_system_id,author_system_id,source,remarks_status,remarks,note,created_at,author:users!validations_author_system_id_fkey(name,employee_id)` +
-        `&consignment=in.(${list})&order=created_at.desc`, idToken).catch(() => []);
+        `validations?select=consignment,branch_id,assigned_to_system_id,author_system_id,source,remarks_status,remarks,note,created_at` +
+        `&consignment=in.(${list})&order=created_at.desc`, idToken).catch((e) => {
+          console.warn('[CC] latest validations failed:', e && e.message);
+          return [];
+        });
       for (const r of rows) {
         if (r && r.consignment && !out[r.consignment]) out[r.consignment] = r;
       }
@@ -254,9 +260,14 @@
   /* ── validation history per consignment (no branch filter — app parity:
    *  fetchHistory queries consignment only, branch mismatch would hide rows) ── */
   async function loadHistory(idToken, consignmentId) {
-    const q = `validations?select=consignment,branch_id,assigned_to_system_id,author_system_id,source,remarks_status,remarks,remarks_bn,note,created_at,author:users!validations_author_system_id_fkey(name,employee_id)` +
+    const q = `validations?select=consignment,branch_id,assigned_to_system_id,author_system_id,source,remarks_status,remarks,remarks_bn,note,created_at` +
       `&consignment=eq.${encodeURIComponent(consignmentId)}&order=created_at.desc`;
-    return sbGet(q, idToken).catch(() => []);
+    const rows = await sbGet(q, idToken).catch((e) => {
+      console.warn('[CC] history failed for', consignmentId, ':', e && e.message);
+      return [];
+    });
+    try { console.log('[CC] history rows for', consignmentId, ':', rows.length); } catch { /* ignore */ }
+    return rows;
   }
 
   /* ── users by system_id (names + phones) ── */
