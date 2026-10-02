@@ -309,7 +309,22 @@
       </div>
       <div class="settings-hint">Full parcel workspace — stats, search, sort, remarks, journey log. Same data as the app's Call Center.</div>
     </div>
-      <div class="settings-hint">Convert any local audio file (AAC, M4A, WAV, OGG, FLAC, WMA…) to MP3 / M4A / WAV / OGG / Opus / FLAC. Runs fully offline, saved locally.</div>
+    <div class="settings-section">
+      <div class="settings-label">Update</div>
+      <div class="settings-item">
+        <span>📌 Extension <span id="ext-update-version"></span></span>
+        <button class="dash-export-btn" id="ext-check-update-btn">Check</button>
+      </div>
+      <div class="settings-hint" id="ext-update-status">Check GitHub for a newer release.</div>
+      <div class="settings-item" id="ext-update-dl-row" style="margin-top:8px;display:none">
+        <span id="ext-update-dl-label">New version available</span>
+        <button class="dash-export-btn" id="ext-update-dl-btn">⬇ Download</button>
+      </div>
+      <div class="settings-hint" id="ext-update-dl-hint" style="display:none">After download: unzip over this extension's folder, then press Reload below (and refresh open tabs).</div>
+      <div class="settings-item" style="margin-top:8px">
+        <span>🔄 Reload extension</span>
+        <button class="dash-export-btn" id="ext-reload-btn">Reload</button>
+      </div>
     </div>
     <div class="settings-section">
       <div class="settings-label">Call Center Panel Pages</div>

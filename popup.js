@@ -1405,6 +1405,98 @@ function setupSettings() {
       chrome.tabs.create({ url: chrome.runtime.getURL('cc.html') });
     });
   }
+  setupExtUpdate();
+
+// ── Extension self-update (GitHub releases, app-update parity) ──────
+// Chrome can't overwrite an unpacked extension's own files, so "update" is:
+// check latest tag → download source zip → user unzips over the folder → Reload.
+// The zipball is GitHub's full tag archive: unzip-and-use, same as releases.
+function extVerNums(v) {
+  return String(v || '').replace(/^v/i, '').split('.').map((x) => parseInt(x, 10) || 0);
+}
+function extIsNewer(latest, current) {
+  const a = extVerNums(latest), b = extVerNums(current);
+  for (let i = 0; i < Math.max(a.length, b.length); i++) {
+    if ((a[i] || 0) !== (b[i] || 0)) return (a[i] || 0) > (b[i] || 0);
+  }
+  return false;
+}
+
+function setupExtUpdate() {
+  const current = chrome.runtime.getManifest().version;
+  const verEl = document.getElementById('ext-update-version');
+  if (verEl) verEl.textContent = `v${current}`;
+  const checkBtn = document.getElementById('ext-check-update-btn');
+  const statusEl = document.getElementById('ext-update-status');
+  const dlRow = document.getElementById('ext-update-dl-row');
+  const dlLabel = document.getElementById('ext-update-dl-label');
+  const dlBtn = document.getElementById('ext-update-dl-btn');
+  const dlHint = document.getElementById('ext-update-dl-hint');
+  const reloadBtn = document.getElementById('ext-reload-btn');
+  if (!checkBtn || !statusEl) return;
+  const say = (t) => { statusEl.textContent = t; };
+  let pendingZipUrl = '';
+  let pendingTag = '';
+
+  checkBtn.addEventListener('click', async () => {
+    checkBtn.disabled = true;
+    checkBtn.textContent = '⏳';
+    say('Checking GitHub for updates…');
+    try {
+      const res = await fetch('https://api.github.com/repos/alif13579/databridge-extension/releases/latest');
+      if (!res.ok) throw new Error(`GitHub ${res.status}`);
+      const rel = await res.json();
+      const tag = String(rel.tag_name || '').trim();
+      if (!tag) throw new Error('no releases yet');
+      if (extIsNewer(tag, current)) {
+        pendingZipUrl = rel.zipball_url || '';
+        pendingTag = tag;
+        say(`🎉 ${tag} available (you have v${current})`);
+        if (dlRow) dlRow.style.display = '';
+        if (dlLabel) dlLabel.textContent = `${tag} ready`;
+      } else {
+        say(`✅ Latest already (v${current})`);
+        if (dlRow) dlRow.style.display = 'none';
+      }
+    } catch (e) {
+      say(`⚠ Check failed — ${e.message || 'network error'}`);
+    } finally {
+      checkBtn.disabled = false;
+      checkBtn.textContent = 'Check';
+    }
+  });
+
+  if (dlBtn) dlBtn.addEventListener('click', () => {
+    if (!pendingZipUrl) return;
+    dlBtn.disabled = true;
+    dlBtn.textContent = '⏳ …';
+    const onChanged = (delta) => {
+      if (delta.state && delta.state.current === 'complete' && dlHint) {
+        dlHint.style.display = '';
+        say(`✅ Downloaded ${pendingTag} — unzip over the extension folder, then Reload.`);
+        chrome.downloads.onChanged.removeListener(onChanged);
+      }
+    };
+    try { chrome.downloads.onChanged.addListener(onChanged); } catch (_) {}
+    chrome.downloads.download(
+      { url: pendingZipUrl, filename: `databridge-extension-${pendingTag}.zip`, saveAs: false },
+      (downloadId) => {
+        if (chrome.runtime.lastError || downloadId == null) {
+          say(`⚠ Download failed — ${chrome.runtime.lastError?.message || 'try again'}`);
+          dlBtn.disabled = false;
+          dlBtn.textContent = '⬇ Download';
+          try { chrome.downloads.onChanged.removeListener(onChanged); } catch (_) {}
+        } else {
+          dlBtn.textContent = '⬇ Downloading…';
+          setTimeout(() => { dlBtn.disabled = false; dlBtn.textContent = '⬇ Download'; }, 8000);
+        }
+      });
+  });
+
+  if (reloadBtn) reloadBtn.addEventListener('click', () => {
+    try { chrome.runtime.reload(); } catch (e) { say(`⚠ Reload failed — ${e.message}`); }
+  });
+}
   const clearBtn = document.getElementById('clear-history-btn');
   if (!clearBtn) return;
   clearBtn.addEventListener('click', async () => {
