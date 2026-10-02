@@ -155,6 +155,12 @@
 
   function mapBinding(id, branchId, b) {
     const g = (k) => (b && b[k] !== undefined ? b[k] : '');
+    // Fetch column is stored NESTED at fetchCol:{colRef,mode} (flat fetchColRef
+    // is never written — panel parity: flat-only read falls back to range
+    // start, i.e. column A = dates, and every ID becomes a date string).
+    const fetchShape = (b.fetchCol && typeof b.fetchCol === 'object') ? b.fetchCol : {};
+    const fetchColRef = String(fetchShape.colRef || g('fetchColRef') || '').trim();
+    const fetchColMode = ((fetchShape.mode || g('fetchColMode')) === 'text') ? 'text' : 'index';
     const maps = (arr) => (Array.isArray(arr) ? arr : []).map((r) => ({
       colRef: r.colRef || '', mode: r.mode === 'text' ? 'text' : 'index', field: r.field || '',
     })).filter((r) => r.colRef && r.field);
@@ -165,7 +171,7 @@
     return {
       bindingId: id, libraryId: g('libraryId'), branchId,
       enabled: b.enabled !== false,
-      fetchColRef: g('fetchColRef'), fetchColMode: g('fetchColMode') === 'text' ? 'text' : 'index',
+      fetchColRef, fetchColMode,
       filterLogic: g('filterLogic') === 'OR' ? 'OR' : 'AND',
       filters,
       lookups: maps(b.lookups),
