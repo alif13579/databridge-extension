@@ -480,6 +480,7 @@
     isVerifyRequest, isValidated, isDeliveryRequest, effectiveStatus,
     loadRunIds, loadRunRoute, loadConsignments,
     loadBranchValidations, latestFromRows, loadLatestRest, loadHistory, loadUsersBySystemIds,
+    edgeReport,
     loadRemarkOptions, loadAssignments, saveRemark,
   };
 })();

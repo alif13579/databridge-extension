@@ -20,6 +20,7 @@
         <input type="date" id="cc-date" class="cc-input" title="Sheet date">
         <select id="cc-branch" class="cc-input" title="Branch"></select>
         <button class="cc-btn cc-btn-primary" id="cc-load-btn">🔄 Load</button>
+        <button class="cc-btn" id="cc-sync-btn" title="Sync this date's remarks to the sheet">⇪ Sync</button>
         <button class="cc-btn" id="cc-log-btn" title="Copy diagnostic log to share">🐞 Log</button>
       </div>
     </header>
@@ -52,11 +53,11 @@
         <button id="cc-search-clear" title="Clear">✕</button>
       </div>
       <div class="cc-toolbar-row">
-        <select id="cc-source" class="cc-input" title="Data source">
-          <option value="request">📋 Request</option>
-          <option value="live">📄 Sheets</option>
-          <option value="mix">📋+📄 Mix</option>
-        </select>
+        <div class="cc-tabs" id="cc-source-tabs" title="Data source">
+          <button type="button" class="cc-tab active" data-source="request">📋 Request</button>
+          <button type="button" class="cc-tab" data-source="live">📄 Sheets</button>
+          <button type="button" class="cc-tab" data-source="mix">📋+📄 Mix</button>
+        </div>
         <select id="cc-agent" class="cc-input" title="Agent">
           <option value="">👥 All Agents</option>
         </select>
@@ -121,6 +122,7 @@
   <script src="config.js"></script>
   <script src="cc-data.js"></script>
   <script src="cc-sheet.js"></script>
+  <script src="cc-sync.js"></script>
   <script src="cc.js"></script>
 </body>
 </html>

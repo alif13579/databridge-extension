@@ -128,6 +128,31 @@ body {
 .cc-toolbar-row { display: flex; gap: 8px; }
 .cc-toolbar-row .cc-input { flex: 1; }
 
+/* ── Source tabs (popup dashboard button parity) ── */
+.cc-tabs {
+  flex: 1;
+  display: flex;
+  gap: 6px;
+  background: #111c30;
+  border: 1px solid #1e293b;
+  border-radius: 10px;
+  padding: 4px;
+}
+.cc-tab {
+  flex: 1;
+  background: none;
+  border: none;
+  color: #94a3b8;
+  border-radius: 7px;
+  padding: 7px 4px;
+  font-size: 12px;
+  font-weight: bold;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.cc-tab:hover { color: #e5e7eb; }
+.cc-tab.active { background: #0369a1; color: #fff; }
+
 /* ── Chips ── */
 .cc-chips {
   display: flex;
@@ -464,12 +489,15 @@ html[data-theme="light"] .cc-header { background: #f1f5f9; border-color: #e2e8f0
 html[data-theme="light"] .cc-conn,
 html[data-theme="light"] .cc-input,
 html[data-theme="light"] .cc-searchbar,
+html[data-theme="light"] .cc-tabs,
 html[data-theme="light"] .cc-card,
 html[data-theme="light"] .cc-stat,
 html[data-theme="light"] .cc-chip,
 html[data-theme="light"] .cc-agent-head,
 html[data-theme="light"] .cc-dialog,
 html[data-theme="light"] .cc-opt { background: #fff; border-color: #e2e8f0; color: #0f172a; }
+html[data-theme="light"] .cc-tab { color: #64748b; }
+html[data-theme="light"] .cc-tab.active { background: #0369a1; color: #fff; }
 html[data-theme="light"] .cc-stat-label,
 html[data-theme="light"] .cc-addr,
 html[data-theme="light"] .cc-agent-line,

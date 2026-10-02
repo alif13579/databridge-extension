@@ -152,8 +152,8 @@
         }
         if (saved.cc_source && ['request', 'live', 'mix'].includes(saved.cc_source)) {
           state.source = saved.cc_source;
-          $('cc-source').value = saved.cc_source;
         }
+        paintSourceTabs();
       } catch { /* fresh defaults */ }
       await loadParcels();
     } catch (e) {
@@ -255,15 +255,20 @@
       if (!runs.length) return [];
       // Master data (runs + consignments) changes rarely intraday → cache it;
       // remarks always load fresh. Same run set = cache hit, else full fetch.
+      // Consignments + branch remarks fetch in PARALLEL (bulk) — neither
+      // depends on the other, so sequential awaits just waste wall time.
       const runKey = runs.map((r) => `${r.runType}/${r.runId}`).sort().join('|');
       const cacheKey = `cc_cache_${branchId}_${dateStr}`;
       let routes = null;
       let consMap = null;
+      let branchRows = null;
       const cached = await readParcelCache(cacheKey);
+      const branchValidP = D.loadBranchValidations(state.idToken, branchId, 60);
       if (cached && cached.runKey === runKey && cached.routes && cached.cons) {
         routes = cached.routes;
         consMap = cached.cons;
         setLoading(true, 'Loading remarks…');
+        branchRows = await branchValidP;
       } else {
         setLoading(true, `Loading ${runs.length} run(s)…`);
         // routes (8-way parallel — Firebase REST is one request per read)
@@ -281,20 +286,19 @@
         }
         routes = (await Promise.all(routeResults)).flat();
         const ids = [...new Set(routes.flatMap((r) => r.consignmentIds))];
-        if (!ids.length) return [];
+        if (!ids.length) { await branchValidP.catch(() => []); return []; }
         setLoading(true, `Loading 0/${ids.length} parcel(s)…`);
-        consMap = await D.loadConsignments(state.idToken, ids, (done, total) => {
+        const consP = D.loadConsignments(state.idToken, ids, (done, total) => {
           const t = $('cc-loading-text');
           if (t) t.textContent = `Loading ${done}/${total} parcel(s)…`;
         });
+        [consMap, branchRows] = await Promise.all([consP, branchValidP]);
         writeParcelCache(cacheKey, { runKey, routes, cons: consMap });
       }
       const conIds = [...new Set(routes.flatMap((r) => r.consignmentIds))];
       if (!conIds.length) return [];
-      // Latest remarks: branch window (Edge, proven) + REST gap-fill for ids
-      // whose latest remark predates the window.
-      setLoading(true, 'Loading remarks…');
-      const branchRows = await D.loadBranchValidations(state.idToken, branchId, 60);
+      // Latest remarks from the already-fetched branch window + REST gap-fill
+      // for ids whose latest remark predates the window.
       const latestMap = D.latestFromRows(branchRows);
       const missingIds = conIds.filter((cid) => !latestMap[cid]);
       if (missingIds.length) {
@@ -633,11 +637,12 @@
         };
         box.appendChild(head);
         const wrap = document.createElement('div');
-        wrap.innerHTML = sortGroups(phoneGroup(g.parcels)).map((p) => {
+        wrap.className = 'cc-list-grid';
+        wrap.innerHTML = `<div class="cc-cards">${sortGroups(phoneGroup(g.parcels)).map((p) => {
           const k = D.normPhone(p.phone);
           const idx = counts[k] > 1 ? ((seen[k] = (seen[k] || 0) + 1)) : 1;
           return cardHtml(p, idx, counts[k] || 1);
-        }).join('');
+        }).join('')}</div>`;
         box.appendChild(wrap);
       }
     } else {
@@ -910,6 +915,39 @@
     await load();
   }
 
+  /* ── Sync to Sheet (popup syncHvToSheet parity, this date + branch) ── */
+  async function syncToSheet() {
+    const btn = $('cc-sync-btn');
+    const res = $('cc-result');
+    const branchId = $('cc-branch').value;
+    const dateKey = $('cc-date').value;
+    if (!branchId || !dateKey) { toast('Select branch + date first', false); return; }
+    btn.disabled = true;
+    const say = (t) => {
+      res.hidden = false;
+      res.textContent = t;
+    };
+    try {
+      say('⏳ Sheets permission…');
+      const { token, error } = await window.CcSheet.getSheetsToken();
+      if (!token) { say(`⚠ ${error || 'No Sheets permission — re-login'}`); return; }
+      say('⏳ Loading day validations…');
+      const startIso = new Date(`${dateKey}T00:00:00+06:00`).toISOString();
+      const endIso = new Date(new Date(startIso).getTime() + 86400000).toISOString();
+      const dayRows = await D.edgeReport(state.idToken, {
+        branchId, startIso, endIso, maxPages: 50,
+      }).then((r) => r.rows).catch(() => []);
+      if (!dayRows.length) { say('No validation data for this date/branch'); return; }
+      const msg = await window.CcSync.syncDay(state.idToken, token, branchId, dateKey, dayRows, say);
+      say(msg);
+      if (msg.startsWith('✓')) toast('⇪ Sheet synced');
+    } catch (e) {
+      say(`✕ ${e.message || 'sync failed'}`);
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
   /* ── diagnostics: one tap copies everything needed to debug ── */
   function copyDiagnostics() {
     const ver = (() => { try { return chrome.runtime.getManifest().version; } catch { return '?'; } })();
@@ -925,8 +963,15 @@
       () => toast('🐞 Log copied — paste it to support'),
       () => toast('Copy failed', false));
   }
+  /* Source tabs (popup dashboard button parity). */
+  function paintSourceTabs() {
+    document.querySelectorAll('#cc-source-tabs .cc-tab').forEach((btn) => {
+      btn.classList.toggle('active', btn.dataset.source === state.source);
+    });
+  }
   function wireStatic() {
     $('cc-log-btn').onclick = copyDiagnostics;
+    $('cc-sync-btn').onclick = syncToSheet;
     $('cc-load-btn').onclick = () => {
       try {
         chrome.storage.local.set({ cc_branch: $('cc-branch').value, cc_sort: state.sortMode, cc_source: state.source });
@@ -956,13 +1001,16 @@
       searchEl.focus();
     };
     $('cc-agent').onchange = (e) => { state.agentFilter = e.target.value; renderList(); };
-    $('cc-source').onchange = (e) => {
-      const v = e.target.value;
-      if (!['request', 'live', 'mix'].includes(v)) return;
-      state.source = v;
-      try { chrome.storage.local.set({ cc_source: v }); } catch { /* ignore */ }
-      loadParcels();
-    };
+    document.querySelectorAll('#cc-source-tabs .cc-tab').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const v = btn.dataset.source;
+        if (!['request', 'live', 'mix'].includes(v) || state.source === v) return;
+        state.source = v;
+        try { chrome.storage.local.set({ cc_source: v }); } catch { /* ignore */ }
+        paintSourceTabs();
+        loadParcels();
+      });
+    });
     $('cc-sort').onchange = (e) => {
       state.sortMode = e.target.value;
       try { chrome.storage.local.set({ cc_sort: state.sortMode }); } catch { /* ignore */ }
