@@ -187,37 +187,6 @@ async function resolveContainerFromMeta(meta = {}) {
 }
 
 // ══════════════════════════════
-// 🔗 QR & Copy
-// ══════════════════════════════
-function generateQR(extension_id) {
-  const container = document.getElementById('qrcode');
-  if (!container) return;
-  container.innerHTML = '';
-  if (typeof QRCode !== 'undefined') {
-    new QRCode(container, {
-      text: extension_id,
-      width: 150, height: 150,
-      colorDark: "#000000", colorLight: "#ffffff",
-      correctLevel: QRCode.CorrectLevel.H
-    });
-  }
-}
-function setupCopyExtensionID(extension_id) {
-  const btn = document.getElementById('copy-btn');
-  if (!btn) return;
-  btn.addEventListener('click', () => {
-    navigator.clipboard.writeText(extension_id).then(() => {
-      const original = btn.textContent;
-      btn.textContent = '✅';
-      setTimeout(() => { btn.textContent = original; }, 2000);
-    }).catch(() => {
-      btn.textContent = '❌';
-      setTimeout(() => { btn.textContent = '📋'; }, 2000);
-    });
-  });
-}
-
-// ══════════════════════════════
 // ⏰ টাইম হেলপার
 // ══════════════════════════════
 function timeAgo(timestamp) {
@@ -912,7 +881,6 @@ function googleLinkedMeta() {
 
 function showConnectedState(d) {
   document.getElementById('screen-google-login')?.classList.remove('active');
-  document.getElementById('screen-connect')?.classList.remove('active');
   document.getElementById('screen-connected')?.classList.add('active');
   document.getElementById('status-dot')?.classList.add('connected');
   const n = d?.meta?.device_info || d?.meta?.android_id?.substring(0, 8) || 'Connected';
@@ -952,55 +920,31 @@ async function clearContainerState() {
 }
 
 function showDisconnectedState() {
-  // If a Google account is linked, NEVER show the disconnected/Guest/QR view — Google login
-  // is completely independent of the QR pairing session's status. All current call sites
-  // already guard with `if (!currentGoogleUid)` or bypass this function entirely (see
-  // checkConnectionWithFallback()), but checking here too means a future caller forgetting
-  // that guard can't accidentally wipe a valid Google session and bounce the user back to Guest.
+  // Google-only connect: logged-out users get just the Google login screen.
+  // There is no manual/QR fallback anymore.
   if (currentGoogleUid) {
     showConnectedState({ meta: googleLinkedMeta() });
     return;
   }
   clearContainerState(); // wipe container so subsequent loadHistory won't fetch it
-  const connectScreen = document.getElementById('screen-connect');
+  const loginScreen = document.getElementById('screen-google-login');
   const connectedScreen = document.getElementById('screen-connected');
   const statusDot = document.getElementById('status-dot');
   const statusName = document.getElementById('status-name');
   if (connectedScreen) connectedScreen.classList.remove('active');
-  if (connectScreen) connectScreen.classList.add('active');
+  if (loginScreen) loginScreen.classList.add('active');
   if (statusDot) statusDot.classList.remove('connected');
   if (statusName) statusName.textContent = 'Guest';
 }
 
-async function checkConnectionWithFallback(extension_id, retries = 5) {
-  // A Google-linked session doesn't depend on the QR/sessions/{id} node ever reaching
-  // status "connected" — that's a completely separate pairing mechanism. Previously this
-  // function ONLY checked the QR session and, after failing to see it "connected" here (which
-  // it never will if the user only ever signed in with Google, no QR scan), unconditionally
-  // fell through to showDisconnectedState() — wiping the just-established Google container
-  // and showing "Guest", even though the Google login was perfectly valid. That's exactly why
-  // reopening the popup after a successful Google login showed Guest + the QR screen again.
-  const googleLinked = !!currentGoogleUid;
-  if (googleLinked) {
+async function checkConnectionWithFallback() {
+  // Google-only connect: a linked Google account IS the session. The legacy
+  // sessions/{id} QR/manual pairing node is gone, so there is nothing to poll —
+  // either we are linked (connected) or we show the Google login screen.
+  if (currentGoogleUid) {
     showConnectedState({ meta: googleLinkedMeta() });
+    return true;
   }
-
-  for (let i = 0; i < retries; i++) {
-    try {
-      const url = `${FIREBASE_URL}/sessions/${extension_id}.json?cb=${Date.now()}`;
-      const res = await fetch(url);
-      const data = await res.json();
-      if (data && data.meta && data.meta.status === 'connected' && !googleLinked) {
-        await resolveContainerFromMeta(data.meta);
-        showConnectedState(data);
-        return true;
-      }
-    } catch (e) { console.warn(`Poll attempt ${i+1} failed:`, e); }
-    if (googleLinked) break; // already have a valid session — no need to keep retrying/waiting
-    await new Promise(r => setTimeout(r, 1000));
-  }
-
-  if (googleLinked) return true; // still connected via Google even without a QR session
   showDisconnectedState();
   return false;
 }
@@ -1018,11 +962,9 @@ async function checkConnectionWithFallback(extension_id, retries = 5) {
 //      (accounts:signInWithIdp) — this is the SAME UID the Android app gets when the user signs
 //      in with Google there, since both resolve through the same Firebase project + Google account.
 //   3. Store google_uid locally and link this extension's session to that UID in Firebase, so the
-//      Android app (already logged in with that UID) can auto-recognize this extension without a
-//      QR scan.
-//   4. Once linked, hide the QR/manual-connect screen — Google login becomes the primary path.
-//      (Logged-out state still falls back to showing screen-connect; wiring that toggle is a
-//      follow-up step.)
+//      Android app (already logged in with that UID) auto-recognizes this extension.
+//   4. Google login is the only connect path — logged-out state shows just the
+//      Google login screen.
 //
 // HISTORY — first attempt at this broke login entirely (do not repeat this mistake):
 //   launchWebAuthFlow() needs a "Web application"-type OAuth client with the extension's
@@ -1433,8 +1375,6 @@ async function setupDisconnect(id) {
     currentExtensionID = null;
 
     showDisconnectedState();
-    document.getElementById('screen-google-login')?.classList.add('active');
-    document.getElementById('screen-connect')?.classList.remove('active');
     hideLoading();
     window.close();
 
@@ -1765,12 +1705,7 @@ async function init() {
     const versionTag = document.getElementById('version-tag');
     if (versionTag) versionTag.textContent = `v${chrome.runtime.getManifest().version}`;
 
-    const extIdDisplay = document.getElementById('extension-id-display');
-    if (extIdDisplay) extIdDisplay.textContent = extension_id;
-
     setupNavigation();
-    generateQR(extension_id); // ✅ নতুন QR জেনারেট হবে
-    setupCopyExtensionID(extension_id);
     setupDisconnect(extension_id);
     setupGoogleLogin();
     await restoreGoogleLoginState();
@@ -1793,7 +1728,7 @@ async function init() {
     setupAutoRefresh();
 
     // ✅ ৩. কানেকশন চেক & হিস্ট্রি লোড
-    await checkConnectionWithFallback(extension_id);
+    await checkConnectionWithFallback();
     // (getActivePaths() used to be called again here — removed: loadHistory() calls it
     // internally at its own start and uses that result directly, so this was a second,
     // fully redundant sessions/{id}/meta.json fetch every single popup open.)

@@ -350,33 +350,12 @@ body {
   font-size: 11px;
   font-weight: bold;
 }
-.qr-wrapper {
-  background: #fff;
-  border-radius: 10px;
-  padding: 14px;
-  display: flex;
-  justify-content: center;
-  margin-bottom: 14px;
-}
-.extension-id-box {
-  background: #16213e;
-  border-radius: 8px;
-  padding: 10px 12px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 8px;
-  border: 0.5px solid #0f3460;
-}
-.extension-id-label { font-size: 10px; color: #888; margin-bottom: 3px; }
-.extension-id-value { font-size: 15px; font-weight: bold; color: #00d4ff; letter-spacing: 2px; }
 .copy-btn {
   background: none; border: none;
   cursor: pointer; padding: 6px;
   border-radius: 6px; color: #aaa; font-size: 16px;
 }
 .copy-btn:hover { background: #0f3460; color: #00d4ff; }
-.extension-id-hint { text-align: center; font-size: 10px; color: #555; }
 
 .agent-info {
   background: #16213e;
@@ -1154,12 +1133,8 @@ html[data-theme="light"] .load-more-btn { background: #fff; color: #0284c7; bord
 html[data-theme="light"] .load-more-btn:hover { background: #f0f9ff; }
 /* connect tab */
 html[data-theme="light"] .connect-title { color: #64748b; }
-html[data-theme="light"] .extension-id-box { background: #f8fafc; border-color: #e2e8f0; }
-html[data-theme="light"] .extension-id-label { color: #64748b; }
-html[data-theme="light"] .extension-id-value { color: #0284c7; }
 html[data-theme="light"] .copy-btn { color: #64748b; }
 html[data-theme="light"] .copy-btn:hover { background: #e0f2fe; color: #0284c7; }
-html[data-theme="light"] .extension-id-hint { color: #94a3b8; }
 html[data-theme="light"] .agent-info { background: #fff; border: 1px solid #e2e8f0; }
 html[data-theme="light"] .agent-avatar { background: #0284c7; color: #fff; }
 html[data-theme="light"] .agent-name { color: #0f172a; }
