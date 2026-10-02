@@ -74,23 +74,37 @@
       .replace('{yyyy}', yyyy).replace('{yy}', yyyy.slice(2));
   }
 
-  /* ── date parse (SheetCellCompare.parseDate subset + slash ambiguity) ── */
-  function parseDateLocal(s) {
-    const t = String(s || '').trim();
+  /* ── date parse (cc-panel parseDateJs parity — sheet cells come as
+   *  d/M/yyyy with /.- separators, month names, ISO, …; returns yyyymmdd) ── */
+  const SHEET_MONTHS = { jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6, jul: 7, aug: 8, sep: 9, oct: 10, nov: 11, dec: 12 };
+  function parseDateNum(raw) {
+    const t = String(raw || '').trim();
     if (!t) return null;
-    // ISO yyyy-MM-dd (+ optional time)
-    let m = t.match(/^(\d{4})-(\d{2})-(\d{2})/);
-    if (m) return `${m[1]}-${m[2]}-${m[3]}`;
-    // dd-MM-yyyy (+ optional Dhaka stamp time)
-    m = t.match(/^(\d{1,2})-(\d{1,2})-(\d{2,4})/);
-    if (m) {
-      let y = +m[3]; if (y < 100) y += 2000;
-      return `${y}-${String(m[2]).padStart(2, '0')}-${String(m[1]).padStart(2, '0')}`;
+    let m;
+    if ((m = t.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/))) return +`${m[1]}${String(m[2]).padStart(2, '0')}${String(m[3]).padStart(2, '0')}`;
+    if ((m = t.match(/^(\d{1,2})[\/.\-](\d{1,2})[\/.\-](\d{4})/))) return +`${m[3]}${String(m[2]).padStart(2, '0')}${String(m[1]).padStart(2, '0')}`;
+    if ((m = t.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2})/))) {
+      const y = 2000 + (+m[3]);
+      return +(String(y) + String(m[1]).padStart(2, '0') + String(m[2]).padStart(2, '0'));
     }
-    // yyyy/MM/dd
-    m = t.match(/^(\d{4})\/(\d{1,2})\/(\d{1,2})/);
-    if (m) return `${m[1]}-${String(m[2]).padStart(2, '0')}-${String(m[3]).padStart(2, '0')}`;
+    if ((m = t.match(/^(\d{1,2})[\-\.]([A-Za-z]{3})[\-\.](\d{2,4})/))) {
+      const mo = SHEET_MONTHS[m[2].toLowerCase().slice(0, 3)];
+      if (!mo) return null;
+      let y = +m[3]; if (y < 100) y += 2000;
+      return +(String(y) + String(mo).padStart(2, '0') + String(m[1]).padStart(2, '0'));
+    }
+    if ((m = t.match(/^([A-Za-z]{3,9})\s+(\d{1,2}),?\s+(\d{4})/))) {
+      const mo = SHEET_MONTHS[m[1].toLowerCase().slice(0, 3)];
+      if (!mo) return null;
+      return +(`${m[3]}${String(mo).padStart(2, '0')}${String(m[2]).padStart(2, '0')}`);
+    }
     return null;
+  }
+  function parseDateLocal(s) {
+    const n = parseDateNum(s);
+    if (n == null) return null;
+    const str = String(n);
+    return `${str.slice(0, 4)}-${str.slice(4, 6)}-${str.slice(6, 8)}`;
   }
   function slashCandidates(cell) {
     // "09/10" or "09/10/2026": d/M first (existing dd/MM sheets), then M/d
@@ -122,11 +136,17 @@
 
   /* ── filter compare (SheetCellCompare.pass parity) ── */
   function compareOrdered(a, b) {
-    const an = parseFloat(String(a).replace(/,/g, ''));
-    const bn = parseFloat(String(b).replace(/,/g, ''));
-    if (Number.isFinite(an) && Number.isFinite(bn)) return an < bn ? -1 : an > bn ? 1 : 0;
-    const ad = parseDateLocal(a), bd = parseDateLocal(b);
-    if (ad && bd) return ad < bd ? -1 : ad > bd ? 1 : 0;
+    // Whole-string numbers only (parseFloat partial-parses "18-09-2026"→18).
+    const num = (s) => {
+      const x = String(s).trim().replace(/,/g, '');
+      if (!x) return null;
+      const n = Number(x);
+      return Number.isFinite(n) ? n : null;
+    };
+    const an = num(a), bn = num(b);
+    if (an !== null && bn !== null) return an < bn ? -1 : an > bn ? 1 : 0;
+    const ad = parseDateNum(a), bd = parseDateNum(b);
+    if (ad !== null && bd !== null) return ad < bd ? -1 : ad > bd ? 1 : 0;
     const x = String(a).trim().toLowerCase(), y = String(b).trim().toLowerCase();
     return x < y ? -1 : x > y ? 1 : 0;
   }
