@@ -136,6 +136,28 @@
     }
   }
 
+  /* Parcel master-data cache (runs + consignments change rarely intraday;
+   * remarks/validations are always fetched fresh). 10-min TTL, memory first. */
+  const CACHE_TTL_MS = 10 * 60 * 1000;
+  const memCache = {};
+  async function readParcelCache(key) {
+    if (memCache[key] && Date.now() - memCache[key].ts < CACHE_TTL_MS) return memCache[key].data;
+    try {
+      const s = await chrome.storage.session.get([key]);
+      const v = s && s[key];
+      if (v && Date.now() - v.ts < CACHE_TTL_MS) {
+        memCache[key] = v;
+        return v.data;
+      }
+    } catch { /* session storage unavailable */ }
+    return null;
+  }
+  async function writeParcelCache(key, data) {
+    const v = { ts: Date.now(), data };
+    memCache[key] = v;
+    try { await chrome.storage.session.set({ [key]: v }); } catch { /* quota/unsupported — memory still helps */ }
+  }
+
   async function loadParcels() {
     const branchId = $('cc-branch').value;
     const dateStr = $('cc-date').value;
@@ -167,20 +189,47 @@
         setLoading(false);
         return;
       }
-      setLoading(true, `Loading ${runs.length} run(s)…`);
-      // routes (bounded concurrency inside loader is per-id; runs are few)
-      const routeResults = [];
-      for (const ch of [runs.filter((_, i) => i % 3 === 0), runs.filter((_, i) => i % 3 === 1), runs.filter((_, i) => i % 3 === 2)]) {
-        routeResults.push((async () => {
-          const out = [];
-          for (const r of ch) {
-            const route = await D.loadRunRoute(state.idToken, r.runType, r.runId).catch(() => null);
-            if (route) out.push({ ...r, ...route });
-          }
-          return out;
-        })());
+      // Master data (runs + consignments) changes rarely intraday → cache it;
+      // remarks always load fresh. Same run set = cache hit, else full fetch.
+      const runKey = runs.map((r) => `${r.runType}/${r.runId}`).sort().join('|');
+      const cacheKey = `cc_cache_${branchId}_${dateStr}`;
+      let routes = null;
+      let consMap = null;
+      const cached = await readParcelCache(cacheKey);
+      if (cached && cached.runKey === runKey && cached.routes && cached.cons) {
+        routes = cached.routes;
+        consMap = cached.cons;
+        setLoading(true, 'Loading remarks…');
+      } else {
+        setLoading(true, `Loading ${runs.length} run(s)…`);
+        // routes (8-way parallel — Firebase REST is one request per read)
+        const routeResults = [];
+        for (let w = 0; w < 8; w++) {
+          routeResults.push((async () => {
+            const out = [];
+            for (let i = w; i < runs.length; i += 8) {
+              const r = runs[i];
+              const route = await D.loadRunRoute(state.idToken, r.runType, r.runId).catch(() => null);
+              if (route) out.push({ ...r, ...route });
+            }
+            return out;
+          })());
+        }
+        routes = (await Promise.all(routeResults)).flat();
+        const ids = [...new Set(routes.flatMap((r) => r.consignmentIds))];
+        if (!ids.length) {
+          state.parcels = [];
+          renderAll();
+          setLoading(false);
+          return;
+        }
+        setLoading(true, `Loading 0/${ids.length} parcel(s)…`);
+        consMap = await D.loadConsignments(state.idToken, ids, (done, total) => {
+          const t = $('cc-loading-text');
+          if (t) t.textContent = `Loading ${done}/${total} parcel(s)…`;
+        });
+        writeParcelCache(cacheKey, { runKey, routes, cons: consMap });
       }
-      const routes = (await Promise.all(routeResults)).flat();
       const conIds = [...new Set(routes.flatMap((r) => r.consignmentIds))];
       if (!conIds.length) {
         state.parcels = [];
@@ -188,11 +237,7 @@
         setLoading(false);
         return;
       }
-      setLoading(true, `Loading ${conIds.length} parcel(s)…`);
-      const [consMap, latestMap] = await Promise.all([
-        D.loadConsignments(state.idToken, conIds),
-        D.loadLatestValidations(state.idToken, conIds),
-      ]);
+      const latestMap = await D.loadLatestValidations(state.idToken, conIds);
       // agent + worker names
       const sysIds = routes.map((r) => r.agentSystemId).filter(Boolean);
       Object.values(latestMap).forEach((r) => { if (r && r.author_system_id) sysIds.push(r.author_system_id); });
@@ -206,6 +251,7 @@
         const holding = routes.filter((r) => r.consignmentIds.includes(id));
         const workerId = (holding[0] && holding[0].agentSystemId) || '';
         const workerName = (state.users[workerId] && state.users[workerId].name) || workerId || '—';
+        const workerPhone = (state.users[workerId] && state.users[workerId].phone) || '';
         const base = {
           id,
           customer: c.recipientName || c.customerName || '—',
@@ -219,7 +265,7 @@
           attempt: c.attempt || c.attemptCount || 0,
           worker: workerName,
           workerId,
-          workerPhone: '',
+          workerPhone,
           branchId,
           branchName,
         };
@@ -379,8 +425,7 @@
         <div class="cc-actions">
           <a class="cc-act cc-act-call" style="text-decoration:none;text-align:center" href="tel:${D.esc(String(p.phone).replace(/\D/g, ''))}">📞 Call</a>
           <button class="cc-act cc-act-remark" data-act="remark">✏️ Remarks</button>
-          <a class="cc-act cc-act-wa" style="text-decoration:none;text-align:center" target="_blank" rel="noopener"
-             href="${waLink(p.phone, parcelShareText(p))}" title="WhatsApp parcel info">💬</a>
+          <button class="cc-act cc-act-wa" data-act="wa-agent" title="Send parcel info to agent on WhatsApp">💬</button>
           <button class="cc-act cc-act-log" data-act="journey">🕘 Journey</button>
         </div>
         <div class="cc-age">🕐 ${D.fmtAge(p.createdAt, p.attempt)}</div>
@@ -470,6 +515,18 @@
       btn.addEventListener('click', () => {
         const id = btn.closest('.cc-card').dataset.id;
         openJourneyDialog(state.parcels.find((p) => p.id === id));
+      });
+    });
+    // 💬 → delivery agent's number (never the customer)
+    root.querySelectorAll('[data-act="wa-agent"]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const p = state.parcels.find((x) => x.id === btn.closest('.cc-card').dataset.id);
+        if (!p) return;
+        if (!p.workerPhone) {
+          toast('⚠ No agent number on file', false);
+          return;
+        }
+        window.open(waLink(p.workerPhone, parcelShareText(p)), '_blank', 'noopener');
       });
     });
   }
@@ -644,7 +701,10 @@
       } catch { /* ignore */ }
       loadParcels();
     };
-    $('cc-branch').onchange = () => loadParcels();
+    $('cc-branch').onchange = () => {
+      try { chrome.storage.local.set({ cc_branch: $('cc-branch').value }); } catch { /* ignore */ }
+      loadParcels();
+    };
     $('cc-date').onchange = () => loadParcels();
     const searchEl = $('cc-search');
     let deb = null;
@@ -679,6 +739,18 @@
     });
     $('cc-remark-cancel').onclick = () => { $('cc-remark-modal').hidden = true; };
     $('cc-remark-save').onclick = saveRemarkDialog;
+    const noteEl = $('cc-remark-note');
+    const noteClear = $('cc-note-clear');
+    if (noteEl && noteClear) {
+      noteEl.addEventListener('input', () => {
+        noteClear.style.display = noteEl.value ? '' : 'none';
+      });
+      noteClear.onclick = () => {
+        noteEl.value = '';
+        noteClear.style.display = 'none';
+        noteEl.focus();
+      };
+    }
     $('cc-journey-close').onclick = () => { $('cc-journey-modal').hidden = true; };
     [$('cc-remark-modal'), $('cc-journey-modal')].forEach((m) => {
       m.addEventListener('click', (e) => { if (e.target === m) m.hidden = true; });

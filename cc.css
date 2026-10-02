@@ -249,6 +249,7 @@ body {
 
 .cc-empty { text-align: center; color: #64748b; padding: 40px 0; font-size: 15px; line-height: 1.8; }
 .cc-loading { display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 50px 0; color: #94a3b8; }
+.cc-loading[hidden] { display: none; }
 .cc-spinner {
   width: 34px; height: 34px;
   border: 3px solid #1e293b;
@@ -279,12 +280,22 @@ body {
   max-width: 480px;
   max-height: 80vh;
   overflow-y: auto;
+  display: flex;
+  flex-direction: column;
 }
 .cc-dialog-wide { max-width: 640px; }
 .cc-dialog-title { font-size: 16px; font-weight: bold; margin-bottom: 12px; }
 .cc-dialog-title-row { display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px; }
 .cc-dialog-title-row .cc-dialog-title { margin-bottom: 0; }
-.cc-opt-list { display: flex; flex-direction: column; gap: 6px; margin-bottom: 10px; }
+.cc-opt-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 10px;
+  overflow-y: auto;
+  min-height: 0;
+  padding-right: 2px;
+}
 .cc-opt {
   text-align: left;
   background: #0b1526;
@@ -294,9 +305,33 @@ body {
   padding: 9px 12px;
   font-size: 13px;
   cursor: pointer;
+  flex: 0 0 auto;
 }
 .cc-opt:hover { border-color: #00d4ff; }
-.cc-opt.selected { border-color: #00d4ff; background: #0c2a3a; }
+.cc-opt.selected {
+  border-color: #00d4ff;
+  background: #0c2a3a;
+  box-shadow: 0 0 0 1px #00d4ff;
+  font-weight: bold;
+}
+.cc-opt.selected::before { content: "✓ "; color: #00d4ff; font-weight: bold; }
+.cc-dialog-wide .cc-timeline { overflow-y: auto; min-height: 0; }
+.cc-note-wrap { position: relative; flex: 0 0 auto; }
+.cc-note-clear {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  background: #1e293b;
+  border: 1px solid #334155;
+  color: #94a3b8;
+  border-radius: 50%;
+  width: 22px; height: 22px;
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+  display: none;
+}
+.cc-note-clear:hover { color: #ef4444; border-color: #ef4444; }
 .cc-opt-tag { float: right; font-size: 10px; color: #94a3b8; }
 .cc-dialog textarea {
   width: 100%;
@@ -397,5 +432,6 @@ html[data-theme="light"] .cc-journey-sub,
 html[data-theme="light"] .cc-result { color: #64748b; }
 html[data-theme="light"] .cc-remark,
 html[data-theme="light"] .cc-dialog textarea { background: #f8fafc; color: #0f172a; }
+html[data-theme="light"] .cc-note-clear { background: #f1f5f9; }
 html[data-theme="light"] .cc-day span { background: #e2e8f0; }
 html[data-theme="light"] .cc-agent-count { background: #f1f5f9; }

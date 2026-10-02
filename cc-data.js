@@ -77,16 +77,26 @@
     return s.google_uid || null;
   }
 
-  /* ── Firebase REST ── */
+  /* ── Firebase REST ──
+   * App uses the Firebase SDK (one persistent socket, hundreds of parallel
+   * gets). REST here is one HTTPS request per read, so: hard timeouts (a
+   * single stalled request must never hang the whole load) + high
+   * concurrency (HTTP/2 multiplexed) + progress callbacks. */
+  function fetchTimeout(url, opts = {}, ms = 20000) {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), ms);
+    return fetch(url, { ...opts, signal: ctrl.signal }).finally(() => clearTimeout(t));
+  }
+
   async function fbGet(path, idToken) {
-    const res = await fetch(`${FIREBASE_URL}/${path}.json?auth=${encodeURIComponent(idToken)}`);
+    const res = await fetchTimeout(`${FIREBASE_URL}/${path}.json?auth=${encodeURIComponent(idToken)}`);
     if (!res.ok) throw new Error(`Firebase ${res.status} on ${path}`);
     return res.json().catch(() => null);
   }
 
   /* ── Supabase REST ── */
   async function sbGet(path, idToken) {
-    const res = await fetch(`${SUPABASE_URL}/rest/v1/${path}`, {
+    const res = await fetchTimeout(`${SUPABASE_URL}/rest/v1/${path}`, {
       headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${idToken}`, Accept: 'application/json' },
     });
     if (!res.ok) throw new Error(`Supabase ${res.status} on ${path.split('?')[0]}`);
@@ -166,15 +176,20 @@
     return { agentSystemId: agent, consignmentIds: cons, createdAt: snap.created_at || 0 };
   }
 
-  /* ── consignment details ── */
-  async function loadConsignments(idToken, ids) {
+  /* ── consignment details (high concurrency + progress) ── */
+  async function loadConsignments(idToken, ids, onProgress) {
     const out = {};
     const queue = [...new Set(ids)];
-    const workers = Array(6).fill(0).map(async () => {
+    const total = queue.length;
+    let done = 0;
+    const CONCURRENCY = 24;
+    const workers = Array(Math.min(CONCURRENCY, total) || 1).fill(0).map(async () => {
       while (queue.length) {
         const id = queue.shift();
         const c = await fbGet(`courier/consignments/${encodeURIComponent(id)}`, idToken).catch(() => null);
         if (c && typeof c === 'object') out[id] = c;
+        done++;
+        try { onProgress && onProgress(done, total); } catch { /* ignore */ }
       }
     });
     await Promise.all(workers);
@@ -205,15 +220,15 @@
     return sbGet(q, idToken).catch(() => []);
   }
 
-  /* ── users by system_id (names) ── */
+  /* ── users by system_id (names + phones) ── */
   async function loadUsersBySystemIds(idToken, systemIds) {
     const uniq = [...new Set(systemIds.map((s) => String(s || '').trim()).filter(Boolean))];
     const out = {};
     for (const ch of chunk(uniq, 60)) {
       const list = ch.map(encodeURIComponent).join(',');
-      const rows = await sbGet(`users?select=system_id,name,employee_id&system_id=in.(${list})`, idToken).catch(() => []);
+      const rows = await sbGet(`users?select=system_id,name,employee_id,phone&system_id=in.(${list})`, idToken).catch(() => []);
       for (const r of rows) {
-        if (r && r.system_id) out[r.system_id] = { name: r.name || '', employeeId: r.employee_id || '' };
+        if (r && r.system_id) out[r.system_id] = { name: r.name || '', employeeId: r.employee_id || '', phone: r.phone || '' };
       }
     }
     return out;
