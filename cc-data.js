@@ -77,6 +77,45 @@
     return s.google_uid || null;
   }
 
+  /* ── profile sync (app parity — WITHOUT this, validations RLS has no
+   *  UID/branch mapping for this login and correctly returns ZERO rows,
+   *  while Firebase parcel reads still work fine).
+   *  App flow (SupabaseRemarkValidationWriter.ensureProfileSynced):
+   *    1. user-sync Edge Function `sync_profile` (sets role claim server-side)
+   *    2. force fresh Firebase ID token so it carries the new claim
+   *  Only then are RLS-gated Supabase reads issued. Call once per page load.
+   *  Returns { idToken, usersRowMissing }. */
+  async function ensureProfileSynced() {
+    let idToken = null;
+    try { idToken = await getIdToken(); } catch { idToken = null; }
+    if (!idToken) return { idToken: null, usersRowMissing: false };
+    let usersRowMissing = false;
+    try {
+      const res = await fetch(`${SUPABASE_URL}/functions/v1/user-sync`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${idToken}` },
+        body: JSON.stringify({ action: 'sync_profile' }),
+      });
+      const data = await res.json().catch(() => null);
+      const text = JSON.stringify(data || {});
+      if (text.includes('"users_row_missing":true')) usersRowMissing = true;
+    } catch { /* best-effort — reads below still attempted */ }
+    // Force a fresh ID token (SecureToken refresh mints claims as of now),
+    // mirroring the app's getIdToken(true) after sync_profile.
+    try {
+      const s = await chrome.storage.local.get(['google_refresh_token']);
+      if (s.google_refresh_token) {
+        const t = await refreshIdToken(s.google_refresh_token);
+        await chrome.storage.local.set({
+          google_id_token: t.idToken, google_refresh_token: t.refreshToken,
+          google_token_expires_at: Date.now() + t.expiresIn * 1000,
+        });
+        idToken = t.idToken;
+      }
+    } catch { /* keep the previous token */ }
+    return { idToken, usersRowMissing };
+  }
+
   /* ── Firebase REST ──
    * App uses the Firebase SDK (one persistent socket, hundreds of parallel
    * gets). REST here is one HTTPS request per read, so: hard timeouts (a
@@ -212,11 +251,11 @@
     return out;
   }
 
-  /* ── validation history per consignment ── */
-  async function loadHistory(idToken, consignmentId, branchId) {
-    let q = `validations?select=consignment,branch_id,assigned_to_system_id,author_system_id,source,remarks_status,remarks,remarks_bn,note,created_at,author:users!validations_author_system_id_fkey(name,employee_id)` +
+  /* ── validation history per consignment (no branch filter — app parity:
+   *  fetchHistory queries consignment only, branch mismatch would hide rows) ── */
+  async function loadHistory(idToken, consignmentId) {
+    const q = `validations?select=consignment,branch_id,assigned_to_system_id,author_system_id,source,remarks_status,remarks,remarks_bn,note,created_at,author:users!validations_author_system_id_fkey(name,employee_id)` +
       `&consignment=eq.${encodeURIComponent(consignmentId)}&order=created_at.desc`;
-    if (branchId) q += `&branch_id=eq.${encodeURIComponent(branchId)}`;
     return sbGet(q, idToken).catch(() => []);
   }
 
@@ -258,6 +297,15 @@
     }).filter((o) => o.label && o.target);
   }
 
+  /* run_yyyyMMdd_… → that Dhaka day at noon (same fallback as the app —
+   *  millis can never spill into a neighbouring day in any zone) */
+  function runIdDayMillis(runId) {
+    const m = String(runId || '').match(/^run_(\d{4})(\d{2})(\d{2})_/);
+    if (!m) return 0;
+    const t = Date.UTC(+m[1], +m[2] - 1, +m[3], 6, 0, 0);
+    return Number.isFinite(t) ? t : 0;
+  }
+
   /* ── assigned-to history (run routes holding this consignment) ── */
   async function loadAssignments(idToken, consignmentId) {
     const idx = await fbGet(`courier/runs_by_consignmentId/${encodeURIComponent(consignmentId)}`, idToken).catch(() => null);
@@ -270,7 +318,12 @@
     const out = [];
     for (const { runType, runId } of pairs) {
       const route = await loadRunRoute(idToken, runType, runId).catch(() => null);
-      if (route && route.agentSystemId) out.push({ ...route, runType, runId });
+      if (route && route.agentSystemId) {
+        // created_at missing/0 → fall back to the runId date (app parity),
+        // never 0 (which renders as 1970-01-01).
+        const at = Number(route.createdAt) > 0 ? Number(route.createdAt) : runIdDayMillis(runId);
+        out.push({ ...route, runType, runId, createdAt: at });
+      }
     }
     // one entry per (Dhaka day, agent)
     const seen = new Map();
@@ -304,7 +357,7 @@
   window.CcData = {
     esc, normPhone, normKey, dayKey, todayKey, fmtFull, fmtAge,
     runIdDateKey, dateKeyToYmd,
-    getIdToken, getUid,
+    getIdToken, getUid, ensureProfileSynced,
     loadBranches, loadStatusMeta,
     isVerifyRequest, isValidated, isDeliveryRequest, effectiveStatus,
     loadRunIds, loadRunRoute, loadConsignments,

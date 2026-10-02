@@ -196,6 +196,20 @@ body {
   border-radius: 12px;
   padding: 12px 14px;
   margin-bottom: 8px;
+  position: relative;
+}
+.cc-card-age {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  font-size: 10px;
+  font-weight: bold;
+  color: #94a3b8;
+  background: #0b1526;
+  border: 1px solid #1e293b;
+  border-radius: 12px;
+  padding: 3px 9px;
+  white-space: nowrap;
 }
 .cc-card-top { display: flex; align-items: baseline; gap: 8px; }
 .cc-cust { font-weight: bold; font-size: 14px; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -245,7 +259,6 @@ body {
 .cc-act-wa { background: #15803d; flex: 0 0 44px; }
 .cc-act-log { background: #334155; }
 .cc-act:hover { filter: brightness(1.15); }
-.cc-age { font-size: 11px; color: #94a3b8; margin-top: 6px; }
 
 .cc-empty { text-align: center; color: #64748b; padding: 40px 0; font-size: 15px; line-height: 1.8; }
 .cc-loading { display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 50px 0; color: #94a3b8; }
@@ -427,7 +440,6 @@ html[data-theme="light"] .cc-opt { background: #fff; border-color: #e2e8f0; colo
 html[data-theme="light"] .cc-stat-label,
 html[data-theme="light"] .cc-addr,
 html[data-theme="light"] .cc-agent-line,
-html[data-theme="light"] .cc-age,
 html[data-theme="light"] .cc-journey-sub,
 html[data-theme="light"] .cc-result { color: #64748b; }
 html[data-theme="light"] .cc-remark,

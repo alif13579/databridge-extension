@@ -96,7 +96,15 @@
     const dateEl = $('cc-date');
     dateEl.value = D.todayKey();
     try {
-      state.idToken = await D.getIdToken();
+      const sync = await D.ensureProfileSynced();
+      state.idToken = sync.idToken;
+      if (sync.usersRowMissing) {
+        $('cc-conn').textContent = '⚠ Not onboarded — ask admin';
+        $('cc-list').innerHTML = '';
+        $('cc-empty').hidden = false;
+        $('cc-empty').innerHTML = '⚠<br>No employee record for this Google account.<br>Ask admin to onboard you, then press Load.';
+        return;
+      }
     } catch { state.idToken = null; }
     if (!state.idToken) {
       $('cc-conn').textContent = '🔴 Guest — log in via popup';
@@ -407,6 +415,7 @@
     const mates = phoneTotal > 1 ? ` <span class="cc-badge" style="background:#0b1526;color:#00d4ff">${phoneIdx}/${phoneTotal}</span>` : '';
     return `
       <div class="cc-card" data-id="${D.esc(p.id)}">
+        <div class="cc-card-age">🕐 ${D.fmtAge(p.createdAt, p.attempt)}</div>
         <div class="cc-card-top">
           <span class="cc-cust">${D.esc(p.customer)}</span>
           <span class="cc-cod">৳${p.cod}</span>
@@ -428,7 +437,6 @@
           <button class="cc-act cc-act-wa" data-act="wa-agent" title="Send parcel info to agent on WhatsApp">💬</button>
           <button class="cc-act cc-act-log" data-act="journey">🕘 Journey</button>
         </div>
-        <div class="cc-age">🕐 ${D.fmtAge(p.createdAt, p.attempt)}</div>
       </div>`;
   }
 
@@ -631,7 +639,7 @@
     $('cc-journey-modal').hidden = false;
     try {
       const [rows, assigns] = await Promise.all([
-        D.loadHistory(state.idToken, p.id, p.branchId),
+        D.loadHistory(state.idToken, p.id),
         D.loadAssignments(state.idToken, p.id).catch(() => []),
       ]);
       const nameMap = {};
@@ -673,7 +681,7 @@
       let html = '';
       let lastDay = '';
       for (const it of items) {
-        const dk = D.dayKey(it.ts);
+        const dk = it.ts > 0 ? D.dayKey(it.ts) : '';
         if (dk && dk !== lastDay) {
           lastDay = dk;
           html += `<div class="cc-day"><span>${D.esc(dk)}</span></div>`;

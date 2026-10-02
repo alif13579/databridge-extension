@@ -1115,10 +1115,35 @@ async function getValidFirebaseIdToken() {
   return currentIdToken;
 }
 
+/** One-time profile sync + forced token refresh (see init call site). */
+async function syncProfileAndRefreshToken() {
+  const idToken = await getValidFirebaseIdToken().catch(() => null);
+  if (!idToken) return;
+  try {
+    await fetch(`${SUPABASE_URL}/functions/v1/user-sync`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${idToken}` },
+      body: JSON.stringify({ action: 'sync_profile' }),
+    }).catch(() => null);
+  } catch { /* best-effort */ }
+  // Force fresh ID token so it carries the just-set role claim.
+  if (!currentRefreshToken) return;
+  try {
+    const t = await refreshFirebaseIdToken(currentRefreshToken);
+    currentIdToken = t.idToken;
+    currentRefreshToken = t.refreshToken;
+    idTokenExpiresAt = Date.now() + t.expiresIn * 1000;
+    await chrome.storage.local.set({
+      google_id_token: currentIdToken,
+      google_refresh_token: currentRefreshToken,
+      google_token_expires_at: idTokenExpiresAt,
+    });
+  } catch { /* keep previous token */ }
+}
+
 /** Links this extension's session to the signed-in Google/Firebase UID so the Android app
  *  (logged in with the same account) can recognize it without a QR scan. */
-async function linkExtensionToUid(extensionId, uid, email) {
-  const now = Date.now();
+async function linkExtensionToUid(extensionId, uid, email) {  const now = Date.now();
   await fetch(`${FIREBASE_URL}/sessions/${extensionId}/meta.json`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
@@ -1811,6 +1836,12 @@ async function init() {
     // google_pending_login রেখে দেয় — reopen-এ এখান থেকে auto-resume।
     if (!currentGoogleUid) {
       try { await finishGoogleLoginFromPending(); } catch (e) { console.warn('Pending Google login resume failed:', e); }
+    }
+    // Profile sync once per popup open (app ensureProfileSynced parity):
+    // user-sync sets the role claim server-side, then force a fresh ID token
+    // so RLS-gated Supabase reads below don't come back empty on a stale token.
+    if (currentGoogleUid) {
+      try { await syncProfileAndRefreshToken(); } catch (e) { console.warn('Profile sync failed (best-effort):', e); }
     }
     // Fire-and-forget heartbeat — not on the critical path, see touchExtensionConnection()'s
     // doc comment for why this needs to run on every open, not just at login.
