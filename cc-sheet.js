@@ -345,7 +345,7 @@
           }));
           if (!r) { notes.push(`${lib.nickname || lib.sheetName}: read failed`); continue; }
           scanned += r.scanned || 0; dropped += r.dropped || 0; blankIds += r.blankIds || 0;
-          details.push(`${lib.nickname || lib.sheetName}: IDs from ${r.fetchCol || '?'} + filter [${r.filterDesc || 'none'}] → kept ${r.ids.length}`);
+          details.push(`${lib.nickname || lib.sheetName}: IDs from ${r.fetchCol || '?'} + filter [${r.filterDesc || 'none'}] → kept ${r.ids.length}${r.note ? ` (${r.note})` : ''}`);
           if (r.note) notes.push(`${lib.nickname || lib.sheetName}: ${r.note}`);
           for (const e of r.ids) {
             if (seenIds.has(e.cid)) continue;
