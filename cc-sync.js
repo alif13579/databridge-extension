@@ -204,6 +204,7 @@
     if (firstTok && firstTok !== raw) candidates.push(firstTok);
     const tPart = raw.split('T')[0];
     if (tPart && tPart !== raw && !candidates.includes(tPart)) candidates.push(tPart);
+    const MONTHS = { jan: '01', feb: '02', mar: '03', apr: '04', may: '05', jun: '06', jul: '07', aug: '08', sep: '09', oct: '10', nov: '11', dec: '12' };
     const res = [
       // Slashed full-year: d/M FIRST (existing dd/MM sheets), then M/d fallback.
       [/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/, (m) => [[m[3], m[2].padStart(2, '0'), m[1].padStart(2, '0')], [m[3], m[1].padStart(2, '0'), m[2].padStart(2, '0')]]],
@@ -211,6 +212,17 @@
       [/^(\d{1,2})-(\d{1,2})-(\d{4})$/, (m) => [[m[3], m[2].padStart(2, '0'), m[1].padStart(2, '0')]]],
       [/^(\d{4})\/(\d{2})\/(\d{2})$/, (m) => [[m[1], m[2], m[3]]]],
       [/^(\d{1,2})\.(\d{1,2})\.(\d{4})$/, (m) => [[m[3], m[2].padStart(2, '0'), m[1].padStart(2, '0')]]],
+      [/^(\d{1,2})-([A-Za-z]{3})-(\d{2}|\d{4})$/, (m) => {
+        const mo = MONTHS[m[2].toLowerCase()];
+        if (!mo) return [];
+        const y = m[3].length === 2 ? '20' + m[3] : m[3];
+        return [[y, mo, String(m[1]).padStart(2, '0')]];
+      }],
+      [/^([A-Za-z]{3,9})\s+(\d{1,2}),?\s+(\d{4})$/, (m) => {
+        const mo = MONTHS[m[1].toLowerCase().slice(0, 3)];
+        if (!mo) return [];
+        return [[m[3], mo, String(m[2]).padStart(2, '0')]];
+      }],
     ];
     for (const text of candidates) {
       for (const [re, fn] of res) {
