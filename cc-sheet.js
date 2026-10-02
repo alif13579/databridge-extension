@@ -306,7 +306,7 @@
           .map(([id, b]) => mapBinding(id, branchId, b || {}))
           .filter((b) => b.enabled && b.libraryId);
         if (!bindings.length) {
-          out.push({ branchId, ids: [], note: 'No CC binding — bind a sheet from the CallCenter socket', failed: false });
+          out.push({ branchId, ids: [], note: 'No CC binding — bind a sheet from the CallCenter socket', failed: false, debug: { bindings: 0, inScope: 0, targets: [] } });
           continue;
         }
         const libs = {};
@@ -327,8 +327,21 @@
         const targets = bindings
           .map((b) => ({ b, lib: libs[b.libraryId] }))
           .filter(({ b, lib }) => lib && lib.sheetId && scopeCovers(lib.scopeType, lib.scopeMonth, lib.scopeFrom, lib.scopeTo, today));
+        const debug = {
+          bindings: bindings.length,
+          inScope: targets.length,
+          targets: targets.map(({ b, lib }) => ({
+            sheet: lib.nickname || lib.sheetName || lib.sheetId,
+            tab: resolveTabName(lib.tabPattern || 'Day {dd}'),
+            scope: `${lib.scopeType || 'global'} ${lib.scopeMonth || lib.scopeFrom || ''}`.trim(),
+            fetchColRef: b.fetchColRef || '', fetchColMode: b.fetchColMode || 'index',
+            filterLogic: b.filterLogic || 'AND',
+            filters: b.filters.map((f) => `${f.colRef} ${f.op}${f.value ? ` "${f.value}"` : ''} [${f.mode}/${f.valueType}]`),
+            lookups: b.lookups.map((l) => `${l.colRef}=${l.field}[${l.mode}]`),
+          })),
+        };
         if (!targets.length) {
-          out.push({ branchId, ids: [], note: "No bound sheet in today's scope", failed: false });
+          out.push({ branchId, ids: [], note: "No bound sheet in today's scope", failed: false, debug: { bindings: bindings.length, inScope: 0, targets: [] } });
           continue;
         }
         const ids = [];
@@ -360,7 +373,7 @@
         });
         const detailStr = details.join(' | ');
         out.push({
-          branchId, ids,
+          branchId, ids, debug,
           note: ids.length && notes.length ? notes.join('; ')
             : ids.length ? (detailStr || null)
             : [

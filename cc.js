@@ -204,6 +204,7 @@
         const live = await window.CcSheet.loadLiveIds(state.idToken, [branchId]);
         const b = (live && live[0]) || { ids: [], note: 'Sheet read failed', failed: true };
         state.sheetNote = b.note || '';
+      state.sheetDebug = b.debug || null;
         state.lastSheetSig = b.ids.map((e) => e.cid).sort().join('|');
         if (b.failed) {
           $('cc-empty').hidden = false;
@@ -956,6 +957,9 @@
       `date=${$('cc-date').value} branch=${$('cc-branch').value} source=${state.source} sort=${state.sortMode}`,
       `parcels=${state.parcels.length} stat=${state.statFilter} status=${state.statusFilter} agent=${state.agentFilter || 'all'} search=${state.search || '-'}`,
       `missing=${(state.missingIds || []).length} sheetNote=${state.sheetNote || '-'}`,
+      `sheetDebug=${JSON.stringify(state.sheetDebug || null)}`,
+      `sheetsAcct=${$('cc-acct-email') ? $('cc-acct-email').textContent.trim() : '-'}`,
+      `lang=${JSON.stringify(state.lang)}`,
       '--- log ---',
     ].join('\n');
     const body = head + '\n' + D.getLog();

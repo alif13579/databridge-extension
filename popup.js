@@ -2534,6 +2534,21 @@ function setupDashboardTab() {
   const syncHvBtn = document.getElementById('sync-hv-btn');
   if (syncHvBtn) syncHvBtn.addEventListener('click', () => syncHvToSheet());
 
+  const dashLogBtn = document.getElementById('dash-log-btn');
+  if (dashLogBtn) dashLogBtn.addEventListener('click', async () => {
+    const orig = dashLogBtn.textContent;
+    try {
+      dashLogBtn.disabled = true;
+      dashLogBtn.textContent = '⏳…';
+      await copyPopupDiagnostics();
+      dashLogBtn.textContent = '✅ Copied!';
+    } catch {
+      dashLogBtn.textContent = '❌ Failed';
+    } finally {
+      setTimeout(() => { dashLogBtn.disabled = false; dashLogBtn.textContent = orig; }, 1500);
+    }
+  });
+
   const downloadHvBtn = document.getElementById('download-hv-btn');
   if (downloadHvBtn) downloadHvBtn.addEventListener('click', async () => {
     // Direct download: fetches fresh data for whatever From/To/branch/mode is
@@ -6044,6 +6059,27 @@ function openRunDetails(query) {
     url: chrome.runtime.getURL('run-report.html') + (query || ''),
     type: 'popup', width: 560, height: 640,
   }).catch(e => console.warn('[DB] run details window failed:', e?.message || e));
+}
+
+// ── Dashboard diagnostics: one tap copies everything needed to debug ──
+async function copyPopupDiagnostics() {
+  const lines = [];
+  try { lines.push(`DataBridge popup diagnostics — ext v${chrome.runtime.getManifest().version} — ${new Date().toISOString()}`); } catch { lines.push('DataBridge popup diagnostics'); }
+  try {
+    const stored = await new Promise((r) => chrome.storage.local.get(['google_uid'], r));
+    lines.push(`googleUid=${String(stored.google_uid || '-').slice(0, 8)}…`);
+  } catch { lines.push('googleUid=?'); }
+  const t = (id) => document.getElementById(id)?.textContent?.trim() || '-';
+  const v = (id) => document.getElementById(id)?.value ?? '-';
+  lines.push(`sheetsAcct=${t('sheets-acct-email')}`);
+  try {
+    lines.push(`hv from=${v('dash-hv-from')} to=${v('dash-hv-to')} branches=${JSON.stringify(getSelectedHvBranchIds())}`);
+  } catch { lines.push('hv branches=?'); }
+  lines.push(`hv mode=${hvMode} reportMode=${hvReportMode} filter=${hvSummaryFilter} search=${hvSearch || '-'}`);
+  lines.push(`hv rows=${hvReportRows.length}`);
+  lines.push(`hv status=${t('dash-hv-status')}`);
+  lines.push(`hv live=${t('dash-hv-live-text')}`);
+  await navigator.clipboard.writeText(lines.join('\n'));
 }
 
 // ── Sheets account (Run tab) ──────────────────────────────────────────
