@@ -42,6 +42,35 @@ body {
   padding: 4px 12px;
 }
 .cc-controls { display: flex; gap: 8px; flex-wrap: wrap; }
+
+/* ── Sheets account row (popup parity) ── */
+.cc-acct {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  font-size: 11px;
+  color: #94a3b8;
+}
+.cc-acct span {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cc-acct-btn {
+  flex: 0 0 auto;
+  background: #1e293b;
+  border: 1px solid #334155;
+  color: #e5e7eb;
+  border-radius: 7px;
+  padding: 4px 10px;
+  font-size: 11px;
+  font-weight: bold;
+  cursor: pointer;
+}
+.cc-acct-btn:hover { filter: brightness(1.2); }
+.cc-acct-btn:disabled { opacity: 0.5; cursor: default; }
 .cc-input {
   background: #111c30;
   color: #e5e7eb;

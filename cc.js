@@ -969,9 +969,63 @@
       btn.classList.toggle('active', btn.dataset.source === state.source);
     });
   }
+
+  /* ── Sheets account row (popup refreshSheetsAccountRow/bindSheetsAccountOnce parity) ── */
+  function sendBgMessage(msg) {
+    return new Promise((resolve) => {
+      try {
+        chrome.runtime.sendMessage(msg, (res) => {
+          if (chrome.runtime.lastError) return resolve({});
+          resolve(res || {});
+        });
+      } catch { resolve({}); }
+    });
+  }
+
+  async function refreshSheetsAccountRow() {
+    const emailEl = $('cc-acct-email');
+    if (!emailEl) return;
+    try {
+      const res = await sendBgMessage({ action: 'get_sheets_account' });
+      const email = res && res.email ? res.email : '';
+      emailEl.textContent = email ? `📧 ${email}` : '📧 Chrome profile account';
+      emailEl.title = email ? `Sheet reads use ${email}` : 'Sheet reads use the Chrome profile account';
+    } catch {
+      emailEl.textContent = '📧 Chrome profile account';
+    }
+  }
+
+  function wireSheetsAccountOnce() {
+    const btn = $('cc-acct-switch');
+    if (!btn || btn.dataset.bound) return;
+    btn.dataset.bound = '1';
+    btn.addEventListener('click', async () => {
+      const orig = btn.textContent;
+      btn.disabled = true;
+      btn.textContent = '⏳ Account picker…';
+      try {
+        const res = await sendBgMessage({ action: 'db_sheets_switch' });
+        if (res && res.ok) {
+          await refreshSheetsAccountRow();
+          toast(`Sheet account: ${res.email || 'switched'} — reloading…`);
+          await loadParcels();
+        } else {
+          toast('Account switch failed — previous account still active', false);
+        }
+      } catch {
+        toast('Account switch failed — previous account still active', false);
+      } finally {
+        btn.disabled = false;
+        btn.textContent = orig;
+      }
+    });
+  }
+
   function wireStatic() {
     $('cc-log-btn').onclick = copyDiagnostics;
     $('cc-sync-btn').onclick = syncToSheet;
+    wireSheetsAccountOnce();
+    refreshSheetsAccountRow();
     $('cc-load-btn').onclick = () => {
       try {
         chrome.storage.local.set({ cc_branch: $('cc-branch').value, cc_sort: state.sortMode, cc_source: state.source });
