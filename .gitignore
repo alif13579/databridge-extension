@@ -8,6 +8,3 @@
 
 # Node (if ever added)
 node_modules/
-
-# BT dial local config (real phone MACs — never commit)
-bt-dial/config.json

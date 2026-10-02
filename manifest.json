@@ -22,8 +22,7 @@
     "https://identitytoolkit.googleapis.com/*",
     "https://securetoken.googleapis.com/*",
     "https://jlmvpozfacpxphftzfvw.supabase.co/*",
-    "https://sheets.googleapis.com/*",
-    "http://127.0.0.1:17891/*"
+    "https://sheets.googleapis.com/*"
   ],
   "oauth2": {
     "client_id": "757742303355-7lggpq342m98c89ebdg3r8b58kkli4me.apps.googleusercontent.com",

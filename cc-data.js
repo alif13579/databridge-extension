@@ -15,6 +15,17 @@
   const SUPABASE_URL = CONFIG.SUPABASE_URL;
   const SUPABASE_ANON_KEY = CONFIG.SUPABASE_ANON_KEY;
 
+  /* ── diagnostics ring buffer (copy-paste debugging).
+   *  Never stores tokens/keys — only tags, messages and counts. */
+  const _log = [];
+  function log(tag, msg) {
+    const line = `${new Date().toISOString().slice(11, 19)} [${tag}] ${msg}`;
+    _log.push(line);
+    if (_log.length > 500) _log.splice(0, _log.length - 500);
+    try { console.log('[CC]', line); } catch { /* ignore */ }
+  }
+  function getLog() { return _log.join('\n'); }
+
   /* ── small helpers ── */
   const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) =>
     ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -165,6 +176,7 @@
       if (!s || typeof s !== 'object') continue;
       map[normKey(key)] = {
         key,
+        bn: s.bn || '', en: s.en || '',
         label: s.bn || s.en || key,
         color: s.color || '#6B7280',
         bg: s.bg || '#F3F4F6',
@@ -186,6 +198,18 @@
     const entry = meta[normKey(r)];
     if (entry && entry.ignoredWhenActual.includes(normKey(actual))) return actual || '';
     return r;
+  }
+
+  /* ── CC language pair (config/language/ccLang, app parseLangPair parity:
+   *  "{remarkLang}_{statusLang}", each bn|en) ── */
+  async function loadCcLang(idToken) {
+    try {
+      const v = await fbGet('config/language/ccLang', idToken).catch(() => '');
+      const s = (typeof v === 'string' ? v.trim() : '') || 'bn_bn';
+      const [a, b] = s.split('_');
+      const pick = (x) => (x === 'en' ? 'en' : 'bn');
+      return { remark: pick(a), status: pick(b) };
+    } catch { return { remark: 'bn', status: 'bn' }; }
   }
 
   /* ── run index: run IDs for a branch + date ── */
@@ -238,10 +262,12 @@
   /* ── Edge report (PROVEN path — same call the HV dashboard uses).
    *  Service-role, bypasses RLS; supports consignment/author/status eq filters;
    *  returns author + assigned embeds and Bangla labels. PostgREST direct reads
-   *  need a synced role claim and can come back RLS-empty — hence Edge first. */
-  async function edgeReport(idToken, { branchId, startIso, endIso, consignment }) {
+   *  need a synced role claim and can come back RLS-empty — hence Edge first.
+   *  maxPages caps lazy/paginated reads (1 page = 100 newest rows). */
+  async function edgeReport(idToken, { branchId, startIso, endIso, consignment, maxPages }) {
     const rows = [];
     let page = 0;
+    const cap = Math.max(1, Math.min(50, maxPages || 50));
     for (;;) {
       const body = {
         action: 'report', branch_id: branchId,
@@ -262,9 +288,9 @@
       rows.push(...data);
       if (data.length < 100) break;
       page++;
-      if (page > 50) break; // safety cap (5000 rows)
+      if (page >= cap) return { rows, hasMore: true };
     }
-    return rows;
+    return { rows, hasMore: false };
   }
 
   function isoDaysAgo(n) {
@@ -274,11 +300,12 @@
   /* ── branch validations window (for card latest-remarks) ── */
   async function loadBranchValidations(idToken, branchId, days = 60) {
     try {
-      return await edgeReport(idToken, {
-        branchId, startIso: isoDaysAgo(days), endIso: new Date().toISOString(),
+      const r = await edgeReport(idToken, {
+        branchId, startIso: isoDaysAgo(days), endIso: new Date().toISOString(), maxPages: 50,
       });
+      return r.rows;
     } catch (e) {
-      console.warn('[CC] branch validations (Edge) failed:', e && e.message);
+      log('edge-branch', 'failed: ' + (e && e.message));
       return [];
     }
   }
@@ -293,7 +320,7 @@
       const rows = await sbGet(
         `validations?select=consignment,branch_id,assigned_to_system_id,author_system_id,source,remarks_status,remarks,note,created_at` +
         `&consignment=in.(${list})&order=created_at.desc`, idToken).catch((e) => {
-          console.warn('[CC] latest validations (REST) failed:', e && e.message);
+          log('rest-latest', 'failed: ' + (e && e.message));
           return [];
         });
       for (const r of rows) {
@@ -311,18 +338,22 @@
     return out; // rows arrive created_at desc — first wins
   }
 
-  /* ── validation history per consignment (Edge wide-range first,
-   *  PostgREST fallback; merged + deduped by id) ── */
-  async function loadHistory(idToken, consignmentId, branchId) {
+  /* ── validation history per consignment (Edge newest-first pages, then
+   *  PostgREST fallback; merged + deduped by id).
+   *  maxPages=1 → newest 100 rows; the journey "older" button raises it. ── */
+  async function loadHistory(idToken, consignmentId, branchId, maxPages = 1) {
     let edgeRows = [];
+    let hasMore = false;
     if (branchId) {
       try {
-        edgeRows = await edgeReport(idToken, {
+        const r = await edgeReport(idToken, {
           branchId, startIso: '2020-01-01T00:00:00.000Z',
-          endIso: new Date().toISOString(), consignment: consignmentId,
+          endIso: new Date().toISOString(), consignment: consignmentId, maxPages,
         });
+        edgeRows = r.rows;
+        hasMore = r.hasMore;
       } catch (e) {
-        console.warn('[CC] history (Edge) failed for', consignmentId, ':', e && e.message);
+        log('edge-history', consignmentId + ' failed: ' + (e && e.message));
       }
     }
     let restRows = [];
@@ -331,7 +362,7 @@
         `&consignment=eq.${encodeURIComponent(consignmentId)}&order=created_at.desc`;
       restRows = await sbGet(q, idToken);
     } catch (e) {
-      console.warn('[CC] history (REST) failed for', consignmentId, ':', e && e.message);
+      log('rest-history', consignmentId + ' failed: ' + (e && e.message));
     }
     const seen = new Set();
     const merged = [];
@@ -343,8 +374,7 @@
       merged.push(r);
     }
     merged.sort((a, b) => new Date(a.created_at || 0) - new Date(b.created_at || 0));
-    try { console.log('[CC] history rows for', consignmentId, ':', merged.length, `(edge:${edgeRows.length} rest:${restRows.length})`); } catch { /* ignore */ }
-    return merged;
+    return { rows: merged, hasMore };
   }
 
   /* ── users by system_id (names + phones) ── */
@@ -443,9 +473,9 @@
   }
 
   window.CcData = {
-    esc, normPhone, normKey, dayKey, todayKey, fmtFull, fmtAge,
+    esc, normPhone, normKey, dayKey, todayKey, fmtFull, fmtAge, log, getLog,
     runIdDateKey, dateKeyToYmd,
-    getIdToken, getUid, ensureProfileSynced,
+    getIdToken, getUid, ensureProfileSynced, loadCcLang,
     loadBranches, loadStatusMeta,
     isVerifyRequest, isValidated, isDeliveryRequest, effectiveStatus,
     loadRunIds, loadRunRoute, loadConsignments,

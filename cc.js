@@ -26,6 +26,7 @@
     agentFilter: '',
     sortMode: 'auto',
     remarkOpts: null,
+    lang: { remark: 'bn', status: 'bn' },
   };
 
   /* ── helpers ── */
@@ -56,7 +57,10 @@
 
   function statusCfg(statusKey) {
     const e = state.meta[D.normKey(statusKey)];
-    if (e) return { label: e.label, color: e.color, bg: e.bg, sortOrder: e.sortOrder };
+    if (e) {
+      const label = state.lang.status === 'en' ? (e.en || e.bn || statusKey) : (e.bn || e.en || statusKey);
+      return { label, color: e.color, bg: e.bg, sortOrder: e.sortOrder };
+    }
     return { label: String(statusKey || '').trim() || '—', color: '#6B7280', bg: '#F3F4F6', sortOrder: 0 };
   }
 
@@ -121,8 +125,13 @@
     const uid = await D.getUid().catch(() => null);
     $('cc-conn').textContent = `🟢 Connected${uid ? ' · ' + String(uid).slice(0, 6) : ''}`;
     try {
-      const [branches, meta] = await Promise.all([D.loadBranches(state.idToken), D.loadStatusMeta(state.idToken)]);
+      const [branches, meta, lang] = await Promise.all([
+        D.loadBranches(state.idToken),
+        D.loadStatusMeta(state.idToken),
+        D.loadCcLang(state.idToken).catch(() => ({ remark: 'bn', status: 'bn' })),
+      ]);
       state.meta = meta;
+      state.lang = lang || { remark: 'bn', status: 'bn' };
       const sel = $('cc-branch');
       sel.innerHTML = '';
       if (!branches.length) {
@@ -218,7 +227,7 @@
       restartTick();
     } catch (e) {
       $('cc-empty').hidden = false;
-      $('cc-empty').textContent = `⚠ Load failed — ${e.message || 'network error'}`;
+      $('cc-empty').textContent = `⚠ Load failed — ${e.message || 'network error'} (🐞 Log copy kore pathao)`;
     } finally {
       setLoading(false);
     }
@@ -776,6 +785,10 @@
   }
 
   /* ── journey dialog ── */
+  /* Journey: per-day groups — day divider, then that day's ASSIGNED rows,
+   *  then that day's remarks chronological (assigned always on top of its
+   *  date, so "who held it → what happened" reads in order). Newest 100
+   *  first + "older" button (lazy pagination). */
   async function openJourneyDialog(p) {
     if (!p) return;
     $('cc-journey-title').textContent = 'Journey Log';
@@ -783,19 +796,37 @@
       `${D.esc(p.id)} · ${D.esc(p.customer)} · <a href="tel:${D.esc(String(p.phone).replace(/\D/g, ''))}">📞 ${D.esc(p.phone || '—')}</a>`;
     $('cc-journey-timeline').innerHTML = '<div class="cc-msg">⏳ Loading history…</div>';
     $('cc-journey-modal').hidden = false;
-    try {
-      const [rows, assigns] = await Promise.all([
-        D.loadHistory(state.idToken, p.id, p.branchId),
-        D.loadAssignments(state.idToken, p.id).catch(() => []),
-      ]);
-      const nameMap = {};
-      assigns.forEach((a) => { if (a.agentSystemId && !nameMap[a.agentSystemId]) nameMap[a.agentSystemId] = true; });
-      rows.forEach((r) => {
-        const sid = String((r && r.author_system_id) || '').trim();
-        if (sid && !nameMap[sid]) nameMap[sid] = true;
-      });
-      const users = await D.loadUsersBySystemIds(state.idToken, Object.keys(nameMap)).catch(() => ({}));
-      const items = [];
+    let maxPages = 1;
+
+    const load = async () => {
+      $('cc-journey-timeline').innerHTML = '<div class="cc-msg">⏳ Loading history…</div>';
+      try {
+        const [hist, assigns] = await Promise.all([
+          D.loadHistory(state.idToken, p.id, p.branchId, maxPages),
+          D.loadAssignments(state.idToken, p.id).catch(() => []),
+        ]);
+        const rows = hist.rows || [];
+        const nameMap = {};
+        assigns.forEach((a) => { if (a.agentSystemId && !nameMap[a.agentSystemId]) nameMap[a.agentSystemId] = true; });
+        rows.forEach((r) => {
+          const sid = String((r && r.author_system_id) || '').trim();
+          if (sid && !nameMap[sid]) nameMap[sid] = true;
+        });
+        const users = await D.loadUsersBySystemIds(state.idToken, Object.keys(nameMap)).catch(() => ({}));
+        renderJourney(p, rows, assigns, users, hist.hasMore);
+      } catch (e) {
+        $('cc-journey-timeline').innerHTML = `<div class="cc-msg">⚠ Load failed — ${D.esc(e.message || 'network error')}</div>`;
+      }
+    };
+
+    const renderJourney = (p, rows, assigns, users, hasMore) => {
+      const assigned = [];
+      for (const a of assigns) {
+        const label = (users[a.agentSystemId] && users[a.agentSystemId].name) || a.agentSystemId;
+        const ts = Number(a.createdAt) || 0;
+        if (ts > 0) assigned.push({ ts, role: 'system', author: 'System', status: 'ASSIGNED', remark: `Assigned to ${label}` });
+      }
+      const remarks = [];
       for (const r of rows) {
         const st = String(r.remarks_status || '').trim();
         const rem = String(r.remarks_bn || r.remarks || '').trim();
@@ -808,7 +839,7 @@
         const author = (users[sid] && users[sid].name) || sid ||
           (fromWorker ? 'Agent' : 'CC');
         const ts = Date.parse(r.created_at) || 0;
-        items.push({
+        remarks.push({
           ts,
           role: fromWorker ? 'agent' : 'cc',
           author: author + (fromWorker ? '' : ' · CC'),
@@ -816,45 +847,86 @@
           remark: [rem, note ? `Note: ${note}` : ''].filter(Boolean).join('\n'),
         });
       }
-      for (const a of assigns) {
-        const label = (users[a.agentSystemId] && users[a.agentSystemId].name) || a.agentSystemId;
-        const ts = Number(a.createdAt) || 0;
-        items.push({ ts, role: 'system', author: 'System', status: 'ASSIGNED', remark: `Assigned to ${label}` });
+      // group by Dhaka day; per day: assigned (by time) first, then remarks
+      const days = new Map();
+      const dayOf = (ts) => (ts > 0 ? D.dayKey(ts) : '');
+      for (const it of [...assigned, ...remarks]) {
+        const dk = dayOf(it.ts) || 'undated';
+        if (!days.has(dk)) days.set(dk, { assigned: [], remarks: [] });
+        const bucket = days.get(dk);
+        if (it.status === 'ASSIGNED') bucket.assigned.push(it);
+        else bucket.remarks.push(it);
       }
-      items.sort((x, y) => x.ts - y.ts);
+      for (const [, b] of days) {
+        b.assigned.sort((x, y) => x.ts - y.ts);
+        b.remarks.sort((x, y) => x.ts - y.ts);
+      }
+      const order = [...days.keys()].sort();
       const tl = $('cc-journey-timeline');
+      const items = [];
       if (p.createdAt > 0) {
-        items.unshift({ ts: p.createdAt, role: 'system', author: 'System', status: '', remark: 'Parcel created' });
-      }
-      if (!items.length) {
-        tl.innerHTML = '<div class="cc-msg">📭 No remarks yet</div>';
-        return;
+        items.push({ ts: p.createdAt, role: 'system', author: 'System', status: '', remark: 'Parcel created', day: dayOf(p.createdAt) });
       }
       let html = '';
-      let lastDay = '';
-      for (const it of items) {
-        const dk = it.ts > 0 ? D.dayKey(it.ts) : '';
-        if (dk && dk !== lastDay) {
-          lastDay = dk;
-          html += `<div class="cc-day"><span>${D.esc(dk)}</span></div>`;
-        }
+      const entryHtml = (it) => {
         const cfg = it.status ? statusCfg(it.status) : null;
-        html += `<div class="cc-entry ${it.role}">
+        return `<div class="cc-entry ${it.role}">
           <div><span class="cc-entry-author">${D.esc(it.author)}</span>` +
           (cfg ? `<span class="cc-entry-status" style="color:${cfg.color};background:${cfg.bg}">${D.esc(cfg.label)}</span>` : '') +
           `</div>
           ${it.remark ? `<div class="cc-entry-remark">${D.esc(it.remark)}</div>` : ''}
           <div class="cc-entry-time">${D.esc(D.fmtFull(it.ts))}</div>
         </div>`;
+      };
+      // created entry under its own day divider
+      const created = items[0];
+      const seenDays = new Set();
+      const emitDay = (dk) => {
+        if (!dk || dk === 'undated' || seenDays.has(dk)) return;
+        seenDays.add(dk);
+        html += `<div class="cc-day"><span>${D.esc(dk)}</span></div>`;
+      };
+      if (created) {
+        emitDay(created.day);
+        html += entryHtml(created);
+      }
+      for (const dk of order) {
+        emitDay(dk === 'undated' ? '' : dk);
+        const b = days.get(dk);
+        for (const it of [...b.assigned, ...b.remarks]) html += entryHtml(it);
+      }
+      if (!html) {
+        tl.innerHTML = '<div class="cc-msg">📭 No remarks yet</div>';
+        return;
+      }
+      if (hasMore) {
+        html += `<button class="cc-btn" id="cc-journey-older" style="margin-top:10px;width:100%">↓ Show older remarks</button>`;
       }
       tl.innerHTML = html;
-    } catch (e) {
-      $('cc-journey-timeline').innerHTML = `<div class="cc-msg">⚠ Load failed — ${D.esc(e.message || 'network error')}</div>`;
-    }
+      const older = $('cc-journey-older');
+      if (older) older.onclick = () => { maxPages++; load(); };
+    };
+
+    await load();
   }
 
-  /* ── wire static UI ── */
+  /* ── diagnostics: one tap copies everything needed to debug ── */
+  function copyDiagnostics() {
+    const ver = (() => { try { return chrome.runtime.getManifest().version; } catch { return '?'; } })();
+    const head = [
+      `DataBridge CC diagnostics — ext v${ver} — ${new Date().toISOString()}`,
+      `date=${$('cc-date').value} branch=${$('cc-branch').value} source=${state.source} sort=${state.sortMode}`,
+      `parcels=${state.parcels.length} stat=${state.statFilter} status=${state.statusFilter} agent=${state.agentFilter || 'all'} search=${state.search || '-'}`,
+      `missing=${(state.missingIds || []).length} sheetNote=${state.sheetNote || '-'}`,
+      '--- log ---',
+    ].join('\n');
+    const body = head + '\n' + D.getLog();
+    navigator.clipboard.writeText(body).then(
+      () => toast('🐞 Log copied — paste it to support'),
+      () => toast('Copy failed', false));
+  }
   function wireStatic() {
+    $('cc-log-btn').onclick = copyDiagnostics;
     $('cc-load-btn').onclick = () => {
       try {
         chrome.storage.local.set({ cc_branch: $('cc-branch').value, cc_sort: state.sortMode, cc_source: state.source });
