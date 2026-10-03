@@ -224,6 +224,8 @@
     const dateStr = rangeLabel(range);
     const t0 = performance.now();
     state.loadT0 = t0;
+    state.loadSeq = (state.loadSeq || 0) + 1;
+    const seq = state.loadSeq;
     D.log('time', `load start branch=${branchId} range=${dateStr} source=${state.source}`);
     setLoading(true, state.source === 'run' ? 'Loading runs…' :
       state.source === 'requests' ? 'Loading verify requests…' : 'Reading sheet…');
@@ -235,8 +237,13 @@
       const branchName = $('cc-branch').selectedOptions[0]?.textContent || branchId;
       if (range.capped) toast(`Range capped to latest ${RANGE_CAP_DAYS} days`);
       if (state.source === 'run') {
-        const parcels = await buildRequestParcels(branchId, range.keys, branchName);
-        finishLoad(parcels || []);
+        const built = await buildRequestParcels(branchId, range.keys, branchName);
+        if (seq !== state.loadSeq) return;
+        finishLoad((built && built.parcels) || []);
+        // Window-miss remarks stream in behind the painted cards.
+        if (built && built.missingIds && built.missingIds.length) {
+          backgroundGapFill(branchId, built, seq).catch(() => {});
+        }
       } else if (state.source === 'requests') {
         const parcels = await buildVerifyRequestParcels(branchId, range, branchName);
         finishLoad(parcels || []);
@@ -349,36 +356,69 @@
         writeParcelCache(cacheKey, { runKey, routes, cons: consMap });
       }
       const conIds = [...new Set(routes.flatMap((r) => r.consignmentIds))];
-      if (!conIds.length) return [];
-      // Latest remarks from the already-fetched range window + targeted Edge
-      // gap-fill (8-way parallel, service-role — no RLS miss) for ids whose
-      // latest remark predates the window.
+      if (!conIds.length) return { parcels: [], missingIds: [], latestMap: {} };
+      // Latest remarks from the already-fetched range window. Ids whose
+      // latest remark predates the window fill in BACKGROUND (progressive —
+      // cards paint first, remarks stream in) — see backgroundGapFill.
       const latestMap = D.latestFromRows(branchRows);
       const missingIds = conIds.filter((cid) => !latestMap[cid]);
-      if (missingIds.length) {
-        setLoading(true, 'Loading remarks…');
-        const q = [...missingIds];
-        await Promise.all(Array(8).fill(0).map(async () => {
-          while (q.length) {
-            const cid = q.shift();
-            try {
-              const r = await D.edgeReport(state.idToken, {
-                branchId, startIso: '2020-01-01T00:00:00.000Z',
-                endIso: new Date().toISOString(), consignment: cid, maxPages: 1,
-              });
-              const best = (r.rows || []).sort((a, b) =>
-                new Date(b.created_at || 0) - new Date(a.created_at || 0))[0];
-              if (best && !latestMap[cid]) latestMap[cid] = best;
-            } catch (e) {
-              try { D.log('edge-gapfill', `${cid} FAIL ${(e && e.message) || ''}`); } catch { /* ignore */ }
-            }
-          }
-        }));
-        if (state.loadT0) tlog('remarks gap-fill (targeted)', state.loadT0, `missing=${missingIds.length} found=${missingIds.filter((c) => latestMap[c]).length}`);
-      }
       const assembled = await assembleParcels(routes, consMap, latestMap, branchId, branchName);
       if (state.loadT0) tlog('users + assemble', state.loadT0, `users=${Object.keys(state.users || {}).length}`);
-      return assembled;
+      return { parcels: assembled, missingIds, latestMap };
+  }
+
+  /* Background remarks gap-fill (run mode): targeted Edge per missing id,
+   * 24-way parallel, cards ALREADY painted — results stream in, then one
+   * re-render. Stale-load guarded (branch/date/mode change cancels). */
+  async function backgroundGapFill(branchId, built, seq) {
+    const { missingIds, latestMap } = built;
+    if (!missingIds || !missingIds.length) return;
+    const q = [...missingIds];
+    const t0 = performance.now();
+    const found = [];
+    try { D.log('time', `gap-fill start missing=${q.length}`); } catch { /* ignore */ }
+    const filtersActive = () => state.search || state.statusFilter !== 'all' ||
+      state.statFilter !== 'all' || state.agentFilter;
+    const res = $('cc-result');
+    const CONC = 24;
+    await Promise.all(Array(CONC).fill(0).map(async () => {
+      while (q.length) {
+        if (seq !== state.loadSeq) return; // stale — newer load took over
+        const cid = q.shift();
+        try {
+          const r = await D.edgeReport(state.idToken, {
+            branchId, startIso: '2020-01-01T00:00:00.000Z',
+            endIso: new Date().toISOString(), consignment: cid, maxPages: 1,
+          });
+          const best = (r.rows || []).sort((a, b) =>
+            new Date(b.created_at || 0) - new Date(a.created_at || 0))[0];
+          if (best && !latestMap[cid]) { latestMap[cid] = best; found.push(cid); }
+        } catch (e) {
+          try { D.log('edge-gapfill', `${cid} FAIL ${(e && e.message) || ''}`); } catch { /* ignore */ }
+        }
+        if (res && !filtersActive()) {
+          res.hidden = false;
+          res.textContent = `⏳ Filling remarks… ${found.length} new (${missingIds.length - q.length}/${missingIds.length})`;
+        }
+      }
+    }));
+    if (seq !== state.loadSeq) return;
+    try { D.log('time', `gap-fill done ms=${Math.round(performance.now() - t0)} found=${found.length}/${missingIds.length}`); } catch { /* ignore */ }
+    if (!found.length) { renderAll(); return; }
+    try {
+      const sysIds = found.map((cid) => String((latestMap[cid] || {}).author_system_id || '').trim()).filter(Boolean);
+      const extra = await D.loadUsersBySystemIds(state.idToken, sysIds).catch(() => ({}));
+      if (seq !== state.loadSeq) return;
+      state.users = { ...(state.users || {}), ...extra };
+      const byId = new Map(state.parcels.map((p) => [p.id, p]));
+      for (const cid of found) {
+        const parcel = byId.get(cid);
+        const row = latestMap[cid];
+        if (!parcel || !row) continue;
+        Object.assign(parcel, enrichParcel(parcel, row));
+      }
+      renderAll();
+    } catch { /* background must never break the list */ }
   }
 
   /* Requests flow (Supabase-only): verify-request rows in the range →
@@ -392,6 +432,10 @@
     }).catch((e) => { throw new Error(`verify requests unreadable: ${e.message || 'network error'}`); });
     const rows = rep.rows || [];
     if (state.loadT0) tlog('verify-request report', state.loadT0, `rows=${rows.length}`);
+    try {
+      const distinct = [...new Set(rows.map((r) => String((r && r.remarks_status) || '').trim()))].slice(0, 20);
+      D.log('verify-requests', `distinct statuses: ${distinct.join(' | ') || '(none)'}`);
+    } catch { /* ignore */ }
     const verifyRows = rows.filter((r) => r && D.isVerifyRequest(r.remarks_status));
     const byCid = new Map();
     for (const r of verifyRows) {
@@ -974,15 +1018,21 @@
       });
       try { slog(`supabase ok ms=${Math.round(performance.now() - t0)}`); } catch { /* ignore */ }
       // Sheet mirror (popup panel parity) — best-effort, never fails the save.
-      // Parcel-er nijer date-er tab-e mirror (range load-e parcel jekono
-      // diner hote pare; createdAt day = sheet tab date).
+      // Parcel-er nijer date first, then loaded range (recent-first): row
+      // jei tab-e ache sekhanei mirror hobe ("row not found" hole next date).
       let mirrorMsg = '';
       try {
-        const dateKey = (p.createdAt && D.dayKey(p.createdAt)) || D.todayKey();
         const st = await window.CcSheet.getSheetsToken().catch(() => ({ token: null, error: 'token error' }));
-        slog(`mirror start sheetsToken=${st && st.token ? 'yes' : 'no'}${st && st.error ? ` err=${st.error}` : ''} date=${dateKey}`);
+        slog(`mirror start sheetsToken=${st && st.token ? 'yes' : 'no'}${st && st.error ? ` err=${st.error}` : ''}`);
+        const own = (p.createdAt && D.dayKey(p.createdAt)) || '';
+        const ordered = [...new Set([own, ...rangeKeys().keys.slice().reverse()].filter(Boolean))];
         if (window.CcSync && window.CcSync.mirrorOne) {
-          mirrorMsg = await window.CcSync.mirrorOne(state.idToken, st.token, p.branchId, dateKey, p.id);
+          for (const dk of ordered) {
+            slog(`mirror attempt date=${dk}`);
+            mirrorMsg = await window.CcSync.mirrorOne(state.idToken, st.token, p.branchId, dk, p.id);
+            slog(`mirror attempt ${dk}: ${mirrorMsg}`);
+            if (mirrorMsg.startsWith('✓') || !mirrorMsg.includes('row not found')) break;
+          }
         } else {
           mirrorMsg = 'skipped (mirror unavailable)';
         }
