@@ -740,7 +740,6 @@
       ? `<div class="cc-agent-line">👤 ${D.esc(p.worker)}</div>` : '';
     const mates = phoneTotal > 1 ? `<span class="cc-badge" style="background:#0b1526;color:#00d4ff">${phoneIdx}/${phoneTotal}</span>` : '';
     const timeStr = fmtClock(p.updatedAt || p.createdAt);
-    const timeBit = timeStr ? `<span class="cc-sep"> · </span><span class="cc-time">${timeStr}</span>` : '';
     return `
       <div class="cc-card" data-id="${D.esc(p.id)}">
         <div class="cc-card-age">🕐 ${D.fmtAge(p.createdAt, p.attempt)}</div>
@@ -751,10 +750,11 @@
           <span class="cc-id" data-copy="${D.esc(p.id)}" title="Tap to copy ID">${D.esc(p.id)}</span>
           <span class="cc-sep"> · </span>
           <a class="cc-phone" href="tel:${D.esc(String(p.phone).replace(/\D/g, ''))}" title="Tap to call">${D.esc(p.phone || '—')}</a>
-          <button class="cc-copy" data-copy="${D.esc(p.phone)}" title="Copy number">📋</button>${mates}${timeBit}
+          <button class="cc-copy" data-copy="${D.esc(p.phone)}" title="Copy number">📋</button>${mates}
           <span class="cc-badge" style="color:${cfg.color};background:${cfg.bg}">${D.esc(cfg.label)}</span>
         </div>
-        <div class="cc-addr"><span class="cc-addr-text">📍 ${D.esc(p.address)}</span><span class="cc-cod">৳${p.cod}</span></div>
+        <div class="cc-meta-row"><span class="cc-time">🕐 ${timeStr || '—'}</span><span class="cc-cod">৳${p.cod}</span></div>
+        <div class="cc-addr">📍 ${D.esc(p.address)}</div>
         ${agentLine}
         ${remarkLine}
         <div class="cc-actions">
@@ -797,10 +797,10 @@
         const head = document.createElement('button');
         head.className = 'cc-agent-head' + (isCollapsed ? ' collapsed' : '');
         const initial = (g.name || '?').trim().charAt(0).toUpperCase();
-        head.innerHTML = `<span class="cc-agent-arrow">${isCollapsed ? '▶' : '▼'}</span>` +
-          `<span class="cc-avatar">${D.esc(initial)}</span>
+        head.innerHTML = `<span class="cc-avatar">${D.esc(initial)}</span>
           <span class="cc-agent-name">${D.esc(g.name)}</span>
-          <span class="cc-agent-count">${g.parcels.length}</span>`;
+          <span class="cc-agent-count">${g.parcels.length}</span>` +
+          `<span class="cc-agent-arrow">${isCollapsed ? '▶' : '▼'}</span>`;
         head.title = isCollapsed ? 'Expand — show parcels' : 'Collapse — hide parcels';
         head.onclick = () => {
           state.collapsed[wid] = !state.collapsed[wid];
@@ -1225,6 +1225,8 @@
    *  Presence reads cover VISIBLE cards only (IntersectionObserver). ── */
   const ENGAGED_FRESH_MS = 5 * 60 * 1000;
   const engagedMine = new Set(); // cids this page marked
+  const engagedMarkAt = {}; // cid -> ms (4min por re-mark, freshness dhore rakhte)
+  const plog = (m) => { try { D.log('presence', m); } catch { /* ignore */ } };
   let engagedUid = '';
   let engagedName = '';
 
@@ -1239,31 +1241,41 @@
   }
 
   async function markEngaged(cid) {
-    if (!cid || engagedMine.has(cid)) return;
+    if (!cid) return;
+    // 4min-er moddhe mark thakle skip (server entry fresh-e ache); nahole re-mark.
+    if (engagedMine.has(cid) && Date.now() - (engagedMarkAt[cid] || 0) < 4 * 60 * 1000) return;
     const { uid, name } = await engagedIdentity();
-    if (!uid) return;
+    if (!uid) { plog(`mark ${cid} skipped (no uid)`); return; }
     engagedMine.add(cid);
+    engagedMarkAt[cid] = Date.now();
     try {
-      await fetch(
+      const res = await fetch(
         `${CONFIG.FIREBASE_URL}/courier/consignments/${encodeURIComponent(cid)}/engaged_at/${encodeURIComponent(uid)}.json?auth=${encodeURIComponent(state.idToken)}`,
         {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ timestamp: Date.now(), agentName: name, agentRole: 'cc', state: 'viewing' }),
         });
-    } catch { /* best-effort */ }
+      plog(`mark ${cid} ${res.ok ? 'ok' : `FAIL http=${res.status}`}`);
+    } catch (e) {
+      plog(`mark ${cid} FAIL ${(e && e.message) || 'network'}`);
+    }
   }
 
   async function clearEngaged(cid) {
     if (!cid || !engagedMine.has(cid)) return;
     engagedMine.delete(cid);
+    delete engagedMarkAt[cid];
     const { uid } = await engagedIdentity();
     if (!uid) return;
     try {
       await fetch(
         `${CONFIG.FIREBASE_URL}/courier/consignments/${encodeURIComponent(cid)}/engaged_at/${encodeURIComponent(uid)}.json?auth=${encodeURIComponent(state.idToken)}`,
         { method: 'DELETE' });
-    } catch { /* best-effort */ }
+      plog(`clear ${cid} ok`);
+    } catch (e) {
+      plog(`clear ${cid} FAIL ${(e && e.message) || 'network'}`);
+    }
   }
 
   function clearAllEngaged() {
@@ -1286,7 +1298,7 @@
     try {
       const res = await fetch(
         `${CONFIG.FIREBASE_URL}/courier/consignments/${encodeURIComponent(cid)}/engaged_at.json?auth=${encodeURIComponent(state.idToken)}`);
-      if (!res.ok) return [];
+      if (!res.ok) { plog(`fetch ${cid} FAIL http=${res.status}`); return []; }
       const obj = await res.json().catch(() => null);
       if (!obj || typeof obj !== 'object') return [];
       const now = Date.now();
@@ -1306,7 +1318,11 @@
     if (!cardEl) return;
     const others = agents.filter((a) => a.uid !== engagedUid);
     const mine = agents.some((a) => a.uid === engagedUid);
-    cardEl.classList.toggle('engaged', others.length > 0 || mine);
+    const on = others.length > 0 || mine;
+    if (on && !cardEl.classList.contains('engaged')) {
+      plog(`ring on ${cardEl.dataset.id} others=${others.length} mine=${mine}`);
+    }
+    cardEl.classList.toggle('engaged', on);
     let row = cardEl.querySelector('.cc-presence');
     if (!others.length && !mine) {
       if (row) row.remove();
@@ -1406,15 +1422,25 @@
     presenceTimer = setInterval(() => {
       [...visible].forEach((cid) => refreshPresenceFor(cid));
     }, 30000);
-    // hover = working on the card (app expand parity). Instant local ring
-    // + server mark; dialog-khola card mouseleave-eo ring dhore rakhe.
+    // Hover-intent (1.2s) = working on the card (app expand parity).
+    // Scroll-past-e mark hoyna; mark-er por unhover-eo remove hoyna — entry
+    // 5-min freshness-e expire hoy. Clear sudhu dialog-close / pagehide-e.
     engagedIdentity().catch(() => {});
     cards.forEach((el) => {
       const cid = el.dataset.id;
-      el.addEventListener('mouseenter', () => { paintSelfEngaged(cid); markEngaged(cid); });
+      el.addEventListener('mouseenter', () => {
+        if (el._engTimer || engagedMine.has(cid)) {
+          if (engagedMine.has(cid)) { paintSelfEngaged(cid); markEngaged(cid); }
+          return;
+        }
+        el._engTimer = setTimeout(() => {
+          el._engTimer = null;
+          paintSelfEngaged(cid);
+          markEngaged(cid);
+        }, 1200);
+      });
       el.addEventListener('mouseleave', () => {
-        if (engagedDialogCid === cid) return;
-        clearEngaged(cid);
+        if (el._engTimer) { clearTimeout(el._engTimer); el._engTimer = null; }
       });
     });
     window.addEventListener('pagehide', clearAllEngaged, { once: false });
