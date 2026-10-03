@@ -16,6 +16,7 @@
     meta: {},             // statusMeta
     users: {},            // systemId -> {name, employeeId}
     source: 'run',        // run | requests | sheets
+    ownSystemId: null,    // own system_id (journey edit/delete chips; null = not loaded yet)
     missingIds: [],       // sheet IDs absent in Firebase (ID-only chips)
     sheetNote: '',        // sheet read note (binding/scope hints)
     lastSheetSig: '',     // silent-tick change detection
@@ -944,17 +945,45 @@
   let remarkTarget = null;
   let remarkSelected = -1;
   let remarkOptions = [];
+  let remarkEditCtx = null; // { validationId, status, note } — editing own remark (app parity)
+  let journeyParcel = null; // parcel whose journey dialog is open (edit/delete refresh)
 
-  async function openRemarkDialog(p) {
+  /* Own system_id (Firebase profile) — gates journey edit/delete chips. */
+  async function ensureOwnSystemId() {
+    if (state.ownSystemId !== null) return state.ownSystemId;
+    state.ownSystemId = '';
+    try {
+      const uid = await D.getUid().catch(() => null);
+      if (uid && state.idToken) {
+        const res = await fetch(
+          `${CONFIG.FIREBASE_URL}/users/${encodeURIComponent(uid)}/profile/company_info/system_id.json?auth=${encodeURIComponent(state.idToken)}`);
+        if (res.ok) state.ownSystemId = String(await res.json().catch(() => '') || '').trim();
+      }
+    } catch { /* stays blank — no chips */ }
+    try { D.log('presence', `own system_id=${state.ownSystemId || '(unknown)'}`); } catch { /* ignore */ }
+    return state.ownSystemId;
+  }
+
+  function refreshJourneyIfOpen(cid) {
+    try {
+      if (journeyParcel && journeyParcel.id === cid && !$('cc-journey-modal').hidden) {
+        openJourneyDialog(journeyParcel);
+      }
+    } catch { /* ignore */ }
+  }
+
+  async function openRemarkDialog(p, editCtx) {
     if (!p) return;
     engagedDialogCid = p.id;
     paintSelfEngaged(p.id);
     markEngaged(p.id);
     remarkTarget = p;
+    remarkEditCtx = editCtx || null;
     remarkSelected = -1;
-    $('cc-remark-title').textContent = `${p.customer} · ${p.id}`;
-    $('cc-remark-note').value = '';
+    $('cc-remark-title').textContent = editCtx ? `Edit remark · ${p.id}` : `${p.customer} · ${p.id}`;
+    $('cc-remark-note').value = (editCtx && editCtx.note) || '';
     $('cc-remark-msg').hidden = true;
+    $('cc-remark-save').textContent = editCtx ? '💾 Update' : '💾 Save';
     $('cc-remark-opts').innerHTML = '<div class="cc-msg">⏳ Loading remarks…</div>';
     $('cc-remark-modal').hidden = false;
     try {
@@ -975,6 +1004,13 @@
         };
         box.appendChild(b);
       });
+      if (editCtx && editCtx.status) {
+        const idx = remarkOptions.findIndex((o) => D.normKey(o.target) === D.normKey(editCtx.status));
+        if (idx >= 0) {
+          remarkSelected = idx;
+          box.querySelectorAll('.cc-opt').forEach((el, j) => el.classList.toggle('selected', j === idx));
+        }
+      }
     } catch (e) {
       $('cc-remark-opts').innerHTML = `<div class="cc-msg">⚠ Remarks load failed — ${D.esc(e.message || 'network error')}</div>`;
     }
@@ -1001,6 +1037,61 @@
     btn.disabled = true;
     btn.textContent = '⏳ Saving…';
     const slog = (m) => { try { D.log('save', m); } catch { /* ignore */ } };
+    // ── EDIT own remark (app parity): server enforces own + 5-min window,
+    // pushes the updated row to the agent app itself. ──
+    if (remarkEditCtx) {
+      slog(`edit start id=${remarkEditCtx.validationId} cid=${p.id} opt=${opt ? opt.target : '(note-only)'}`);
+      try {
+        await D.editRemark(state.idToken, {
+          validationId: remarkEditCtx.validationId,
+          status: opt ? opt.target : '',
+          remarksEn: opt ? opt.english : note,
+          remarksBn: opt && opt.label !== opt.english ? opt.label : '',
+          note,
+        });
+        slog('edit ok — agent push sent server-side');
+        remarkEditCtx = null;
+        try {
+          const st = await window.CcSheet.getSheetsToken().catch(() => ({ token: null }));
+          if (window.CcSync && window.CcSync.mirrorOne && st.token) {
+            const own = (p.createdAt && D.dayKey(p.createdAt)) || '';
+            const ordered = [...new Set([own, ...rangeKeys().keys.slice().reverse()].filter(Boolean))];
+            for (const dk of ordered) {
+              const mm = await window.CcSync.mirrorOne(state.idToken, st.token, p.branchId, dk, p.id);
+              slog(`edit mirror ${dk}: ${mm}`);
+              if (mm.startsWith('✓') || !mm.includes('row not found')) break;
+            }
+          }
+        } catch (e) { slog(`edit mirror FAIL ${(e && e.message) || ''}`); }
+        p.remarkStatus = opt ? opt.target : p.remarkStatus;
+        p.remarks = opt ? opt.label : (note || p.remarks);
+        p.note = note;
+        p.effectiveStatus = D.effectiveStatus(p.remarkStatus, p.status, state.meta);
+        p.validationRequest = D.isVerifyRequest(p.remarkStatus);
+        p.validated = D.isValidated(p.remarkStatus);
+        p.remarkAuthor = 'You';
+        closeRemarkModal();
+        toast('✏️ Updated — agent notified');
+        renderAll();
+        refreshJourneyIfOpen(p.id);
+      } catch (e) {
+        const expired = (e && e.code === 'EDIT_EXPIRED') || /expired|5 min/i.test(e.message || '');
+        slog(`edit FAIL: ${e.message || 'network error'}`);
+        const m = $('cc-remark-msg');
+        m.textContent = expired
+          ? '⚠ 5 min over — can\'t edit this remark anymore'
+          : `⚠ Update failed — ${e.message || 'network error'} (🐞 Log copy kore pathao)`;
+        m.hidden = false;
+        if (expired) {
+          remarkEditCtx = null;
+          setTimeout(() => { closeRemarkModal(); refreshJourneyIfOpen(p.id); }, 1200);
+        }
+      } finally {
+        btn.disabled = false;
+        btn.textContent = '💾 Save';
+      }
+      return;
+    }
     slog(`start cid=${p.id} branch=${p.branchId} opt=${opt ? opt.target : '(note-only)'} noteLen=${note.length}`);
     const t0 = (() => { try { return performance.now(); } catch { return 0; } })();
     try {
@@ -1072,6 +1163,7 @@
    *  first + "older" button (lazy pagination). */
   async function openJourneyDialog(p) {
     if (!p) return;
+    journeyParcel = p;
     engagedDialogCid = p.id;
     paintSelfEngaged(p.id);
     markEngaged(p.id);
@@ -1094,6 +1186,7 @@
         const [hist, assigns] = await Promise.all([
           D.loadHistory(state.idToken, p.id, p.branchId, maxPages),
           D.loadAssignments(state.idToken, p.id).catch(() => []),
+          ensureOwnSystemId().catch(() => ''),
         ]);
         const rows = hist.rows || [];
         const nameMap = {};
@@ -1117,6 +1210,8 @@
         if (ts > 0) assigned.push({ ts, role: 'system', author: 'System', status: 'ASSIGNED', remark: `Assigned to ${label}` });
       }
       const remarks = [];
+      const ownSid = state.ownSystemId || '';
+      const nowMs = Date.now();
       for (const r of rows) {
         const st = String(r.remarks_status || '').trim();
         const rem = String(r.remarks_bn || r.remarks || '').trim();
@@ -1129,12 +1224,19 @@
         const author = (users[sid] && users[sid].name) || sid ||
           (fromWorker ? 'Agent' : 'CC');
         const ts = Date.parse(r.created_at) || 0;
+        // ✎/🗑 — own CC remarks within 5 min (app parity; server re-checks).
+        const editable = !fromWorker && String(r.id || '').trim() !== '' &&
+          ownSid !== '' && sid === ownSid && ts > 0 && (nowMs - ts) <= 5 * 60 * 1000;
         remarks.push({
           ts,
           role: fromWorker ? 'agent' : 'cc',
           author: author + (fromWorker ? '' : ' · CC'),
           status: st || 'NOTE',
           remark: [rem, note ? `Note: ${note}` : ''].filter(Boolean).join('\n'),
+          noteRaw: note,
+          validationId: String(r.id || '').trim(),
+          authorSys: sid,
+          editable,
         });
       }
       // group by Dhaka day; per day: assigned (by time) first, then remarks
@@ -1160,9 +1262,14 @@
       let html = '';
       const entryHtml = (it) => {
         const cfg = it.status ? statusCfg(it.status) : null;
+        const tools = it.editable
+          ? `<span class="cc-entry-tools"><button class="cc-entry-edit" data-eid="${D.esc(it.validationId)}" title="Edit (5 min)">✎</button>` +
+            `<button class="cc-entry-del" data-did="${D.esc(it.validationId)}" title="Delete (5 min)">🗑</button></span>`
+          : '';
         return `<div class="cc-entry ${it.role}">
           <div><span class="cc-entry-author">${D.esc(it.author)}</span>` +
           (cfg ? `<span class="cc-entry-status" style="color:${cfg.color};background:${cfg.bg}">${D.esc(cfg.label)}</span>` : '') +
+          tools +
           `</div>
           ${it.remark ? `<div class="cc-entry-remark">${D.esc(it.remark)}</div>` : ''}
           <div class="cc-entry-time">${D.esc(D.fmtFull(it.ts))}</div>
@@ -1193,6 +1300,51 @@
         html += `<button class="cc-btn" id="cc-journey-older" style="margin-top:10px;width:100%">↓ Show older remarks</button>`;
       }
       tl.innerHTML = html;
+      tl.querySelectorAll('.cc-entry-edit').forEach((btn) => {
+        btn.onclick = (e) => {
+          e.stopPropagation();
+          const it = remarks.find((x) => x.validationId === btn.dataset.eid);
+          if (!it) return;
+          openRemarkDialog(p, {
+            validationId: it.validationId,
+            status: it.status === 'NOTE' ? '' : it.status,
+            note: it.noteRaw || '',
+          });
+        };
+      });
+      tl.querySelectorAll('.cc-entry-del').forEach((btn) => {
+        btn.onclick = async (e) => {
+          e.stopPropagation();
+          if (!confirm('Delete this remark? The agent app will be notified.')) return;
+          btn.disabled = true;
+          try {
+            await D.deleteRemark(state.idToken, btn.dataset.did);
+            try { D.log('save', `delete ok id=${btn.dataset.did} cid=${p.id}`); } catch { /* ignore */ }
+            toast('🗑 Deleted — agent notified');
+            try {
+              const h2 = await D.loadHistory(state.idToken, p.id, p.branchId, 1).catch(() => null);
+              const best = ((h2 && h2.rows) || []).sort((a, b) =>
+                new Date(b.created_at || 0) - new Date(a.created_at || 0))[0];
+              if (best) {
+                Object.assign(p, enrichParcel(p, best));
+              } else {
+                p.remarkStatus = ''; p.remarks = ''; p.note = '';
+                p.effectiveStatus = D.effectiveStatus('', p.status, state.meta);
+                p.validationRequest = false; p.validated = false;
+              }
+              renderAll();
+            } catch { /* card refresh best-effort */ }
+            refreshJourneyIfOpen(p.id);
+          } catch (err) {
+            const expired = (err && err.code === 'EDIT_EXPIRED') || /expired|5 min/i.test(err.message || '');
+            try { D.log('save', `delete FAIL: ${err.message || ''}`); } catch { /* ignore */ }
+            toast(expired ? '5 min over — can\'t delete anymore' : `Delete failed — ${err.message || 'network error'}`, false);
+            if (expired) refreshJourneyIfOpen(p.id);
+          } finally {
+            btn.disabled = false;
+          }
+        };
+      });
       const older = $('cc-journey-older');
       if (older) older.onclick = () => { maxPages++; load(); };
     };
@@ -1431,6 +1583,9 @@
 
   function closeRemarkModal() {
     $('cc-remark-modal').hidden = true;
+    remarkEditCtx = null;
+    const sb = $('cc-remark-save');
+    if (sb) sb.textContent = '💾 Save';
     if (engagedDialogCid) {
       const cid = engagedDialogCid;
       engagedDialogCid = null;
@@ -1441,6 +1596,7 @@
 
   function closeJourneyModal() {
     $('cc-journey-modal').hidden = true;
+    journeyParcel = null;
     if (engagedDialogCid) {
       const cid = engagedDialogCid;
       engagedDialogCid = null;

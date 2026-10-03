@@ -488,6 +488,45 @@
     return data;
   }
 
+  /* ── edit own CC remark (app editAwait parity): server enforces own-row +
+   *  CC-only + 5-min window (EDIT_EXPIRED). Server pushes the updated row to
+   *  the agent app itself. ── */
+  async function editRemark(idToken, { validationId, status, remarksEn, remarksBn, note }) {
+    const res = await fetch(`${SUPABASE_URL}/functions/v1/validations`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${idToken}`, apikey: SUPABASE_ANON_KEY },
+      body: JSON.stringify({
+        action: 'edit', id: validationId,
+        remarks_status: status, remarks: remarksEn, note,
+        ...(remarksBn ? { remarks_bn: remarksBn } : {}),
+      }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || data.ok === false) {
+      const err = new Error(data.error || `HTTP ${res.status}`);
+      err.code = data.code || '';
+      throw err;
+    }
+    return data;
+  }
+
+  /* ── delete own CC remark (app deleteAwait parity): same server guards as
+   *  edit; server pushes the removal to the agent app. ── */
+  async function deleteRemark(idToken, validationId) {
+    const res = await fetch(`${SUPABASE_URL}/functions/v1/validations`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${idToken}`, apikey: SUPABASE_ANON_KEY },
+      body: JSON.stringify({ action: 'delete', id: validationId }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || data.ok === false) {
+      const err = new Error(data.error || `HTTP ${res.status}`);
+      err.code = data.code || '';
+      throw err;
+    }
+    return data;
+  }
+
   window.CcData = {
     esc, normPhone, normKey, dayKey, todayKey, fmtFull, fmtAge, log, getLog,
     runIdDateKey, dateKeyToYmd,
@@ -497,6 +536,6 @@
     loadRunIds, loadRunRoute, loadConsignments,
     loadBranchValidations, loadRangeValidations, latestFromRows, loadLatestRest, loadHistory, loadUsersBySystemIds,
     edgeReport,
-    loadRemarkOptions, loadAssignments, saveRemark,
+    loadRemarkOptions, loadAssignments, saveRemark, editRemark, deleteRemark,
   };
 })();

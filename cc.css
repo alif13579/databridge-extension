@@ -645,6 +645,15 @@ html[data-theme="light"] .cc-card.engaged {
   padding: 1px 8px;
   margin-left: 6px;
 }
+/* Journey ✎/🗑 (own CC remarks, 5-min window — app parity) */
+.cc-entry-tools { margin-left: 6px; white-space: nowrap; }
+.cc-entry-edit, .cc-entry-del {
+  background: none; border: none; cursor: pointer;
+  font-size: 11px; padding: 2px 4px;
+}
+.cc-entry-edit { color: #00d4ff; }
+.cc-entry-del { color: #ef4444; }
+.cc-entry-edit:disabled, .cc-entry-del:disabled { opacity: 0.5; }
 .cc-entry-remark { font-size: 13px; margin-top: 3px; white-space: pre-wrap; }
 .cc-entry-time { font-size: 10px; color: #64748b; margin-top: 2px; }
 
