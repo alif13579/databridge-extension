@@ -431,13 +431,38 @@
     }).filter((o) => o.label && o.target);
   }
 
-  /* run_yyyyMMdd_… → that Dhaka day at noon (same fallback as the app —
-   *  millis can never spill into a neighbouring day in any zone) */
+  /* Dhaka day-start millis for y/m/d (assignment anchors here — always
+   *  before same-day remarks). 0 when invalid. */
+  function dhakaDayStart(y, mo, d) {
+    const yy = +y, mm = +mo, dd = +d;
+    if (!yy || !mm || !dd || mm < 1 || mm > 12 || dd < 1 || dd > 31) return 0;
+    const p = (n, l) => String(n).padStart(l, '0');
+    const t = Date.parse(`${p(yy, 4)}-${p(mm, 2)}-${p(dd, 2)}T00:00:00+06:00`);
+    return Number.isFinite(t) && t > 0 ? t : 0;
+  }
+
+  /* created_at is often DATE-ONLY (not millis) — parse to that Dhaka day's
+   * start. Returns 0 when unparseable. */
+  function parseDateOnlyMillis(raw) {
+    const t = String(raw || '').trim();
+    if (!t) return 0;
+    if (t.includes('T')) {
+      const m = Date.parse(t);
+      return Number.isFinite(m) && m > 0 ? m : 0;
+    }
+    let m;
+    if ((m = t.match(/^(\d{4})[-\/.](\d{1,2})[-\/.](\d{1,2})/))) return dhakaDayStart(m[1], m[2], m[3]);
+    if ((m = t.match(/^(\d{1,2})[-\/.](\d{1,2})[-\/.](\d{4})/))) return dhakaDayStart(m[3], m[2], m[1]);
+    return 0;
+  }
+
+  /* run_yyyyMMdd_… → that Dhaka day at 00:00 (same fallback as the app —
+   * runs are staffed in the morning, so assignment always lands before any
+   * same-day remark in the timeline). */
   function runIdDayMillis(runId) {
     const m = String(runId || '').match(/^run_(\d{4})(\d{2})(\d{2})_/);
     if (!m) return 0;
-    const t = Date.UTC(+m[1], +m[2] - 1, +m[3], 6, 0, 0);
-    return Number.isFinite(t) ? t : 0;
+    return dhakaDayStart(m[1], m[2], m[3]);
   }
 
   /* ── assigned-to history (run routes holding this consignment) ── */
@@ -453,12 +478,14 @@
     for (const { runType, runId } of pairs) {
       const route = await loadRunRoute(idToken, runType, runId).catch(() => null);
       if (route && route.agentSystemId) {
-        // created_at missing/0 → fall back to the runId date at noon (app
-        // parity), never 0 (which renders as 1970-01-01). Flagged approx so
-        // the journey can show ≈ (it's a date estimate, not the real time).
-        const real = Number(route.createdAt) > 0;
-        const at = real ? Number(route.createdAt) : runIdDayMillis(runId);
-        out.push({ ...route, runType, runId, createdAt: at, createdAtApprox: !real });
+        // created_at: millis → as-is; DATE-ONLY string → that day's start;
+        // missing → runId day-start (app parity), never 0 (1970-01-01).
+        // Non-millis results stay flagged approx (≈ in the journey).
+        let at = Number(route.createdAt);
+        let approx = !(at > 0);
+        if (!(at > 0)) at = parseDateOnlyMillis(route.createdAt);
+        if (!(at > 0)) at = runIdDayMillis(runId);
+        out.push({ ...route, runType, runId, createdAt: at, createdAtApprox: approx });
       }
     }
     // one entry per (Dhaka day, agent)
