@@ -18,48 +18,56 @@ body {
   margin: 0 auto;
   min-height: 100vh;
 }
-/* ── Left sidebar (Twitter-style: icon + label, icons-only when narrow) ── */
+/* ── Left sidebar (collapsed by default, expands on hover) ── */
 .cc-side {
   flex: 0 0 auto;
-  width: 210px;
+  width: 62px;
   position: sticky;
   top: 0;
   height: 100vh;
   display: flex;
   flex-direction: column;
   gap: 4px;
-  padding: 16px 12px;
+  padding: 16px 8px;
   border-right: 1px solid #1e293b;
+  overflow: hidden;
+  transition: width 0.2s ease;
 }
+.cc-side:hover { width: 210px; }
 .cc-side-logo {
   font-size: 26px;
-  padding: 8px 12px 16px;
+  padding: 8px 0 16px;
+  text-align: center;
+  flex: 0 0 auto;
 }
 .cc-nav {
   display: flex;
   align-items: center;
+  justify-content: center;
   gap: 12px;
   background: none;
   border: none;
   color: inherit;
   border-radius: 24px;
-  padding: 10px 14px;
+  padding: 10px 0;
   font-size: 15px;
   font-weight: bold;
   cursor: pointer;
   text-align: left;
   width: 100%;
+  white-space: nowrap;
 }
+.cc-side:hover .cc-nav { justify-content: flex-start; padding: 10px 14px; }
 .cc-nav:hover { background: #111c30; }
 .cc-nav.active { color: #00d4ff; }
 .cc-nav-ico { font-size: 20px; flex: 0 0 auto; }
-.cc-nav-label { white-space: nowrap; }
-@media (max-width: 860px) {
-  .cc-side { width: 60px; padding: 16px 8px; }
-  .cc-nav-label { display: none; }
-  .cc-nav { justify-content: center; padding: 10px 0; }
-  .cc-side-logo { text-align: center; padding: 8px 0 16px; }
+.cc-nav-label {
+  white-space: nowrap;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+  overflow: hidden;
 }
+.cc-side:hover .cc-nav-label { opacity: 1; }
 .cc-wrap {
   flex: 1;
   min-width: 0;
