@@ -1668,7 +1668,22 @@
     });
   }
 
+  /* ── sidebar view switching (Call Center | Dashboard) ── */
+  function showView(v) {
+    document.querySelectorAll('.cc-nav').forEach((b) => {
+      b.classList.toggle('active', b.dataset.view === v);
+    });
+    if ($('view-callcenter')) $('view-callcenter').hidden = v !== 'callcenter';
+    if ($('view-dashboard')) $('view-dashboard').hidden = v !== 'dashboard';
+    if (v === 'dashboard' && window.CcDash) {
+      window.CcDash.boot().catch(() => {});
+    }
+  }
+
   function wireStatic() {
+    document.querySelectorAll('.cc-nav').forEach((b) => {
+      b.onclick = () => showView(b.dataset.view);
+    });
     $('cc-log-btn').onclick = copyDiagnostics;
     $('cc-sync-btn').onclick = syncToSheet;
     wireSheetsAccountOnce();

@@ -8,8 +8,19 @@
   <script src="theme-boot.js"></script>
 </head>
 <body>
-  <div class="cc-wrap">
-
+  <div class="cc-shell">
+    <!-- ── Left sidebar (Twitter-style) ── -->
+    <aside class="cc-side">
+      <div class="cc-side-logo" title="DataBridge">📦</div>
+      <button type="button" class="cc-nav active" data-view="callcenter" title="Call Center">
+        <span class="cc-nav-ico">☎️</span><span class="cc-nav-label">Call Center</span>
+      </button>
+      <button type="button" class="cc-nav" data-view="dashboard" title="Dashboard">
+        <span class="cc-nav-ico">📊</span><span class="cc-nav-label">Dashboard</span>
+      </button>
+    </aside>
+    <div class="cc-wrap">
+    <section id="view-callcenter">
     <!-- ── Header ── -->
     <header class="cc-header">
       <div class="cc-title-row">
@@ -93,6 +104,52 @@
       <div id="cc-loading-text">Loading…</div>
     </div>
 
+    </section><!-- /view-callcenter -->
+
+    <!-- ── Dashboard view (extension popup dashboard parity) ── -->
+    <section id="view-dashboard" hidden>
+      <header class="cc-header">
+        <div class="cc-title-row">
+          <h2>📊 Dashboard</h2>
+          <div class="cc-conn" id="dash-conn" title="Connection">🔴 Guest</div>
+        </div>
+        <div class="cc-controls">
+          <input type="date" id="dash-from" class="cc-input" title="From date">
+          <input type="date" id="dash-to" class="cc-input" title="To date">
+          <select id="dash-branch" class="cc-input" title="Branch"></select>
+        </div>
+        <div class="cc-toolbar-row">
+          <div class="cc-tabs" id="dash-report-tabs" title="Report">
+            <button type="button" class="cc-tab active" data-report="hv">📋 Hold Validation</button>
+            <button type="button" class="cc-tab" data-report="perf">👥 Performance</button>
+          </div>
+        </div>
+        <div class="cc-toolbar-row" id="dash-hv-row">
+          <div class="cc-tabs" title="Hold validation mode">
+            <button type="button" class="cc-tab active" data-hvmode="summary">Summary</button>
+            <button type="button" class="cc-tab" data-hvmode="details">Details</button>
+          </div>
+          <button class="cc-btn cc-btn-primary" id="dash-hv-generate">▶ Generate</button>
+          <button class="cc-btn" id="dash-hv-export" title="Export Hold Validation CSV (summary/details)">⬇ Export</button>
+        </div>
+        <div class="cc-toolbar-row" id="dash-perf-row" hidden>
+          <div class="cc-tabs" title="Performance mode">
+            <button type="button" class="cc-tab active" data-perfmode="team">Team</button>
+            <button type="button" class="cc-tab" data-perfmode="agent">Agent</button>
+          </div>
+          <button class="cc-btn cc-btn-primary" id="dash-perf-generate">▶ Generate</button>
+        </div>
+      </header>
+      <div class="cc-result" id="dash-status" hidden></div>
+      <div class="cc-stats" id="dash-stats" hidden></div>
+      <main class="cc-list" id="dash-report"></main>
+      <div class="cc-empty" id="dash-empty" hidden>📭<br>Generate a report to begin</div>
+      <div class="cc-loading" id="dash-loading" hidden>
+        <div class="cc-spinner"></div>
+        <div id="dash-loading-text">Loading…</div>
+      </div>
+    </section>
+
     <!-- ── Remarks dialog ── -->
     <div class="cc-modal" id="cc-remark-modal" hidden>
       <div class="cc-dialog">
@@ -123,12 +180,14 @@
     </div>
 
     <div class="cc-toast" id="cc-toast" hidden></div>
-  </div>
+    </div><!-- /cc-wrap -->
+  </div><!-- /cc-shell -->
 
   <script src="config.js"></script>
   <script src="cc-data.js"></script>
   <script src="cc-sheet.js"></script>
   <script src="cc-sync.js"></script>
+  <script src="cc-dash.js"></script>
   <script src="cc.js"></script>
 </body>
 </html>
