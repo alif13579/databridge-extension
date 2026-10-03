@@ -398,5 +398,91 @@
     return msg;
   }
 
-  window.CcSync = { syncDay };
+  /* ── single-remark mirror (webpage saveRemark parity with the popup
+   *  panel's mirrorSavedRemarkToSheet): Supabase write-er por oi ekta
+   *  consignment-er latest CC row thekei consolidated value baniye remark
+   *  connection-gulote likhe dao. Best-effort: fail korle save-ke fail kore na.
+   *  Every step D.log('save-mirror', …)-e jay — 🐞 Log copy korle karon bojha jay. */
+  async function mirrorOne(idToken, sheetsToken, branchId, dateKey, consignmentId) {
+    const slog = (m) => { try { D.log('save-mirror', m); } catch { /* ignore */ } };
+    try {
+      if (!idToken) return 'skipped (login)';
+      if (!sheetsToken) return 'skipped (no Sheets permission)';
+      if (!branchId || !consignmentId) return 'skipped (no branch/consignment)';
+      slog(`start cid=${consignmentId} branch=${branchId} date=${dateKey}`);
+      const catMap = await fetchCategories(idToken).catch(() => new Map());
+      slog(`categories=${catMap.size}`);
+      let latest = null;
+      try {
+        const r = await D.edgeReport(idToken, {
+          branchId, startIso: '2020-01-01T00:00:00.000Z',
+          endIso: new Date().toISOString(), consignment: consignmentId, maxPages: 1,
+        });
+        const ccRows = (r.rows || [])
+          .filter((x) => x && x.source === 'CC')
+          .sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+        slog(`edge rows=${(r.rows || []).length} ccRows=${ccRows.length}`);
+        if (ccRows.length) latest = ccRows[ccRows.length - 1];
+      } catch (e) {
+        slog(`edge read FAIL: ${(e && e.message) || 'network error'}`);
+        return `skipped (CC row unreadable: ${(e && e.message) || 'network error'})`.slice(0, 140);
+      }
+      if (!latest) return 'skipped (no CC row yet)';
+      const engKey = String(latest.remarks || '').trim();
+      const feedback = catMap.get(engKey) || '';
+      const finalStatus = deriveFinalStatus(latest.consignment_status || '');
+      const consolidated = new Map([[`${branchId}__${consignmentId}`, {
+        feedback,
+        validation: deriveValidation(feedback),
+        validator_name: ((latest.author && latest.author.name) || latest.author_system_id || '').trim(),
+        consignment_status: finalStatus,
+        action: deriveAction(finalStatus),
+        created_at: latest.created_at || '',
+      }]]);
+      slog(`consolidated feedback=${feedback || '-'} validation=${deriveValidation(feedback) || '-'} status=${finalStatus || '-'}`);
+      const fbBase = `${FIREBASE_URL}/config`;
+      const auth = `?auth=${encodeURIComponent(idToken)}`;
+      const [bObj, lObj] = await Promise.all([
+        fetch(`${fbBase}/sheetBindings/${encodeURIComponent(branchId)}/cc.json${auth}`).then((r) => r.json().catch(() => ({}))).catch(() => ({})),
+        fetch(`${fbBase}/connectors/${encodeURIComponent(branchId)}/current.json${auth}`).then((r) => r.json().catch(() => ({}))).catch(() => ({})),
+      ]);
+      const libs = {};
+      Object.entries(lObj || {}).forEach(([lid, l]) => {
+        if (l && l.isLibrary && l.enabled !== false) libs[lid] = l;
+      });
+      const adapted = [];
+      Object.entries(bObj || {}).forEach(([, b]) => {
+        if (!b || b.enabled === false) return;
+        const lib = libs[b.libraryId];
+        if (!lib) return;
+        const ad = adaptBinding(b, lib);
+        if (ad.lookups.length && ad.writes.length) adapted.push(ad);
+      });
+      const legacy = Object.values(lObj || {}).filter(isRemarkConn).filter((c) => c.enabled !== false);
+      const conns = selectForDate([...adapted, ...legacy], dateKey);
+      slog(`connections=${conns.length} (adapted=${adapted.length} legacy=${legacy.length})`);
+      if (!conns.length) return 'skipped (no remark connection)';
+      let rowsN = 0, cellsN = 0;
+      const errs = [];
+      for (const conn of conns) {
+        try {
+          const r = await syncOneConnection(sheetsToken, branchId, conn, consolidated, dateKey);
+          rowsN += r.syncedRows; cellsN += r.syncedCells;
+          slog(`${conn.sheetName || conn.sheetId}: scanned=${r.scanned} synced=${r.syncedRows}/${r.syncedCells} filled=${r.filled} noCc=${r.noCc} dateSkipped=${r.dateSkipped || 0}`);
+        } catch (e) {
+          const msg = (e && e.message) || 'sync failed';
+          errs.push(msg);
+          slog(`${conn.sheetName || conn.sheetId}: FAIL ${msg}`);
+        }
+      }
+      if (!rowsN && errs.length) return `⚠ Sheet mirror failed — ${errs[0]}`.slice(0, 160);
+      if (!rowsN) return 'skipped (row not found in sheet)';
+      return `✓ Sheet mirrored (${rowsN} row, ${cellsN} cells)`;
+    } catch (e) {
+      slog(`FAIL: ${(e && e.message) || 'network error'}`);
+      return `⚠ Sheet mirror failed — ${(e && e.message) || 'network error'}`.slice(0, 160);
+    }
+  }
+
+  window.CcSync = { syncDay, mirrorOne };
 })();

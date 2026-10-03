@@ -17,7 +17,8 @@
         <div class="cc-conn" id="cc-conn" title="Connection">🔴 Guest</div>
       </div>
       <div class="cc-controls">
-        <input type="date" id="cc-date" class="cc-input" title="Sheet date">
+        <input type="date" id="cc-date-from" class="cc-input" title="From date">
+        <input type="date" id="cc-date-to" class="cc-input" title="To date">
         <select id="cc-branch" class="cc-input" title="Branch"></select>
         <button class="cc-btn cc-btn-primary" id="cc-load-btn">🔄 Load</button>
         <button class="cc-btn" id="cc-sync-btn" title="Sync this date's remarks to the sheet">⇪ Sync</button>
@@ -59,9 +60,9 @@
       </div>
       <div class="cc-toolbar-row">
         <div class="cc-tabs" id="cc-source-tabs" title="Data source">
-          <button type="button" class="cc-tab active" data-source="request">📋 Request</button>
-          <button type="button" class="cc-tab" data-source="live">📄 Sheets</button>
-          <button type="button" class="cc-tab" data-source="mix">📋+📄 Mix</button>
+          <button type="button" class="cc-tab active" data-source="run">🏃 Run</button>
+          <button type="button" class="cc-tab" data-source="requests">📋 Requests</button>
+          <button type="button" class="cc-tab" data-source="sheets">📄 Sheets</button>
         </div>
         <select id="cc-agent" class="cc-input" title="Agent">
           <option value="">👥 All Agents</option>

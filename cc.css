@@ -256,6 +256,14 @@ body {
   text-align: left;
 }
 .cc-agent-head:hover { border-color: #334155; }
+.cc-agent-head.collapsed { opacity: 0.85; }
+.cc-agent-arrow {
+  font-size: 11px;
+  color: #64748b;
+  flex: 0 0 auto;
+  width: 16px;
+  text-align: center;
+}
 .cc-avatar {
   width: 34px; height: 34px;
   border-radius: 50%;
@@ -301,7 +309,13 @@ body {
 .cc-card-top { display: flex; align-items: baseline; gap: 8px; }
 .cc-cust { font-weight: bold; font-size: 14px; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cc-cod { color: #00d4ff; font-weight: bold; }
-.cc-id-row { display: flex; align-items: center; gap: 8px; margin-top: 4px; font-size: 12px; }
+.cc-id-row { display: flex; align-items: center; flex-wrap: wrap; gap: 4px; margin-top: 4px; font-size: 12px; }
+.cc-id-row .cc-badge { margin-left: auto; }
+.cc-sep { color: #00d4ff; font-weight: bold; }
+.cc-time { color: #00d4ff; font-weight: bold; font-size: 11px; white-space: nowrap; }
+.cc-addr { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.cc-addr-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.cc-addr .cc-cod { flex: 0 0 auto; font-size: 13px; }
 .cc-id { color: #00d4ff; font-weight: bold; cursor: pointer; }
 .cc-id:hover { text-decoration: underline; }
 .cc-badge {
@@ -330,6 +344,15 @@ body {
   color: #cbd5e1;
 }
 .cc-remark-time { display: block; text-align: right; font-size: 10px; color: #64748b; margin-top: 2px; }
+/* Remark-er nijer status pill — config color (app badge parity) */
+.cc-remark-status {
+  display: inline-block;
+  font-size: 10px; font-weight: bold;
+  border-radius: 12px;
+  padding: 1px 8px;
+  margin-right: 4px;
+  white-space: nowrap;
+}
 .cc-actions { display: flex; gap: 6px; margin-top: 10px; }
 .cc-act {
   flex: 1;
@@ -346,6 +369,67 @@ body {
 .cc-act-wa { background: #15803d; flex: 0 0 44px; }
 .cc-act-log { background: #334155; }
 .cc-act:hover { filter: brightness(1.15); }
+
+/* ── Engaged presence (app EngagedRingView parity: cyan→purple ring) ──
+ * paintPresence() toggles .engaged for self-hover AND others-viewing —
+ * same Firebase engaged_at source the app reads. */
+@property --cc-ring-angle {
+  syntax: '<angle>';
+  initial-value: 0deg;
+  inherits: false;
+}
+.cc-card.engaged {
+  border: 2px solid transparent;
+  border-radius: 12px;
+  background:
+    linear-gradient(#111c30, #111c30) padding-box,
+    conic-gradient(from var(--cc-ring-angle), #00D4FF, #7C3AED, #00D4FF) border-box;
+  box-shadow: 0 0 0 1px rgba(0, 212, 255, 0.35), 0 0 18px rgba(0, 212, 255, 0.25);
+  animation: cc-ring-spin 1.4s linear infinite;
+}
+.cc-card.engaged:hover {
+  box-shadow: 0 0 0 1px rgba(0, 212, 255, 0.6), 0 0 26px rgba(0, 212, 255, 0.4);
+}
+@keyframes cc-ring-spin {
+  to { --cc-ring-angle: 360deg; }
+}
+/* @property-na-thakle static glow (old Chrome fallback) */
+@supports not (background: conic-gradient(from 0deg, red, blue)) {
+  .cc-card.engaged {
+    border: 2px solid #00D4FF;
+    background: #111c30;
+    animation: none;
+  }
+}
+html[data-theme="light"] .cc-card.engaged {
+  background:
+    linear-gradient(#fff, #fff) padding-box,
+    conic-gradient(from var(--cc-ring-angle), #00D4FF, #7C3AED, #00D4FF) border-box;
+}
+.cc-presence {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+  font-size: 11px;
+  color: #7dd3fc;
+}
+.cc-pres-av {
+  width: 20px; height: 20px;
+  border-radius: 50%;
+  background: #0369a1;
+  color: #fff;
+  display: inline-flex; align-items: center; justify-content: center;
+  font-size: 10px; font-weight: bold;
+  border: 1px solid #00D4FF;
+  flex: 0 0 auto;
+}
+.cc-pres-av i { font-style: normal; font-size: 9px; margin-left: 1px; }
+.cc-pres-more {
+  font-size: 10px; font-weight: bold;
+  color: #7dd3fc;
+}
+.cc-pres-text { color: #7dd3fc; }
 
 .cc-empty { text-align: center; color: #64748b; padding: 40px 0; font-size: 15px; line-height: 1.8; }
 .cc-loading { display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 50px 0; color: #94a3b8; }

@@ -15,11 +15,12 @@
     parcels: [],          // enriched parcel objects
     meta: {},             // statusMeta
     users: {},            // systemId -> {name, employeeId}
-    source: 'request',    // request | live | mix (app ccDataSource parity)
+    source: 'run',        // run | requests | sheets
     missingIds: [],       // sheet IDs absent in Firebase (ID-only chips)
     sheetNote: '',        // sheet read note (binding/scope hints)
     lastSheetSig: '',     // silent-tick change detection
     tickTimer: null,
+    collapsed: {},       // workerId -> true (agents-mode group collapse)
     statFilter: 'all',    // all | request | served | rejected
     statusFilter: 'all',
     search: '',
@@ -101,9 +102,32 @@
     return Number.isFinite(n) ? Math.round(n) : 0;
   }
 
+  /* ── date range (From–To, Dhaka keys). All 3 modes fetch per this range.
+   *  Capped to the latest 7 days (Firebase fan-out bound). ── */
+  const RANGE_CAP_DAYS = 7;
+  function addDayKey(k) {
+    return D.dayKey(new Date(`${k}T12:00:00+06:00`).getTime() + 86400000);
+  }
+  function rangeKeys() {
+    const t = D.todayKey();
+    let from = ($('cc-date-from') && $('cc-date-from').value) || t;
+    let to = ($('cc-date-to') && $('cc-date-to').value) || t;
+    if (from > to) { const s = from; from = to; to = s; }
+    const out = [];
+    let cur = from;
+    while (cur <= to && out.length < 366) { out.push(cur); cur = addDayKey(cur); }
+    let capped = false;
+    if (out.length > RANGE_CAP_DAYS) { capped = true; out.splice(0, out.length - RANGE_CAP_DAYS); }
+    return { keys: out, from: out[0] || from, to: out[out.length - 1] || to, capped };
+  }
+  function rangeLabel(r) {
+    return r.from === r.to ? r.from : `${r.from} → ${r.to}`;
+  }
+
   async function boot() {
-    const dateEl = $('cc-date');
-    dateEl.value = D.todayKey();
+    const t = D.todayKey();
+    if ($('cc-date-from')) $('cc-date-from').value = t;
+    if ($('cc-date-to')) $('cc-date-to').value = t;
     try {
       const sync = await D.ensureProfileSynced();
       state.idToken = sync.idToken;
@@ -150,8 +174,10 @@
           state.sortMode = saved.cc_sort;
           $('cc-sort').value = saved.cc_sort;
         }
-        if (saved.cc_source && ['request', 'live', 'mix'].includes(saved.cc_source)) {
-          state.source = saved.cc_source;
+        if (saved.cc_source) {
+          const migrate = { request: 'run', live: 'sheets', mix: 'run' };
+          const v = migrate[saved.cc_source] || saved.cc_source;
+          if (['run', 'requests', 'sheets'].includes(v)) state.source = v;
         }
         paintSourceTabs();
       } catch { /* fresh defaults */ }
@@ -193,47 +219,54 @@
 
   async function loadParcels() {
     const branchId = $('cc-branch').value;
-    const dateStr = $('cc-date').value;
-    if (!branchId || !dateStr) return;
+    const range = rangeKeys();
+    if (!branchId || !range.keys.length) return;
+    const dateStr = rangeLabel(range);
     const t0 = performance.now();
     state.loadT0 = t0;
-    D.log('time', `load start branch=${branchId} date=${dateStr} source=${state.source}`);
-    setLoading(true, state.source === 'request' ? 'Loading runs…' : 'Reading sheet…');
+    D.log('time', `load start branch=${branchId} range=${dateStr} source=${state.source}`);
+    setLoading(true, state.source === 'run' ? 'Loading runs…' :
+      state.source === 'requests' ? 'Loading verify requests…' : 'Reading sheet…');
     $('cc-empty').hidden = true;
     $('cc-list').innerHTML = '';
     state.missingIds = [];
     state.sheetNote = '';
     try {
       const branchName = $('cc-branch').selectedOptions[0]?.textContent || branchId;
-      if (state.source === 'request') {
-        const parcels = await buildRequestParcels(branchId, dateStr, branchName);
+      if (range.capped) toast(`Range capped to latest ${RANGE_CAP_DAYS} days`);
+      if (state.source === 'run') {
+        const parcels = await buildRequestParcels(branchId, range.keys, branchName);
+        finishLoad(parcels || []);
+      } else if (state.source === 'requests') {
+        const parcels = await buildVerifyRequestParcels(branchId, range, branchName);
         finishLoad(parcels || []);
       } else {
-        // Sheet IDs first (bindings-driven, today's scope)
+        // Sheets: per-date live IDs over the range, combined.
         setLoading(true, 'Reading sheet…');
-        const live = await window.CcSheet.loadLiveIds(state.idToken, [branchId]);
-        const b = (live && live[0]) || { ids: [], note: 'Sheet read failed', failed: true };
-        state.sheetNote = b.note || '';
-      state.sheetDebug = b.debug || null;
-        state.lastSheetSig = b.ids.map((e) => e.cid).sort().join('|');
-        if (b.failed) {
+        const seen = new Set();
+        const ids = [];
+        const notes = [];
+        let failed = false;
+        for (const dk of range.keys) {
+          const live = await window.CcSheet.loadLiveIds(state.idToken, [branchId], dk);
+          const b = (live && live[0]) || { ids: [], note: 'Sheet read failed', failed: true };
+          if (b.failed) failed = true;
+          if (b.note) notes.push(`${dk}: ${b.note}`);
+          if (!state.sheetDebug) state.sheetDebug = b.debug || null;
+          for (const e of b.ids) {
+            if (e && e.cid && !seen.has(e.cid)) { seen.add(e.cid); ids.push(e); }
+          }
+        }
+        state.sheetNote = notes.join(' | ');
+        state.lastSheetSig = ids.map((e) => e.cid).sort().join('|');
+        if (failed && !ids.length) {
           $('cc-empty').hidden = false;
-          $('cc-empty').textContent = `⚠ Sheet: ${b.note || 'read failed'}`;
+          $('cc-empty').textContent = `⚠ Sheet: ${state.sheetNote || 'read failed'}`;
         }
-        if (state.source === 'live') {
-          const built = await buildSheetParcels(b.ids, [], branchId, branchName);
-          finishLoad(built.parcels);
-          state.missingIds = built.missing;
-          renderMissing();
-        } else {
-          // mix: request parcels + sheet extras (request wins on duplicates)
-          const req = await buildRequestParcels(branchId, dateStr, branchName);
-          const have = new Set((req || []).map((p) => p.id));
-          const built = await buildSheetParcels(b.ids, [...have], branchId, branchName);
-          finishLoad([...(req || []), ...built.parcels]);
-          state.missingIds = built.missing;
-          renderMissing();
-        }
+        const built = await buildSheetParcels(ids, [], branchId, branchName);
+        finishLoad(built.parcels);
+        state.missingIds = built.missing;
+        renderMissing();
       }
       restartTick();
     } catch (e) {
@@ -244,10 +277,11 @@
     }
   }
 
-  /* Request flow (runs → routes → consignments), extracted for reuse. */
-  async function buildRequestParcels(branchId, dateStr, branchName) {
-      // all run types for this branch+date (delivery/return/…):
-      // read the whole branch index once, keep every runType for this date
+  /* Run flow (runs → routes → consignments) over the date range. */
+  async function buildRequestParcels(branchId, dateKeys, branchName) {
+      const want = new Set(Array.isArray(dateKeys) ? dateKeys : [dateKeys]);
+      // all run types for this branch+range (delivery/return/…):
+      // read the whole branch index once, keep every runType in range
       const idx = await (async () => {
         const res = await fetch(
           `${CONFIG.FIREBASE_URL}/courier/runs_by_branchId/${encodeURIComponent(branchId)}.json?auth=${encodeURIComponent(state.idToken)}`);
@@ -259,7 +293,7 @@
         for (const [runType, runMap] of Object.entries(idx)) {
           if (!runMap || typeof runMap !== 'object') continue;
           for (const runId of Object.keys(runMap)) {
-            if (D.runIdDateKey(runId) === dateStr) runs.push({ runType, runId });
+            if (want.has(D.runIdDateKey(runId))) runs.push({ runType, runId });
           }
         }
       }
@@ -269,7 +303,7 @@
       // Consignments + branch remarks fetch in PARALLEL (bulk) — neither
       // depends on the other, so sequential awaits just waste wall time.
       const runKey = runs.map((r) => `${r.runType}/${r.runId}`).sort().join('|');
-      const cacheKey = `cc_cache_${branchId}_${dateStr}`;
+      const cacheKey = `cc_cache_${branchId}_${[...want].sort().join(',')}`;
       let routes = null;
       let consMap = null;
       let branchRows = null;
@@ -324,6 +358,52 @@
       const assembled = await assembleParcels(routes, consMap, latestMap, branchId, branchName);
       if (state.loadT0) tlog('users + assemble', state.loadT0, `users=${Object.keys(state.users || {}).length}`);
       return assembled;
+  }
+
+  /* Requests flow (Supabase-only): verify-request rows in the range →
+   * distinct consignments → Firebase consignment details. No run/sheet read. */
+  async function buildVerifyRequestParcels(branchId, range, branchName) {
+    const startIso = new Date(`${range.from}T00:00:00+06:00`).toISOString();
+    const endIso = new Date(new Date(`${range.to}T00:00:00+06:00`).getTime() + 86400000).toISOString();
+    setLoading(true, 'Loading verify requests…');
+    const rep = await D.edgeReport(state.idToken, {
+      branchId, startIso, endIso, maxPages: 50,
+    }).catch((e) => { throw new Error(`verify requests unreadable: ${e.message || 'network error'}`); });
+    const rows = rep.rows || [];
+    if (state.loadT0) tlog('verify-request report', state.loadT0, `rows=${rows.length}`);
+    const verifyRows = rows.filter((r) => r && D.isVerifyRequest(r.remarks_status));
+    const byCid = new Map();
+    for (const r of verifyRows) {
+      if (!r.consignment) continue;
+      if (!byCid.has(r.consignment)) byCid.set(r.consignment, []);
+      byCid.get(r.consignment).push(r);
+    }
+    const cids = [...byCid.keys()];
+    if (!cids.length) return [];
+    setLoading(true, `Loading ${cids.length} requested parcel(s)…`);
+    const consMap = await D.loadConsignments(state.idToken, cids, (done, total) => {
+      const t = $('cc-loading-text');
+      if (t) t.textContent = `Loading ${done}/${total} requested parcel(s)…`;
+    });
+    const latestMap = D.latestFromRows(rows);
+    // agent per parcel = assigned_to_system_id on its verify rows (fake routes
+    // so assembleParcels resolves names the same way as run mode).
+    const byAgent = new Map();
+    for (const cid of cids) {
+      const vrows = byCid.get(cid) || [];
+      const agent = String(
+        (vrows.find((r) => r.assigned_to_system_id) || {}).assigned_to_system_id ||
+        (latestMap[cid] || {}).assigned_to_system_id || '').trim();
+      if (!byAgent.has(agent)) byAgent.set(agent, []);
+      byAgent.get(agent).push(cid);
+    }
+    const routes = [...byAgent.entries()].map(([agentSystemId, consignmentIds]) => ({
+      runType: 'request', runId: `req_${range.from}_${range.to}`,
+      agentSystemId, consignmentIds, createdAt: Date.now(),
+    }));
+    const assembled = await assembleParcels(routes, consMap, latestMap, branchId, branchName);
+    if (state.loadT0) tlog('users + assemble', state.loadT0, `users=${Object.keys(state.users || {}).length}`);
+    return assembled;
   }
 
   /* Sheet extras: sheet IDs absent from the request set. Agent resolved via
@@ -427,13 +507,17 @@
    * when the sheet ID set actually changed. */
   function restartTick() {
     if (state.tickTimer) { clearInterval(state.tickTimer); state.tickTimer = null; }
-    if (state.source !== 'live' && state.source !== 'mix') return;
+    if (state.source !== 'sheets') return;
     state.tickTimer = setInterval(async () => {
       try {
         const branchId = $('cc-branch').value;
-        if (!branchId || (state.source !== 'live' && state.source !== 'mix')) return;
-        const live = await window.CcSheet.loadLiveIds(state.idToken, [branchId]).catch(() => null);
-        const ids = ((live && live[0] && live[0].ids) || []).map((e) => e.cid).sort().join('|');
+        if (!branchId || state.source !== 'sheets') return;
+        const sigParts = [];
+        for (const dk of rangeKeys().keys) {
+          const live = await window.CcSheet.loadLiveIds(state.idToken, [branchId], dk).catch(() => null);
+          sigParts.push(((live && live[0] && live[0].ids) || []).map((e) => e.cid).sort().join(','));
+        }
+        const ids = sigParts.join('|');
         if (ids && ids !== state.lastSheetSig) await loadParcels();
       } catch { /* silent tick never disturbs */ }
     }, 45000);
@@ -596,31 +680,60 @@
     items.forEach((it) => mk(it.key, `${it.label} (${it.count})`));
   }
 
+  /* #rrggbb/#rgb → rgba(hex, alpha) — app-er 15% tint parity. */
+  function hexA(hex, alpha) {
+    let h = String(hex || '').trim().replace(/^#/, '');
+    if (/^[0-9a-fA-F]{3}$/.test(h)) h = h.split('').map((c) => c + c).join('');
+    if (!/^[0-9a-fA-F]{6}$/.test(h)) return `rgba(107,114,128,${alpha})`;
+    const n = parseInt(h, 16);
+    return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${alpha})`;
+  }
+
+  /* Short Dhaka clock "9:15 AM" — app tvParcelTime parity. */
+  const clockFmt = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'Asia/Dhaka', hour: 'numeric', minute: '2-digit', hour12: true,
+  });
+  function fmtClock(ms) {
+    const n = Number(ms) || 0;
+    if (!n) return '';
+    try { return clockFmt.format(new Date(n)); } catch { return ''; }
+  }
+
   function cardHtml(p, phoneIdx, phoneTotal) {
     const cfg = statusCfg(p.effectiveStatus);
+    // Remark box: remark-er nijer status color (app CallCenterAdapter parity —
+    // remarkColor = StatusMeta[remarkStatus] ?: effective cfg; box 15% tint +
+    // text full color, so "Hold Verified"-type remark config color-e dekhay).
+    const rcfg = (p.remarkStatus && state.meta[D.normKey(p.remarkStatus)]) || cfg;
+    const rLabel = state.lang.status === 'en' ? (rcfg.en || rcfg.bn || '') : (rcfg.bn || rcfg.en || '');
+    const rPill = (rLabel || p.remarkStatus)
+      ? `<span class="cc-remark-status" style="color:${rcfg.color};background:${hexA(rcfg.color, 0.18)}">${D.esc(rLabel || p.remarkStatus)}</span> `
+      : '';
     const remarkLine = p.remarks
-      ? `<div class="cc-remark">💬 ${D.esc(p.remarks)}${p.note ? `<br>⚠️ Note: ${D.esc(p.note)}` : ''}` +
+      ? `<div class="cc-remark" style="color:${rcfg.color};background:${hexA(rcfg.color, 0.15)};border:1px solid ${hexA(rcfg.color, 0.35)}">` +
+        rPill +
+        `💬 ${D.esc(p.remarks)}${p.note ? `<br>⚠️ Note: ${D.esc(p.note)}` : ''}` +
         `${p.remarkAuthor ? `<span class="cc-remark-time">${D.esc(p.remarkAuthor)}</span>` : ''}</div>`
       : '';
     const agentLine = state.sortMode !== 'auto' && p.worker && p.worker !== '—'
       ? `<div class="cc-agent-line">👤 ${D.esc(p.worker)}</div>` : '';
-    const mates = phoneTotal > 1 ? ` <span class="cc-badge" style="background:#0b1526;color:#00d4ff">${phoneIdx}/${phoneTotal}</span>` : '';
+    const mates = phoneTotal > 1 ? `<span class="cc-badge" style="background:#0b1526;color:#00d4ff">${phoneIdx}/${phoneTotal}</span>` : '';
+    const timeStr = fmtClock(p.updatedAt || p.createdAt);
+    const timeBit = timeStr ? `<span class="cc-sep"> · </span><span class="cc-time">${timeStr}</span>` : '';
     return `
       <div class="cc-card" data-id="${D.esc(p.id)}">
         <div class="cc-card-age">🕐 ${D.fmtAge(p.createdAt, p.attempt)}</div>
         <div class="cc-card-top">
           <span class="cc-cust">${D.esc(p.customer)}</span>
-          <span class="cc-cod">৳${p.cod}</span>
         </div>
         <div class="cc-id-row">
           <span class="cc-id" data-copy="${D.esc(p.id)}" title="Tap to copy ID">${D.esc(p.id)}</span>
+          <span class="cc-sep"> · </span>
+          <a class="cc-phone" href="tel:${D.esc(String(p.phone).replace(/\D/g, ''))}" title="Tap to call">${D.esc(p.phone || '—')}</a>
+          <button class="cc-copy" data-copy="${D.esc(p.phone)}" title="Copy number">📋</button>${mates}${timeBit}
           <span class="cc-badge" style="color:${cfg.color};background:${cfg.bg}">${D.esc(cfg.label)}</span>
         </div>
-        <div class="cc-phone-row">
-          <a class="cc-phone" href="tel:${D.esc(String(p.phone).replace(/\D/g, ''))}" title="Tap to call">${D.esc(p.phone || '—')}</a>${mates}
-          <button class="cc-copy" data-copy="${D.esc(p.phone)}" title="Copy number">📋</button>
-        </div>
-        <div class="cc-addr">📍 ${D.esc(p.address)}</div>
+        <div class="cc-addr"><span class="cc-addr-text">📍 ${D.esc(p.address)}</span><span class="cc-cod">৳${p.cod}</span></div>
         ${agentLine}
         ${remarkLine}
         <div class="cc-actions">
@@ -658,19 +771,24 @@
         groups.get(k).parcels.push(p);
       }
       for (const [, g] of groups) {
+        const wid = (g.parcels[0] && (g.parcels[0].workerId || g.name)) || g.name;
+        const isCollapsed = !!state.collapsed[wid];
         const head = document.createElement('button');
-        head.className = 'cc-agent-head';
+        head.className = 'cc-agent-head' + (isCollapsed ? ' collapsed' : '');
         const initial = (g.name || '?').trim().charAt(0).toUpperCase();
-        head.innerHTML = `<span class="cc-avatar">${D.esc(initial)}</span>
+        head.innerHTML = `<span class="cc-agent-arrow">${isCollapsed ? '▶' : '▼'}</span>` +
+          `<span class="cc-avatar">${D.esc(initial)}</span>
           <span class="cc-agent-name">${D.esc(g.name)}</span>
           <span class="cc-agent-count">${g.parcels.length}</span>`;
+        head.title = isCollapsed ? 'Expand — show parcels' : 'Collapse — hide parcels';
         head.onclick = () => {
-          state.agentFilter = state.agentFilter ? '' : (g.parcels[0] ? g.parcels[0].workerId : '');
-          renderAgents(); renderList();
+          state.collapsed[wid] = !state.collapsed[wid];
+          renderList();
         };
         box.appendChild(head);
         const wrap = document.createElement('div');
         wrap.className = 'cc-list-grid';
+        if (isCollapsed) wrap.style.display = 'none';
         wrap.innerHTML = `<div class="cc-cards">${sortGroups(phoneGroup(g.parcels)).map((p) => {
           const k = D.normPhone(p.phone);
           const idx = counts[k] > 1 ? ((seen[k] = (seen[k] || 0) + 1)) : 1;
@@ -764,6 +882,9 @@
 
   async function openRemarkDialog(p) {
     if (!p) return;
+    engagedDialogCid = p.id;
+    paintSelfEngaged(p.id);
+    markEngaged(p.id);
     remarkTarget = p;
     remarkSelected = -1;
     $('cc-remark-title').textContent = `${p.customer} · ${p.id}`;
@@ -814,7 +935,11 @@
     const btn = $('cc-remark-save');
     btn.disabled = true;
     btn.textContent = '⏳ Saving…';
+    const slog = (m) => { try { D.log('save', m); } catch { /* ignore */ } };
+    slog(`start cid=${p.id} branch=${p.branchId} opt=${opt ? opt.target : '(note-only)'} noteLen=${note.length}`);
+    const t0 = (() => { try { return performance.now(); } catch { return 0; } })();
     try {
+      slog('supabase write start');
       await D.saveRemark(state.idToken, {
         consignmentId: p.id,
         branchId: p.branchId,
@@ -826,6 +951,25 @@
         feedback: '',
         validatorName: '',
       });
+      try { slog(`supabase ok ms=${Math.round(performance.now() - t0)}`); } catch { /* ignore */ }
+      // Sheet mirror (popup panel parity) — best-effort, never fails the save.
+      // Parcel-er nijer date-er tab-e mirror (range load-e parcel jekono
+      // diner hote pare; createdAt day = sheet tab date).
+      let mirrorMsg = '';
+      try {
+        const dateKey = (p.createdAt && D.dayKey(p.createdAt)) || D.todayKey();
+        const st = await window.CcSheet.getSheetsToken().catch(() => ({ token: null, error: 'token error' }));
+        slog(`mirror start sheetsToken=${st && st.token ? 'yes' : 'no'}${st && st.error ? ` err=${st.error}` : ''} date=${dateKey}`);
+        if (window.CcSync && window.CcSync.mirrorOne) {
+          mirrorMsg = await window.CcSync.mirrorOne(state.idToken, st.token, p.branchId, dateKey, p.id);
+        } else {
+          mirrorMsg = 'skipped (mirror unavailable)';
+        }
+        slog(`mirror result: ${mirrorMsg}`);
+      } catch (e) {
+        mirrorMsg = `⚠ Sheet mirror failed — ${e.message || 'network error'}`;
+        slog(`mirror FAIL: ${mirrorMsg}`);
+      }
       // optimistic update
       p.remarkStatus = opt ? opt.target : p.remarkStatus;
       p.remarks = opt ? opt.label : (note || p.remarks);
@@ -834,12 +978,15 @@
       p.validationRequest = D.isVerifyRequest(p.remarkStatus);
       p.validated = D.isValidated(p.remarkStatus);
       p.remarkAuthor = 'You';
-      $('cc-remark-modal').hidden = true;
-      toast('✅ Remark saved');
+      closeRemarkModal();
+      if (mirrorMsg && mirrorMsg.startsWith('✓')) toast(`✅ Saved · ${mirrorMsg}`);
+      else if (mirrorMsg && mirrorMsg.startsWith('⚠')) toast(`✅ Saved · ${mirrorMsg}`, false);
+      else toast('✅ Remark saved');
       renderAll();
     } catch (e) {
+      slog(`supabase FAIL: ${e.message || 'network error'}`);
       const m = $('cc-remark-msg');
-      m.textContent = `⚠ Save failed — ${e.message || 'network error'}`;
+      m.textContent = `⚠ Save failed — ${e.message || 'network error'} (🐞 Log copy kore pathao)`;
       m.hidden = false;
     } finally {
       btn.disabled = false;
@@ -854,9 +1001,18 @@
    *  first + "older" button (lazy pagination). */
   async function openJourneyDialog(p) {
     if (!p) return;
+    engagedDialogCid = p.id;
+    paintSelfEngaged(p.id);
+    markEngaged(p.id);
     $('cc-journey-title').textContent = 'Journey Log';
+    // Overview — effective badge (as the card shows) + actual consignment
+    // status, so the real delivery state is never hidden (app parity).
+    const jEff = statusCfg(p.effectiveStatus);
+    const jAct = statusCfg(p.status);
     $('cc-journey-sub').innerHTML =
-      `${D.esc(p.id)} · ${D.esc(p.customer)} · <a href="tel:${D.esc(String(p.phone).replace(/\D/g, ''))}">📞 ${D.esc(p.phone || '—')}</a>`;
+      `${D.esc(p.id)} · ${D.esc(p.customer)} · <a href="tel:${D.esc(String(p.phone).replace(/\D/g, ''))}">📞 ${D.esc(p.phone || '—')}</a><br>` +
+      `<span class="cc-badge" style="color:${jEff.color};background:${jEff.bg}" title="Effective status">${D.esc(jEff.label)}</span> ` +
+      `<span class="cc-badge" style="color:${jAct.color};background:${jAct.bg}" title="Actual consignment status">📦 ${D.esc(jAct.label)}</span>`;
     $('cc-journey-timeline').innerHTML = '<div class="cc-msg">⏳ Loading history…</div>';
     $('cc-journey-modal').hidden = false;
     let maxPages = 1;
@@ -973,13 +1129,13 @@
     await load();
   }
 
-  /* ── Sync to Sheet (popup syncHvToSheet parity, this date + branch) ── */
+  /* ── Sync to Sheet (popup syncHvToSheet parity, range + branch — per date) ── */
   async function syncToSheet() {
     const btn = $('cc-sync-btn');
     const res = $('cc-result');
     const branchId = $('cc-branch').value;
-    const dateKey = $('cc-date').value;
-    if (!branchId || !dateKey) { toast('Select branch + date first', false); return; }
+    const range = rangeKeys();
+    if (!branchId || !range.keys.length) { toast('Select branch + date first', false); return; }
     const origBtn = btn.innerHTML;
     btn.disabled = true;
     btn.innerHTML = '<span class="cc-mini-spinner"></span> Syncing…';
@@ -991,16 +1147,22 @@
       say('⏳ Sheets permission…');
       const { token, error } = await window.CcSheet.getSheetsToken();
       if (!token) { say(`⚠ ${error || 'No Sheets permission — re-login'}`); return; }
-      say('⏳ Loading day validations…');
-      const startIso = new Date(`${dateKey}T00:00:00+06:00`).toISOString();
-      const endIso = new Date(new Date(startIso).getTime() + 86400000).toISOString();
-      const dayRows = await D.edgeReport(state.idToken, {
+      say('⏳ Loading range validations…');
+      const startIso = new Date(`${range.from}T00:00:00+06:00`).toISOString();
+      const endIso = new Date(new Date(`${range.to}T00:00:00+06:00`).getTime() + 86400000).toISOString();
+      const allRows = await D.edgeReport(state.idToken, {
         branchId, startIso, endIso, maxPages: 50,
       }).then((r) => r.rows).catch(() => []);
-      if (!dayRows.length) { say('No validation data for this date/branch'); return; }
-      const msg = await window.CcSync.syncDay(state.idToken, token, branchId, dateKey, dayRows, say);
-      say(msg);
-      if (msg.startsWith('✓')) toast('⇪ Sheet synced');
+      if (!allRows.length) { say('No validation data for this range/branch'); return; }
+      const msgs = [];
+      for (const dateKey of range.keys) {
+        say(`⏳ Syncing ${dateKey}…`);
+        const msg = await window.CcSync.syncDay(state.idToken, token, branchId, dateKey, allRows, say);
+        msgs.push(`${dateKey}: ${msg}`);
+      }
+      const ok = msgs.some((m) => m.includes('✓'));
+      say(msgs.join('\n'));
+      if (ok) toast('⇪ Sheet synced');
     } catch (e) {
       say(`✕ ${e.message || 'sync failed'}`);
     } finally {
@@ -1014,7 +1176,7 @@
     const ver = (() => { try { return chrome.runtime.getManifest().version; } catch { return '?'; } })();
     const head = [
       `DataBridge CC diagnostics — ext v${ver} — ${new Date().toISOString()}`,
-      `date=${$('cc-date').value} branch=${$('cc-branch').value} source=${state.source} sort=${state.sortMode}`,
+      `range=${rangeLabel(rangeKeys())} branch=${$('cc-branch').value} source=${state.source} sort=${state.sortMode}`,
       `parcels=${state.parcels.length} stat=${state.statFilter} status=${state.statusFilter} agent=${state.agentFilter || 'all'} search=${state.search || '-'}`,
       `missing=${(state.missingIds || []).length} sheetNote=${state.sheetNote || '-'}`,
       `sheetDebug=${JSON.stringify(state.sheetDebug || null)}`,
@@ -1158,6 +1320,48 @@
     paintPresence(cardEl, agents);
   }
 
+  /* Dialog-aware engaged: remark/journey dialog khola thakle oi parcel-er
+   * ring thaktei hobe (mouse card theke dialog-e geleo) — app-er expand
+   * parity. mouseleave sudhu dialog-bondho card-e clear kore. */
+  let engagedDialogCid = null;
+
+  /* Hover/dialog-e instant local ring (Firebase PUT-er reply-er wait na kore)
+   * — markEngaged server-e likhbe, porer poll authoritative paint korbe. */
+  function paintSelfEngaged(cid) {
+    if (!cid) return;
+    const cardEl = document.querySelector(`.cc-card[data-id="${CSS.escape(cid)}"]`);
+    if (!cardEl) return;
+    cardEl.classList.add('engaged');
+    if (!cardEl.querySelector('.cc-presence')) {
+      const row = document.createElement('div');
+      row.className = 'cc-presence';
+      const top = cardEl.querySelector('.cc-card-top');
+      if (top && top.nextSibling) top.parentNode.insertBefore(row, top.nextSibling);
+      else cardEl.prepend(row);
+      row.innerHTML = '<span class="cc-pres-text">You are viewing</span>';
+    }
+  }
+
+  function closeRemarkModal() {
+    $('cc-remark-modal').hidden = true;
+    if (engagedDialogCid) {
+      const cid = engagedDialogCid;
+      engagedDialogCid = null;
+      clearEngaged(cid);
+      refreshPresenceFor(cid).catch(() => {});
+    }
+  }
+
+  function closeJourneyModal() {
+    $('cc-journey-modal').hidden = true;
+    if (engagedDialogCid) {
+      const cid = engagedDialogCid;
+      engagedDialogCid = null;
+      clearEngaged(cid);
+      refreshPresenceFor(cid).catch(() => {});
+    }
+  }
+
   function watchPresence() {
     if (presenceObserver) presenceObserver.disconnect();
     if (presenceTimer) { clearInterval(presenceTimer); presenceTimer = null; }
@@ -1181,11 +1385,16 @@
     presenceTimer = setInterval(() => {
       [...visible].forEach((cid) => refreshPresenceFor(cid));
     }, 30000);
-    // hover = working on the card (app expand parity)
+    // hover = working on the card (app expand parity). Instant local ring
+    // + server mark; dialog-khola card mouseleave-eo ring dhore rakhe.
+    engagedIdentity().catch(() => {});
     cards.forEach((el) => {
       const cid = el.dataset.id;
-      el.addEventListener('mouseenter', () => markEngaged(cid));
-      el.addEventListener('mouseleave', () => clearEngaged(cid));
+      el.addEventListener('mouseenter', () => { paintSelfEngaged(cid); markEngaged(cid); });
+      el.addEventListener('mouseleave', () => {
+        if (engagedDialogCid === cid) return;
+        clearEngaged(cid);
+      });
     });
     window.addEventListener('pagehide', clearAllEngaged, { once: false });
   }
@@ -1381,7 +1590,8 @@
       try { chrome.storage.local.set({ cc_branch: $('cc-branch').value }); } catch { /* ignore */ }
       loadParcels();
     };
-    $('cc-date').onchange = () => loadParcels();
+    if ($('cc-date-from')) $('cc-date-from').onchange = () => loadParcels();
+    if ($('cc-date-to')) $('cc-date-to').onchange = () => loadParcels();
     const searchEl = $('cc-search');
     let deb = null;
     searchEl.addEventListener('input', () => {
@@ -1403,7 +1613,7 @@
     document.querySelectorAll('#cc-source-tabs .cc-tab').forEach((btn) => {
       btn.addEventListener('click', () => {
         const v = btn.dataset.source;
-        if (!['request', 'live', 'mix'].includes(v) || state.source === v) return;
+        if (!['run', 'requests', 'sheets'].includes(v) || state.source === v) return;
         state.source = v;
         try { chrome.storage.local.set({ cc_source: v }); } catch { /* ignore */ }
         paintSourceTabs();
@@ -1423,7 +1633,7 @@
         renderList();
       };
     });
-    $('cc-remark-cancel').onclick = () => { $('cc-remark-modal').hidden = true; };
+    $('cc-remark-cancel').onclick = () => closeRemarkModal();
     $('cc-remark-save').onclick = saveRemarkDialog;
     const noteEl = $('cc-remark-note');
     const noteClear = $('cc-note-clear');
@@ -1437,14 +1647,19 @@
         noteEl.focus();
       };
     }
-    $('cc-journey-close').onclick = () => { $('cc-journey-modal').hidden = true; };
+    $('cc-journey-close').onclick = () => closeJourneyModal();
     [$('cc-remark-modal'), $('cc-journey-modal')].forEach((m) => {
-      m.addEventListener('click', (e) => { if (e.target === m) m.hidden = true; });
+      m.addEventListener('click', (e) => {
+        if (e.target === m) {
+          if (m === $('cc-remark-modal')) closeRemarkModal();
+          else closeJourneyModal();
+        }
+      });
     });
     document.addEventListener('keydown', (e) => {
       if (e.key === 'Escape') {
-        $('cc-remark-modal').hidden = true;
-        $('cc-journey-modal').hidden = true;
+        closeRemarkModal();
+        closeJourneyModal();
       }
     });
     try {

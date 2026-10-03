@@ -150,9 +150,9 @@
     const x = String(a).trim().toLowerCase(), y = String(b).trim().toLowerCase();
     return x < y ? -1 : x > y ? 1 : 0;
   }
-  function filterPass(op, cell, value, valueType) {
+  function filterPass(op, cell, value, valueType, todayStr) {
     const c = String(cell || '').trim();
-    const t = valueType === 'today' ? dhakaTodayStr() : String(value || '').trim();
+    const t = valueType === 'today' ? (todayStr || dhakaTodayStr()) : String(value || '').trim();
     switch (String(op || '').toLowerCase()) {
       case 'blank': return !c;
       case 'notblank': return !!c;
@@ -238,9 +238,14 @@
     return idx.length ? Math.min(...idx) : 1;
   }
 
-  /* ── one binding's live IDs ── */
-  async function fetchLiveIdsForBinding(sheetsToken, binding, lib, headerCache) {
-    const tab = resolveTabName(lib.tabPattern || 'Day {dd}');
+  /* ── one binding's live IDs for one Dhaka date (range mode iterates dates) ── */
+  function dateForKey(dateKey) {
+    const d = new Date(`${dateKey}T12:00:00+06:00`);
+    return Number.isNaN(d.getTime()) ? new Date() : d;
+  }
+  async function fetchLiveIdsForBinding(sheetsToken, binding, lib, headerCache, dateKey) {
+    const targetDate = dateKey || dhakaTodayStr();
+    const tab = resolveTabName(lib.tabPattern || 'Day {dd}', dateForKey(targetDate));
     const headerRow = (lib.headerRow >= 1 && lib.headerRow <= 20) ? lib.headerRow : 1;
     const letterOf = async (ref, mode) => {
       const t = String(ref || '').trim();
@@ -294,7 +299,7 @@
       const cid = String(cell || '').trim();
       if (!cid) { blankIds++; return; }
       const results = ruleCols.map(({ filter, values }) =>
-        values === null ? true : filterPass(filter.op, values[i] || '', filter.value, filter.valueType));
+        values === null ? true : filterPass(filter.op, values[i] || '', filter.value, filter.valueType, targetDate));
       const pass = useOr && results.length ? results.some(Boolean) : results.every(Boolean);
       if (!pass) { dropped++; return; }
       if (seen.has(cid)) return;
@@ -311,15 +316,16 @@
     };
   }
 
-  /* ── public: live IDs for branches (fetchLiveConsignments parity) ── */
-  async function loadLiveIds(idToken, branchIds) {
+  /* ── public: live IDs for branches + one Dhaka date (range mode iterates
+   *  dates; omitted dateKey = today, old behavior) ── */
+  async function loadLiveIds(idToken, branchIds, dateKeyStr) {
     const { token, error } = await getSheetsToken();
     if (!token) {
       return branchIds.map((branchId) => ({
         branchId, ids: [], note: `No Sheets permission (${error || 'login needed'})`, failed: true,
       }));
     }
-    const today = dhakaTodayStr();
+    const today = dateKeyStr || dhakaTodayStr();
     const out = [];
     for (const branchId of branchIds) {
       try {
@@ -376,7 +382,7 @@
         const details = [];
         const headerCache = new Map();
         for (const { b, lib } of targets) {
-          const r = await fetchLiveIdsForBinding(token, b, lib, headerCache).catch((e) => ({
+          const r = await fetchLiveIdsForBinding(token, b, lib, headerCache, today).catch((e) => ({
             ids: [], scanned: 0, dropped: 0, blankIds: 0,
             fetchCol: (b.fetchColRef || '?'), filterDesc: 'read-failed',
             note: `read failed (${String((e && e.message) || e).slice(0, 100)})`,

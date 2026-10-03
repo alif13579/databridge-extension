@@ -633,6 +633,10 @@
         if (d.cards) lines.push(`cards: total=${d.cards.total} noActivity=${d.cards.noActivity} pending=${d.cards.pending}`);
         if (d.note) lines.push(`panelNote: ${d.note}`);
       }
+      if (ccSaveLog.length) {
+        lines.push('--- save/mirror log ---');
+        ccSaveLog.slice(-30).forEach((l) => lines.push(l));
+      }
       const text = lines.join('\n');
       let ok = false;
       try {
@@ -839,9 +843,20 @@
   let ccRemarkOpts = null;   // CC catalog, cached per page load
   let ccRefreshTimer = null;
   let ccLoading = false; // in-flight guard for auto/manual/visibility reloads
-  let ccDeadQuiet = false; // dead-context shutdown done once — no repeat spam
   let ccLiveNote = null; // Live ID না এলে SPECIFIC কারণ (access/tab/filter/binding) — render empty-state-এ দেখায়
   let ccLastDiag = null; // last load's pipeline snapshot — 📋 button copies it for mismatch debugging
+  // Save/mirror ring buffer — webpage (cc.js D.log) parity: 📋 copy-te
+  // load snapshot-er sathe etao jay, tai supabase-vs-sheet mismatch chat-e
+  // debug kora jay. Token/key kokhono log hoy na.
+  const ccSaveLog = [];
+  function ccSaveTlog(msg) {
+    try {
+      const line = `${new Date().toISOString().slice(11, 19)} [save] ${msg}`;
+      ccSaveLog.push(line);
+      if (ccSaveLog.length > 200) ccSaveLog.splice(0, ccSaveLog.length - 200);
+      console.log('[DB CC Panel]', line);
+    } catch (_) {}
+  }
   const CC_REFRESH_MS = 30_000; // auto-refresh: app-er save ≤30s-এ panel-e (new parcels + status updates)
   let ccLastVisible = []; // last rendered card refs — maps open History sections across refreshes
 
@@ -1584,7 +1599,10 @@
       if (!opt && !note) { say('Select a remark or write a note'); return; }
       saveBtn.disabled = true;
       saveBtn.textContent = '⏳ …';
+      ccSaveTlog(`start cid=${card.cId} branch=${card.branchId} opt=${opt ? opt.target : '(note-only)'} noteLen=${note.length}`);
+      const st0 = Date.now();
       try {
+        ccSaveTlog('supabase write start');
         const res = await fetch(`${SUPABASE_URL}/functions/v1/validations`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${ccIdToken}`, 'apikey': SUPABASE_ANON_KEY },
@@ -1599,13 +1617,18 @@
         });
         const data = await res.json().catch(() => ({}));
         if (!res.ok || data.ok === false) throw new Error(data.error || `HTTP ${res.status}`);
+        ccSaveTlog(`supabase ok ms=${Date.now() - st0}`);
         // App parity: Supabase save-er pashapashi sheet-eo mirror (best-effort).
         say('✓ Remark saved — mirroring to sheet…');
+        ccSaveTlog('mirror start');
+        const mt0 = Date.now();
         const mirrorMsg = await mirrorSavedRemarkToSheet(card);
+        ccSaveTlog(`mirror done ms=${Date.now() - mt0}: ${mirrorMsg}`);
         say(`✓ Remark saved · ${mirrorMsg} — reloading…`);
         setTimeout(() => { if (ccBodyEl) loadAndRender(ccBodyEl, { quiet: true }); }, 800);
       } catch (e) {
-        say(`⚠ Save failed — ${e.message || 'network error'}`);
+        ccSaveTlog(`supabase FAIL: ${e.message || 'network error'}`);
+        say(`⚠ Save failed — ${e.message || 'network error'} (📋 Log copy kore pathao)`);
         saveBtn.disabled = false;
         saveBtn.textContent = 'Save';
       }
@@ -1803,22 +1826,15 @@
       if (prevBulkMsg) bulkSay(prevBulkMsg);
       if (prevBulkMsg && !prevBulkVisible) { const el = bulkStatusEl(); if (el) el.style.display = 'none'; }
     } catch (e) {
+      console.error('[DB CC Panel] load failed:', e);
       if (ccBodyEl === bodyEl) {
         if (isContextDead(e)) {
           // Update-er por page reload na howa porjonto protita chrome.* call
-          // fail korbe — prothombar sob loop thamay + notice, tarpor chup.
-          // Nahole 30s poll + presence poll + realtime retry mile console-e
-          // eki error barbar aste thake.
-          if (!ccDeadQuiet) {
-            ccDeadQuiet = true;
-            ccDataPollStop();
-            ccPresenceStopPoll();
-            try { if (window.DbRealtimeFeed) DbRealtimeFeed.stop(); } catch (_) {}
-            try { console.warn('[DB CC Panel] extension updated — reload the page (F5).'); } catch (_) {}
-          }
+          // fail korbe — britha poll thamay, reload notice dekhay.
+          ccDataPollStop();
+          try { if (window.DbRealtimeFeed) DbRealtimeFeed.stop(); } catch (_) {}
           bodyEl.innerHTML = '<div class="db-cc-status">⚠ Extension updated — page-ta reload dao (F5), panel abar kaj korbe.</div>';
         } else {
-          try { console.error('[DB CC Panel] load failed:', (e && e.message) || e); } catch (_) {}
           bodyEl.innerHTML = '<div class="db-cc-status">⚠ Load failed — check console (F12)</div>';
         }
         if (prevBulkMsg) bulkSay(prevBulkMsg);
@@ -2394,16 +2410,18 @@
   // write semantics identical). Best-effort: fail korle save-ke fail kore na.
   async function mirrorSavedRemarkToSheet(card) {
     try {
-      if (!card || !card.cId || !card.branchId || !ccIdToken) return 'skipped (login)';
+      if (!card || !card.cId || !card.branchId || !ccIdToken) { ccSaveTlog('mirror skipped (login)'); return 'skipped (login)'; }
       const { token, error } = await getSheetsToken();
-      if (!token) return `skipped (${error || 'no Sheets permission'})`;
+      if (!token) { ccSaveTlog(`mirror skipped (no Sheets token: ${error || 'no permission'})`); return `skipped (${error || 'no Sheets permission'})`; }
       const dateKey = ccDateKey || todayBdDateKey();
+      ccSaveTlog(`mirror sheetsToken=yes date=${dateKey}`);
       // Fresh rows (read-your-write — Edge write already committed) theke
       // latest CC row, buildConsolidatedCc-er same derivation.
       const rows = await fetchValidationsByIds([card.cId], ccIdToken).catch(() => []);
       const ccRows = (rows || [])
         .filter(r => r && r.branch_id === card.branchId && r.source === 'CC')
         .sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+      ccSaveTlog(`mirror edge rows=${(rows || []).length} ccRows=${ccRows.length}`);
       if (!ccRows.length) return 'skipped (no CC row yet)';
       const latest = ccRows[ccRows.length - 1];
       const opts = await fetchCcRemarkOptions().catch(() => []);
@@ -2441,6 +2459,7 @@
       } catch (e) {
         return 'skipped (connection unreadable)';
       }
+      ccSaveTlog(`mirror connections=${conns.length} feedback=${feedback || '-'} status=${finalStatus || '-'}`);
       if (!conns.length) return 'skipped (no remark connection)';
       let rowsN = 0, cellsN = 0;
       const errs = [];
@@ -2448,8 +2467,10 @@
         try {
           const r = await bulkSyncOneConnection(token, card.branchId, conn, consolidated, dateKey);
           rowsN += r.syncedRows; cellsN += r.syncedCells;
+          ccSaveTlog(`mirror ${conn.sheetName || conn.sheetId}: scanned=${r.scanned} synced=${r.syncedRows}/${r.syncedCells} filled=${r.filled} noCc=${r.noCc}`);
         } catch (e) {
           errs.push(e?.message || 'sync failed');
+          ccSaveTlog(`mirror ${conn.sheetName || conn.sheetId}: FAIL ${e?.message || 'sync failed'}`);
         }
       }
       if (!rowsN && errs.length) return `⚠ Sheet mirror failed — ${errs[0]}`;
