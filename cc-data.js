@@ -310,6 +310,22 @@
     }
   }
 
+  /* ── range validations (run/requests bulk parity): only the loaded range
+   *  ±1 day buffer — same Edge path, far fewer pages than the 60-day scan
+   *  when a few days are shown. ── */
+  async function loadRangeValidations(idToken, branchId, startIso, endIso) {
+    try {
+      const r = await edgeReport(idToken, {
+        branchId, startIso, endIso, maxPages: 50,
+      });
+      log('edge-range', `branch=${branchId} rows=${r.rows.length}`);
+      return r.rows;
+    } catch (e) {
+      log('edge-range', 'failed: ' + (e && e.message));
+      return [];
+    }
+  }
+
   /* ── chunked PostgREST latest (gap-fill only — RLS may return empty;
    *  Edge branch window is primary) ── */
   async function loadLatestRest(idToken, ids) {
@@ -479,7 +495,7 @@
     loadBranches, loadStatusMeta,
     isVerifyRequest, isValidated, isDeliveryRequest, effectiveStatus,
     loadRunIds, loadRunRoute, loadConsignments,
-    loadBranchValidations, latestFromRows, loadLatestRest, loadHistory, loadUsersBySystemIds,
+    loadBranchValidations, loadRangeValidations, latestFromRows, loadLatestRest, loadHistory, loadUsersBySystemIds,
     edgeReport,
     loadRemarkOptions, loadAssignments, saveRemark,
   };

@@ -308,7 +308,13 @@
       let consMap = null;
       let branchRows = null;
       const cached = await readParcelCache(cacheKey);
-      const branchValidP = D.loadBranchValidations(state.idToken, branchId, 60);
+      // Remarks bulk: only the loaded range ±1 day (not the 60-day scan) —
+      // same Edge path, far fewer pages. Fired NOW so it runs in parallel
+      // with the Firebase route/consignment reads below.
+      const sortedKeys = [...want].sort();
+      const rangeStartIso = new Date(`${sortedKeys[0]}T00:00:00+06:00`).toISOString();
+      const rangeEndIso = new Date(new Date(`${sortedKeys[sortedKeys.length - 1]}T00:00:00+06:00`).getTime() + 86400000).toISOString();
+      const branchValidP = D.loadRangeValidations(state.idToken, branchId, rangeStartIso, rangeEndIso);
       if (cached && cached.runKey === runKey && cached.routes && cached.cons) {
         routes = cached.routes;
         consMap = cached.cons;
@@ -344,16 +350,31 @@
       }
       const conIds = [...new Set(routes.flatMap((r) => r.consignmentIds))];
       if (!conIds.length) return [];
-      // Latest remarks from the already-fetched branch window + REST gap-fill
-      // for ids whose latest remark predates the window.
+      // Latest remarks from the already-fetched range window + targeted Edge
+      // gap-fill (8-way parallel, service-role — no RLS miss) for ids whose
+      // latest remark predates the window.
       const latestMap = D.latestFromRows(branchRows);
       const missingIds = conIds.filter((cid) => !latestMap[cid]);
       if (missingIds.length) {
-        const gap = await D.loadLatestRest(state.idToken, missingIds).catch(() => ({}));
-        if (state.loadT0) tlog('remarks gap-fill', state.loadT0, `missing=${missingIds.length}`);
-        for (const [cid, row] of Object.entries(gap || {})) {
-          if (!latestMap[cid]) latestMap[cid] = row;
-        }
+        setLoading(true, 'Loading remarks…');
+        const q = [...missingIds];
+        await Promise.all(Array(8).fill(0).map(async () => {
+          while (q.length) {
+            const cid = q.shift();
+            try {
+              const r = await D.edgeReport(state.idToken, {
+                branchId, startIso: '2020-01-01T00:00:00.000Z',
+                endIso: new Date().toISOString(), consignment: cid, maxPages: 1,
+              });
+              const best = (r.rows || []).sort((a, b) =>
+                new Date(b.created_at || 0) - new Date(a.created_at || 0))[0];
+              if (best && !latestMap[cid]) latestMap[cid] = best;
+            } catch (e) {
+              try { D.log('edge-gapfill', `${cid} FAIL ${(e && e.message) || ''}`); } catch { /* ignore */ }
+            }
+          }
+        }));
+        if (state.loadT0) tlog('remarks gap-fill (targeted)', state.loadT0, `missing=${missingIds.length} found=${missingIds.filter((c) => latestMap[c]).length}`);
       }
       const assembled = await assembleParcels(routes, consMap, latestMap, branchId, branchName);
       if (state.loadT0) tlog('users + assemble', state.loadT0, `users=${Object.keys(state.users || {}).length}`);
