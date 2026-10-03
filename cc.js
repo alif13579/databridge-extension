@@ -1321,6 +1321,19 @@
             await D.deleteRemark(state.idToken, btn.dataset.did);
             try { D.log('save', `delete ok id=${btn.dataset.did} cid=${p.id}`); } catch { /* ignore */ }
             toast('🗑 Deleted — agent notified');
+            // Sheet mirror (remaining latest row wins) — best-effort.
+            try {
+              const st = await window.CcSheet.getSheetsToken().catch(() => ({ token: null }));
+              if (window.CcSync && window.CcSync.mirrorOne && st.token) {
+                const own = (p.createdAt && D.dayKey(p.createdAt)) || '';
+                const ordered = [...new Set([own, ...rangeKeys().keys.slice().reverse()].filter(Boolean))];
+                for (const dk of ordered) {
+                  const mm = await window.CcSync.mirrorOne(state.idToken, st.token, p.branchId, dk, p.id);
+                  try { D.log('save', `delete mirror ${dk}: ${mm}`); } catch { /* ignore */ }
+                  if (mm.startsWith('✓') || !mm.includes('row not found')) break;
+                }
+              }
+            } catch (e) { try { D.log('save', `delete mirror FAIL ${(e && e.message) || ''}`); } catch { /* ignore */ } }
             try {
               const h2 = await D.loadHistory(state.idToken, p.id, p.branchId, 1).catch(() => null);
               const best = ((h2 && h2.rows) || []).sort((a, b) =>

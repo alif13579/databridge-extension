@@ -638,6 +638,28 @@
     toast(`⬇ Exported ${S.hvRows.length} ${S.hvMode} rows`);
   }
 
+  function exportPerf() {
+    const c = S.perfCache;
+    if (!c || !c.modeRows.length) { toast('Generate the report first', false); return; }
+    const { from, to } = rangeIso();
+    const branchVal = $('dash-branch') ? $('dash-branch').value : '__all';
+    const tag = (!branchVal || branchVal === '__all') ? 'all' : (S.branchNames[branchVal] || branchVal);
+    const rows = S.perfMode === 'team'
+      ? [['Agent Name', 'Employee ID', 'System ID', 'Total', 'Delivery Request', 'Hold Verified', 'Return Verified', 'Other']]
+      : [['Agent Name', 'Employee ID', 'System ID', 'Assigned', 'Delivery Request', 'Validated', 'Pending', 'On Hold', 'Return']];
+    c.modeRows.forEach((r) => {
+      if (S.perfMode === 'team') {
+        rows.push([r.agentName || '', r.agentEmpId || '', r.agentId || '', r.total,
+          r.delivery_request, r.hold_verified, r.return_verified, r.other || 0]);
+      } else {
+        rows.push([r.agentName || '', r.agentEmpId || '', r.agentId || '', r.assigned,
+          r.delReq, r.validated, r.pending, r.onHold, r.onReturn]);
+      }
+    });
+    downloadCsv(`databridge-perf-${S.perfMode}-${from}_${to}-${tag}.csv`, rows);
+    toast(`⬇ Exported ${c.modeRows.length} ${S.perfMode} rows`);
+  }
+
   /* ══ ACTIONS ══ */
   async function generateHV() {
     const { from, to, startIso, endIso } = rangeIso();
@@ -751,6 +773,7 @@
     $('dash-hv-generate').onclick = generateHV;
     $('dash-perf-generate').onclick = generatePerf;
     $('dash-hv-export').onclick = exportHV;
+    $('dash-perf-export').onclick = exportPerf;
   }
 
   window.CcDash = { boot };
