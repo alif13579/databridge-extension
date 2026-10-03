@@ -21,6 +21,7 @@
     hvFilter: 'all',     // all | validated | pending
     perfMode: 'team',    // team | agent
     perfFilter: 'all',
+    perfAgentDrill: null, // agentId — agent table row drill-down
     perfCache: null,     // { summary, modeRows, parcels }
   };
 
@@ -367,8 +368,10 @@
       }
       modeRows = Object.values(groups).sort((a, b) => b.total - a.total);
     } else {
+      // Delivery-agent summary over the range (per assigned parcel, deduped):
+      // assigned / delivery-request / validated / pending / on-hold / return.
       const groups = {};
-      Object.values(byConsAll).forEach((rows) => {
+      Object.entries(byConsAll).forEach(([cid, rows]) => {
         if (!rows.some((r) => r.source === 'WORKER')) return;
         const latest = rows.reduce((a, b) => (latestMs(a) >= latestMs(b) ? a : b));
         const agentId = latest.assigned_to_system_id || rows[0].assigned_to_system_id || '—';
@@ -376,10 +379,26 @@
           : ((rows.find((r) => r.assigned && r.assigned.name) || {}).assigned);
         const g = groups[agentId] ||= {
           agentId, agentName: (joinHit && joinHit.name) || '', agentEmpId: (joinHit && joinHit.employee_id) || '',
-          requested: 0, validated: 0,
+          assigned: 0, delReq: 0, validated: 0, pending: 0, onHold: 0, onReturn: 0,
+          parcels: [],
         };
-        g.requested++;
-        if (latest.source === 'CC') g.validated++;
+        g.assigned++;
+        const hasDr = rows.some((r) => r.source === 'CC' && statusKeyOf(r) === 'delivery_request');
+        if (hasDr) g.delReq++;
+        const isValidated = latest.source === 'CC';
+        if (isValidated) g.validated++; else g.pending++;
+        const ccRows = rows.filter((r) => r.source === 'CC');
+        const latestCc = ccRows.length ? ccRows.reduce((a, b) => (latestMs(a) >= latestMs(b) ? a : b)) : null;
+        const ccKey = latestCc ? statusKeyOf(latestCc) : '';
+        if (ccKey === 'hold_verified') g.onHold++;
+        if (ccKey === 'return_verified') g.onReturn++;
+        g.parcels.push({
+          cid,
+          latestAt: latest.created_at,
+          nowStatus: (latest.consignment_status || '').trim() || '—',
+          validated: isValidated,
+          ccLabel: latestCc ? (PERF_STATUS_LABELS[ccKey] || ccKey) : '—',
+        });
       });
       const missing = Object.values(groups).filter((g) => !g.agentName && g.agentId !== '—').map((g) => g.agentId);
       if (missing.length) {
@@ -392,7 +411,7 @@
           });
         } catch { /* ignore */ }
       }
-      modeRows = Object.values(groups).sort((a, b) => b.requested - a.requested || b.validated - a.validated);
+      modeRows = Object.values(groups).sort((a, b) => b.assigned - a.assigned || b.validated - a.validated);
     }
     return { totalUnique, counts, drSummary, modeRows, perfParcels };
   }
@@ -505,19 +524,36 @@
       </div>`;
     let list;
     if (S.perfFilter === 'all') {
-      list = (S.perfMode === 'team'
-        ? c.modeRows.map((r, i) => `
+      if (S.perfMode === 'team') {
+        list = c.modeRows.map((r, i) => `
           <div class="dash-row"><div class="dash-row-top">
             <span class="dash-row-id">#${i + 1} ${D.esc(r.agentName)}${r.agentEmpId ? ' (' + D.esc(r.agentEmpId) + ')' : ''}</span>
             <span>Total ${r.total}</span></div>
             <div class="dash-row-meta">🔒 ${r.hold_verified} · ↩ ${r.return_verified} · 📦 ${r.delivery_request}${r.other ? ' · ❓ ' + r.other : ''}</div>
-          </div>`).join('')
-        : c.modeRows.map((r, i) => `
-          <div class="dash-row"><div class="dash-row-top">
-            <span class="dash-row-id">#${i + 1} ${D.esc(r.agentName)}${r.agentEmpId ? ' (' + D.esc(r.agentEmpId) + ')' : ''}</span>
-            <span>Request ${r.requested}</span></div>
-            <div class="dash-row-meta">✅ Validated ${r.validated} · ⏳ Pending ${r.requested - r.validated}</div>
-          </div>`).join(''));
+          </div>`).join('');
+      } else if (!S.perfAgentDrill) {
+        // Agent summary table (range): assigned / delivery-request /
+        // validated / pending / on-hold / return. Row click = parcels.
+        list = `<div class="dash-table-wrap"><table class="dash-table">
+          <thead><tr><th>#</th><th>Agent</th><th>Assigned</th><th>Del. Req</th><th>Validated</th><th>Pending</th><th>On Hold</th><th>Return</th></tr></thead>
+          <tbody>${c.modeRows.map((r, i) => `<tr data-agent="${D.esc(r.agentId)}" style="cursor:pointer">
+            <td>${i + 1}</td><td>${D.esc(r.agentName)}${r.agentEmpId ? ' (' + D.esc(r.agentEmpId) + ')' : ''}</td>
+            <td>${r.assigned}</td><td>📦 ${r.delReq}</td><td>✅ ${r.validated}</td>
+            <td>⏳ ${r.pending}</td><td>🔒 ${r.onHold}</td><td>↩ ${r.onReturn}</td>
+          </tr>`).join('')}</tbody></table></div>
+          <div class="dash-listhead">Row-এ click করলে ওই agent-এর parcels দেখাবে</div>`;
+      } else {
+        const g = c.modeRows.find((r) => r.agentId === S.perfAgentDrill);
+        const plist = (g ? g.parcels : []).slice()
+          .sort((a, b) => new Date(b.latestAt) - new Date(a.latestAt));
+        list = `<div class="dash-listhead">👤 ${D.esc(g ? g.agentName : '')} — ${plist.length} parcels · <a href="#" id="dash-drill-back" style="color:#00d4ff">← table-এ ফেরত</a></div>` +
+          plist.map((p) => `
+            <div class="dash-row"><div class="dash-row-top">
+              <span class="dash-row-id">${D.esc(p.cid)}</span>
+              <span>${p.validated ? '✅ Validated' : '⏳ Pending'}</span></div>
+              <div class="dash-row-meta">${D.esc(p.ccLabel)} · now: ${D.esc(p.nowStatus)}</div>
+            </div>`).join('');
+      }
     } else {
       const plist = c.perfParcels
         .filter((p) => (S.perfFilter === 'delivery_request' ? p.inDr : p.bucket === S.perfFilter))
@@ -540,6 +576,18 @@
         renderPerf();
       };
     });
+    box.querySelectorAll('tr[data-agent]').forEach((tr) => {
+      tr.onclick = () => {
+        S.perfAgentDrill = tr.dataset.agent;
+        renderPerf();
+      };
+    });
+    const back = $('dash-drill-back');
+    if (back) back.onclick = (e) => {
+      e.preventDefault();
+      S.perfAgentDrill = null;
+      renderPerf();
+    };
   }
 
   /* ══ CSV EXPORT (popup downloadHvReport columns parity) ══ */
@@ -629,6 +677,7 @@
       if (!built) { say('No CC resolutions in this date range/branch'); setLoading(false); return; }
       S.perfCache = { summary: built, modeRows: built.modeRows, parcels: built.perfParcels };
       S.perfFilter = 'all';
+      S.perfAgentDrill = null;
       say(`✓ ${built.totalUnique} unique consignments`);
       renderPerf();
     } catch (e) {
