@@ -1207,7 +1207,12 @@
       for (const a of assigns) {
         const label = (users[a.agentSystemId] && users[a.agentSystemId].name) || a.agentSystemId;
         const ts = Number(a.createdAt) || 0;
-        if (ts > 0) assigned.push({ ts, role: 'system', author: 'System', status: 'ASSIGNED', remark: `Assigned to ${label}` });
+        if (ts > 0) assigned.push({
+          ts, role: 'system', author: 'System', status: 'ASSIGNED',
+          remark: `Assigned to ${label}`,
+          approx: !!a.createdAtApprox,
+          runType: a.runType || '',
+        });
       }
       const remarks = [];
       const ownSid = state.ownSystemId || '';
@@ -1266,13 +1271,17 @@
           ? `<span class="cc-entry-tools"><button class="cc-entry-edit" data-eid="${D.esc(it.validationId)}" title="Edit (5 min)">✎</button>` +
             `<button class="cc-entry-del" data-did="${D.esc(it.validationId)}" title="Delete (5 min)">🗑</button></span>`
           : '';
+        // ≈ = run-date estimate (run-এ created_at নাই, দুপুর 12টা ধরা) —
+        // exact time না, তাই remark-এর পরে দেখাতে পারে।
+        const timeTxt = (it.approx ? '≈ ' : '') + D.fmtFull(it.ts);
+        const timeTitle = it.approx ? 'Run date estimate — run-এ exact time save নাই' : '';
         return `<div class="cc-entry ${it.role}">
           <div><span class="cc-entry-author">${D.esc(it.author)}</span>` +
           (cfg ? `<span class="cc-entry-status" style="color:${cfg.color};background:${cfg.bg}">${D.esc(cfg.label)}</span>` : '') +
           tools +
           `</div>
           ${it.remark ? `<div class="cc-entry-remark">${D.esc(it.remark)}</div>` : ''}
-          <div class="cc-entry-time">${D.esc(D.fmtFull(it.ts))}</div>
+          <div class="cc-entry-time" title="${timeTitle}">${D.esc(timeTxt)}</div>
         </div>`;
       };
       // created entry under its own day divider

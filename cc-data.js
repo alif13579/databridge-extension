@@ -453,10 +453,12 @@
     for (const { runType, runId } of pairs) {
       const route = await loadRunRoute(idToken, runType, runId).catch(() => null);
       if (route && route.agentSystemId) {
-        // created_at missing/0 → fall back to the runId date (app parity),
-        // never 0 (which renders as 1970-01-01).
-        const at = Number(route.createdAt) > 0 ? Number(route.createdAt) : runIdDayMillis(runId);
-        out.push({ ...route, runType, runId, createdAt: at });
+        // created_at missing/0 → fall back to the runId date at noon (app
+        // parity), never 0 (which renders as 1970-01-01). Flagged approx so
+        // the journey can show ≈ (it's a date estimate, not the real time).
+        const real = Number(route.createdAt) > 0;
+        const at = real ? Number(route.createdAt) : runIdDayMillis(runId);
+        out.push({ ...route, runType, runId, createdAt: at, createdAtApprox: !real });
       }
     }
     // one entry per (Dhaka day, agent)
