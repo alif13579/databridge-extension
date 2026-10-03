@@ -1422,9 +1422,10 @@
     presenceTimer = setInterval(() => {
       [...visible].forEach((cid) => refreshPresenceFor(cid));
     }, 30000);
-    // Hover-intent (1.2s) = working on the card (app expand parity).
-    // Scroll-past-e mark hoyna; mark-er por unhover-eo remove hoyna — entry
-    // 5-min freshness-e expire hoy. Clear sudhu dialog-close / pagehide-e.
+    // Hover-intent (3s) = working on the card (app expand parity).
+    // Scroll-past/mistaken hover-e mark hoyna; mark-er por unhover-eo remove
+    // hoyna — entry 5-min freshness-e expire hoy. Clear sudhu dialog-close /
+    // pagehide-e.
     engagedIdentity().catch(() => {});
     cards.forEach((el) => {
       const cid = el.dataset.id;
@@ -1437,7 +1438,7 @@
           el._engTimer = null;
           paintSelfEngaged(cid);
           markEngaged(cid);
-        }, 1200);
+        }, 3000);
       });
       el.addEventListener('mouseleave', () => {
         if (el._engTimer) { clearTimeout(el._engTimer); el._engTimer = null; }
